@@ -1056,12 +1056,20 @@ def normalize_swing_plan(raw, src, horizon=None):
     risk = entry - stop
     setup = str(raw.get("setup") or "manual").lower()
     sp = raw.get("stop_param")
+    params = raw.get("setup_params")
+    if params is not None:
+        if not isinstance(params, dict) or any(k not in SWING_PARAMS for k in params):
+            raise TMError("setup_params tiene claves desconocidas: %s" % (sorted(params) if isinstance(params, dict) else params))
+        try:
+            params = {k: float(v) if k in ("ema_touch_pct", "rsi_max") else int(v) for k, v in params.items()}
+        except (TypeError, ValueError):
+            raise TMError("setup_params must hold numbers")
     return {"mode": "swing", "symbol": sym, "side": "buy", "date": date, "setup": setup, "entry": entry,
             "stop": stop, "target": target, "risk_per_share": round(risk, 2),
             "target_r": round((target - entry) / risk, 2), "horizon_days": hz,
             "stop_rule": str(raw.get("stop_rule") or "price"), "stop_param": float(sp) if sp else None,
             "atr_bars": raw.get("atr_bars"), "time_stop_date": raw.get("time_stop_date"), "interval": "1d",
-            "from": src}
+            "setup_params": params, "from": src}
 
 
 def swing_verdict(mc):
@@ -1147,7 +1155,9 @@ def swing_time_machine(text, plan, now_utc, paths=10000, seed=19, window=SWING_W
     mc = simulate_swing(rets, plan["entry"], plan["stop"], plan["target"], plan["horizon_days"], paths, seed, block)
     mc.update(window_days=len(rets), window_from=bars[lo]["date"], window_to=sig["date"])
     setup = plan["setup"] if plan["setup"] in SWING_SETUPS else "any"
-    history = history_swing(bars, upto, setup, swing_rule(plan))
+    history = history_swing(bars, upto, setup, swing_rule(plan), plan.get("setup_params"))
+    if plan.get("setup_params"):
+        history["setup_params"] = dict(SWING_PARAMS, **plan["setup_params"])
     if setup == "any":
         history["note"] = ("el setup %r no tiene un detector, asi que el historial usa cada dia como entrada "
                            "(la linea base)" % plan["setup"])

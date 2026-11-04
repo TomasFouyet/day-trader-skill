@@ -130,7 +130,8 @@ class SwingPlan(unittest.TestCase):
         self.assertIsNone(p["flat_by"])
         self.assertEqual(p["interval"], "1d")
         self.assertEqual(p["limits"], {"max_risk_per_trade_pct": 1.0, "max_positions": 5, "max_exposure_pct": 60.0})
-        self.assertEqual(p["warnings"], [])
+        self.assertEqual(len(p["warnings"]), 1)
+        self.assertIn("Sin revision de resultados", p["warnings"][0])     # no earnings check yet (phase 4)
 
     def test_text_output_and_write_then_show(self):
         code, text, err = self.plan("--mode", "swing", "--symbol", "TSLA", "--write")

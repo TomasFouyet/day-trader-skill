@@ -835,11 +835,30 @@ def gather_swing(a):
     if a.or_high is not None or a.or_low is not None:
         raise PlanError("--or-high/--or-low son del intradia: en swing no hay rango de apertura")
     if a.symbol:
-        return {"symbol": a.symbol.upper(), "entry": a.entry, "date": a.date, "setup": a.setup, "source": "flags"}
+        return {"symbol": a.symbol.upper(), "entry": a.entry, "date": a.date, "setup": a.setup, "source": "flags",
+                "setup_params": None, "earnings": None}
     if not a.from_path:
         raise PlanError("en modo swing da --symbol TICKER (y --entry PRECIO, o se usa el ultimo cierre diario), "
                         "o --from un JSON con symbol")
     doc = read_json(a.from_path, "candidate")
+    if isinstance(doc, dict) and isinstance(doc.get("candidates"), list):
+        cands = doc["candidates"]
+        if not cands:
+            raise PlanError("%s no tiene candidatos: el scanner swing no encontro setups" % a.from_path)
+        if a.pick:
+            found = [c for c in cands if str(c.get("symbol") or "").upper() == a.pick.upper()]
+            if not found:
+                raise PlanError("%s no esta entre los candidatos de %s (%s)" % (
+                    a.pick.upper(), a.from_path, ", ".join(str(c.get("symbol")) for c in cands)))
+            doc = dict(found[0])
+        elif len(cands) == 1:
+            doc = dict(cands[0])
+        else:
+            raise PlanError("%s tiene %d candidatos: elige uno con --pick TICKER (%s)" % (
+                a.from_path, len(cands), ", ".join(str(c.get("symbol")) for c in cands)))
+        top = read_json(a.from_path, "candidate")
+        if not doc.get("setup_params") and isinstance(top.get("setup_params"), dict):
+            doc["setup_params"] = top["setup_params"]
     if str(doc.get("side") or "buy").lower() not in ("buy", "long"):
         raise PlanError("%s es un %s: el modo swing planifica solo largos" % (a.from_path, doc.get("side")))
     sym = str(doc.get("symbol") or "").upper()
@@ -847,7 +866,7 @@ def gather_swing(a):
         raise PlanError("%s no tiene symbol" % a.from_path)
     entry = a.entry if a.entry is not None else (doc.get("entry") if doc.get("entry") is not None else doc.get("price"))
     return {"symbol": sym, "entry": entry, "date": a.date or doc.get("date"), "setup": a.setup or doc.get("setup"),
-            "source": a.from_path}
+            "source": a.from_path, "setup_params": doc.get("setup_params"), "earnings": doc.get("earnings")}
 
 
 def build_swing_plan(a, now_utc):
@@ -936,6 +955,17 @@ def build_swing_plan(a, now_utc):
     if atr is not None:
         plan["atr"] = round(atr, 4)
         plan["atr_bars"] = atr_n
+    if info.get("setup_params"):
+        plan["setup_params"] = info["setup_params"]
+    er = info.get("earnings")
+    if isinstance(er, dict) and er.get("signal_date") == plan["date"] and er.get("horizon_days") == tstop:
+        plan["earnings"] = er
+        if er.get("flag"):
+            warnings.append("\u26a0 %s (%s)%s." % (er["flag"], er.get("next") or "fecha desconocida",
+                                                  ": BLOQUEADO, trader-risk no lo deja pasar" if er.get("blocked") else ""))
+    else:
+        warnings.append("Sin revision de resultados para este plan: corre trader-analyst earnings.py check "
+                        "--from trader/plan.json antes de trader-risk.")
     if tstop > horizon:
         warnings.append("El stop de tiempo (dia %d) queda despues del horizonte (%d dias)." % (tstop, horizon))
     if tdate.year > int(max(NYSE_HOLIDAYS)[:4]):
@@ -1085,6 +1115,7 @@ def main(argv=None):
     p.add_argument("--mode", choices=["intraday", "swing"],
                    help="intraday (default) or swing: daily ATR stop, time stop, no flat-by. Default: config \"mode\"")
     p.add_argument("--horizon-days", type=int, help="swing: trading days you plan to hold (config swing.horizon_days, 7)")
+    p.add_argument("--pick", metavar="TICKER", help="swing: the candidate to plan from a --from trader/swing.json")
     p.add_argument("--time-stop-days", type=int,
                    help="swing: close at the close of trading day N after the signal (default: the horizon)")
     p.add_argument("--config", default="trader/config.json")

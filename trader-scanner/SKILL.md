@@ -131,6 +131,37 @@ weekend or holiday, after the close, or after `no_entries_after` (an expired
 setup) it prints one plain line and writes nothing. The 1:00 PM early closes
 are in the calendar.
 
+## The swing scan (multi-day, after the close)
+
+`scan.py swing` looks for long setups to hold 5 to 7 days, on daily bars with
+real highs and lows. The rules are the same ones trader-timemachine replays in
+its history, so the odds match the setup:
+
+| setup | fires at the close when |
+| --- | --- |
+| `breakout20` | the close is above the highest high of the 20 days before (the daily scan's `breakout_20d`, on highs) |
+| `pullback_ema20` | close above the 50-day average, EMA20 higher than 5 days ago, the low within 1 % of the EMA20 and the close at or above it |
+| `rsi2` | RSI(2) under 10 with the close above the 200-day average |
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scan.py" swing                         # trader/watchlist.txt if it exists, else the universe
+python3 "${CLAUDE_SKILL_DIR}/scan.py" swing --symbols AAPL,NVDA,WMT --setups rsi2,breakout20
+```
+
+- **Symbols.** `--symbols`, `--watchlist FILE`, else `trader/watchlist.txt`
+  (one ticker a line, `#` comments): only those. Else the universe.
+- **Config.** `"swing": {"setups": [...], "setup_params": {...}, "min_price":
+  5, "min_dollar_volume": 20000000}` switches setups off and tunes them
+  (`breakout_days`, `ema_days`, `trend_days`, `ema_touch_pct`, `rsi_days`,
+  `rsi_max`, `rsi_trend_days`).
+- **Data.** Up to `--max-confirm` (200) tickers: one v8 daily chart each
+  (`range=1y&interval=1d`). More: spark closes first (a close-only necessary
+  condition), then the v8 chart of the most traded candidates.
+- **Writes** `trader/swing.json`: each candidate with its setup, close, ATR(14),
+  EMA20, SMA50, SMA200, RSI(2), 20-day high, dollar volume and the daily scan's
+  tags. Next: `trader-analyst earnings.py check`, then
+  `exit.py plan --mode swing --from trader/swing.json --pick TICKER`.
+
 ## Data and limits
 
 - Yahoo's chart and spark endpoints are free, unofficial and can lag. Bars are

@@ -835,6 +835,347 @@ def money(x):
     return "${:,.2f}".format(x)
 
 
+# ---------------------------------------------------------------- swing (multi-day setups, daily bars)
+#
+# scan.py swing looks for multi-day long setups on DAILY bars with real highs
+# and lows. The setups match trader-timemachine's history replay exactly (same
+# definitions, same parameters), so the odds the Time Machine prints are for
+# the rule the scanner used:
+#   breakout20      the close is above the highest HIGH of the 20 days before
+#                   (the daily scan's breakout_20d, on highs instead of closes)
+#   pullback_ema20  an uptrend (close above the 50-day average, the 20-day EMA
+#                   higher than 5 days ago) and a dip that touched the EMA20
+#                   (low within 1 % of it) and closed at or above it
+#   rsi2            RSI(2) (Wilder) under 10 with the close above the 200-day
+#                   average: a short, sharp dip inside a long uptrend
+# Each one can be switched off and tuned in trader/config.json:
+#   "swing": {"setups": ["breakout20", "pullback_ema20", "rsi2"],
+#             "setup_params": {"breakout_days": 20, "ema_days": 20, "trend_days": 50,
+#                              "ema_touch_pct": 1.0, "rsi_days": 2, "rsi_max": 10, "rsi_trend_days": 200},
+#             "min_price": 5, "min_dollar_volume": 20000000}
+# Symbols: --symbols, --watchlist FILE, else trader/watchlist.txt when it
+# exists (one ticker a line: only those), else the universe. A watchlist of up
+# to --max-confirm tickers fetches each v8 daily chart directly (range=1y,
+# interval=1d). A bigger list goes in two stages: spark closes (20 a request)
+# for liquidity and a close-only pre-filter, then the v8 chart of the most
+# traded candidates. Output: trader/swing.json (candidates, newest close).
+
+SWING_SETUPS = ("breakout20", "pullback_ema20", "rsi2")
+SWING_LABEL = {"breakout20": "20-day high breakout", "pullback_ema20": "pullback to the EMA20 in an uptrend",
+               "rsi2": "RSI(2) oversold in an uptrend"}
+SWING_PARAMS = {"breakout_days": 20, "ema_days": 20, "trend_days": 50, "ema_touch_pct": 1.0,
+                "rsi_days": 2, "rsi_max": 10.0, "rsi_trend_days": 200}
+SWING_DEFAULTS = {"min_price": 5.0, "min_dollar_volume": 20000000.0}
+SWING_WATCHLIST = "trader/watchlist.txt"
+SWING_MIN_BARS = 60
+
+
+def ema_series(values, n):
+    out = [None] * len(values)
+    if len(values) < n:
+        return out
+    k = 2.0 / (n + 1)
+    e = sum(values[:n]) / n
+    out[n - 1] = e
+    for i in range(n, len(values)):
+        e = values[i] * k + e * (1 - k)
+        out[i] = e
+    return out
+
+
+def sma_series(values, n):
+    out = [None] * len(values)
+    s = 0.0
+    for i, v in enumerate(values):
+        s += v
+        if i >= n:
+            s -= values[i - n]
+        if i >= n - 1:
+            out[i] = s / n
+    return out
+
+
+def rsi_series(closes, n=2):
+    """Wilder's RSI at every bar (trader-timemachine's rsi_series)."""
+    out = [None] * len(closes)
+    if len(closes) <= n:
+        return out
+    gains = [max(0.0, closes[i] - closes[i - 1]) for i in range(1, len(closes))]
+    losses = [max(0.0, closes[i - 1] - closes[i]) for i in range(1, len(closes))]
+    ag, al = sum(gains[:n]) / n, sum(losses[:n]) / n
+    for i in range(n, len(closes)):
+        if i > n:
+            ag = (ag * (n - 1) + gains[i - 1]) / n
+            al = (al * (n - 1) + losses[i - 1]) / n
+        out[i] = 100.0 if al == 0 else 100.0 - 100.0 / (1.0 + ag / al)
+    return out
+
+
+def atr_last(bars, n=14):
+    trs = [max(b["h"] - b["l"], abs(b["h"] - p["c"]), abs(b["l"] - p["c"])) for p, b in zip(bars, bars[1:])]
+    use = trs[-n:]
+    return sum(use) / len(use) if use else None
+
+
+def swing_params(cfg):
+    sw = (cfg or {}).get("swing") or {}
+    if not isinstance(sw, dict):
+        raise ScanError('"swing" in the config must be an object')
+    p = dict(SWING_PARAMS)
+    extra = sw.get("setup_params") or {}
+    if not isinstance(extra, dict):
+        raise ScanError("swing.setup_params must be an object")
+    for k, v in extra.items():
+        if k not in SWING_PARAMS:
+            raise ScanError("swing.setup_params: unknown key %r (known: %s)" % (k, ", ".join(sorted(SWING_PARAMS))))
+        try:
+            p[k] = float(v) if k in ("ema_touch_pct", "rsi_max") else int(v)
+        except (TypeError, ValueError):
+            raise ScanError("swing.setup_params.%s must be a number" % k)
+        if p[k] <= 0:
+            raise ScanError("swing.setup_params.%s must be above 0" % k)
+    setups = sw.get("setups", list(SWING_SETUPS))
+    if isinstance(setups, str):
+        setups = [s for s in re.split(r"[,\s]+", setups) if s]
+    for s in setups:
+        if s not in SWING_SETUPS:
+            raise ScanError("swing.setups: unknown setup %r (known: %s)" % (s, ", ".join(SWING_SETUPS)))
+    if not setups:
+        raise ScanError("swing.setups is empty: switch on at least one setup")
+    floors = dict(SWING_DEFAULTS)
+    for k in floors:
+        if sw.get(k) is not None:
+            try:
+                floors[k] = float(sw[k])
+            except (TypeError, ValueError):
+                raise ScanError("swing.%s must be a number" % k)
+    return list(setups), p, floors
+
+
+def swing_indicators(bars, p):
+    closes = [b["c"] for b in bars]
+    return {"ema": ema_series(closes, p["ema_days"]), "trend": sma_series(closes, p["trend_days"]),
+            "rsi": rsi_series(closes, p["rsi_days"]), "rsi_trend": sma_series(closes, p["rsi_trend_days"])}
+
+
+def swing_fires(setup, bars, i, ind, p):
+    """trader-timemachine's setup_fires: does the setup fire at the close of bar i?"""
+    b = bars[i]
+    if setup == "breakout20":
+        n = p["breakout_days"]
+        return i >= n and b["c"] > max(x["h"] for x in bars[i - n:i])
+    if setup == "pullback_ema20":
+        e, t = ind["ema"][i], ind["trend"][i]
+        e5 = ind["ema"][i - 5] if i >= 5 else None
+        if None in (e, t, e5):
+            return False
+        return b["c"] > t and e > e5 and b["l"] <= e * (1 + p["ema_touch_pct"] / 100.0) and b["c"] >= e
+    if setup == "rsi2":
+        r, t = ind["rsi"][i], ind["rsi_trend"][i]
+        return r is not None and t is not None and r < p["rsi_max"] and b["c"] > t
+    return False
+
+
+def daily_bars(series, now_utc):
+    """Complete daily OHLCV bars [{date, o, h, l, c, v}], today's dropped until the close.
+    None when the series has no highs and lows (a spark answer: closes only)."""
+    if series.get("h") is None or series.get("l") is None:
+        return None
+    now = to_eastern(now_utc)
+    today = now.date()
+    s = session(today)
+    today_done = s is None or now.time() >= s[1]
+    out = {}
+    cols = [series.get(k) or [None] * len(series["t"]) for k in ("o", "h", "l", "c", "v")]
+    for i, ts in enumerate(series["t"]):
+        o, h, l, c, v = [col[i] if i < len(col) else None for col in cols]
+        if ts is None or c is None:
+            continue
+        d = ts_to_eastern(ts).date()
+        if d > today or (d == today and not today_done):
+            continue
+        out[d] = {"date": d, "o": float(c if o is None else o), "h": float(c if h is None else h),
+                  "l": float(c if l is None else l), "c": float(c), "v": float(v or 0)}
+    return [out[d] for d in sorted(out)]
+
+
+def swing_prefilter(closes, setups, p):
+    """Close-only pre-filter for stage 1: a necessary condition for each setup (the
+    parts that need highs and lows are left to stage 2)."""
+    if len(closes) < 22:
+        return False
+    if "breakout20" in setups and closes[-1] > max(closes[-1 - p["breakout_days"]:-1]):
+        return True   # a close above the highest high is above the highest close too
+    if "pullback_ema20" in setups:
+        ema = ema_series(closes, p["ema_days"])
+        t = sma_series(closes, p["trend_days"])[-1]
+        e, e5 = ema[-1], (ema[-6] if len(ema) >= 6 else None)
+        if None not in (e, e5, t) and closes[-1] >= e and closes[-1] > t and e > e5:
+            return True   # the touch needs the low: stage 2 checks it
+    if "rsi2" in setups:
+        r = rsi_series(closes, p["rsi_days"])[-1]
+        if r is not None and r < p["rsi_max"]:
+            return True
+    return False
+
+
+def swing_candidate(sym, bars, setups, p, floors):
+    """(candidate or None, reason). Pure."""
+    if len(bars) < SWING_MIN_BARS:
+        return None, "short"
+    last = bars[-1]
+    dv = sum(b["c"] * b["v"] for b in bars[-20:]) / min(20, len(bars))
+    if last["c"] < floors["min_price"] or dv < floors["min_dollar_volume"]:
+        return None, "illiquid"
+    ind = swing_indicators(bars, p)
+    i = len(bars) - 1
+    hits = [s for s in setups if swing_fires(s, bars, i, ind, p)]
+    if not hits:
+        return None, "none"
+    closes = [b["c"] for b in bars]
+    daily_tags = find_setups(closes)[0] if len(closes) >= MIN_DAILY_BARS else []
+
+    def r2(x):
+        return None if x is None else round(x, 2)
+    return {"symbol": sym, "setup": hits[0], "setups": hits, "date": last["date"].isoformat(),
+            "price": round(last["c"], 2), "atr14": r2(atr_last(bars, 14)), "ema20": r2(ind["ema"][i]),
+            "sma50": r2(ind["trend"][i]), "sma200": r2(ind["rsi_trend"][i]), "rsi2": r2(ind["rsi"][i]),
+            "high20": r2(max(b["h"] for b in bars[-1 - p["breakout_days"]:-1])),
+            "dollar_volume_20d": int(dv), "daily_tags": daily_tags}, "hit"
+
+
+def scan_swing(data, symbols, now_utc, setups, p, floors):
+    """Pure. data = {SYM: series with highs and lows}. -> (candidates, counts, last_date)."""
+    out, dates = [], {}
+    counts = {"requested": len(symbols), "fetched": 0, "illiquid": 0, "short": 0, "no_ohlc": 0, "scanned": 0}
+    for sym in symbols:
+        s = data.get(sym)
+        if not s:
+            continue
+        counts["fetched"] += 1
+        bars = daily_bars(s, now_utc)
+        if bars is None:
+            counts["no_ohlc"] += 1
+            continue
+        cand, why = swing_candidate(sym, bars, setups, p, floors)
+        if why in ("short", "illiquid"):
+            counts[why] += 1
+            continue
+        counts["scanned"] += 1
+        d = bars[-1]["date"]
+        dates[d] = dates.get(d, 0) + 1
+        if cand:
+            out.append(cand)
+    out.sort(key=lambda c: (SWING_SETUPS.index(c["setup"]), -c["dollar_volume_20d"], c["symbol"]))
+    last = max(dates, key=lambda d: (dates[d], d)) if dates else None
+    stale = [c["symbol"] for c in out if last and c["date"] != last.isoformat()]
+    counts["hits"] = len(out)
+    counts["stale"] = len(stale)
+    return out, counts, last
+
+
+def swing_symbols(a, offline_syms=None):
+    if not a.symbols and not a.watchlist and not a.universe and os.path.exists(SWING_WATCHLIST):
+        a.watchlist = SWING_WATCHLIST
+    return read_symbols(a, offline_syms)
+
+
+def fetch_charts(symbols, pause, a=None):
+    data, failed = {}, {}
+    for k, sym in enumerate(symbols):
+        if k and pause:
+            SLEEP(pause)
+        try:
+            data[sym] = parse_chart(yahoo_get(chart_path(sym, "1y", "1d")), sym)
+        except ScanError as e:
+            failed[sym] = str(e)
+        if a is not None and len(symbols) > 50 and (k + 1) % 50 == 0:
+            progress(a, "  chart %d of %d" % (k + 1, len(symbols)))
+    return data, failed
+
+
+def cmd_swing(a):
+    t0 = time.time()
+    now = parse_now(a.now)
+    cfg = read_config(a.config)
+    setups, p, floors = swing_params(cfg)
+    if a.setups:
+        setups = [s for s in re.split(r"[,\s]+", a.setups) if s]
+        for s in setups:
+            if s not in SWING_SETUPS:
+                raise ScanError("--setups: unknown setup %r (known: %s)" % (s, ", ".join(SWING_SETUPS)))
+    if a.min_price is not None:
+        floors["min_price"] = a.min_price
+    if a.min_dollar_volume is not None:
+        floors["min_dollar_volume"] = a.min_dollar_volume
+    offline_syms = None
+    staged = False
+    if a.offline:
+        data, failed = load_offline(a.offline)
+        offline_syms = sorted(set(data) | set(failed))
+    symbols = swing_symbols(a, offline_syms)
+    source = "offline" if a.offline else "yahoo"
+    if not a.offline:
+        if len(symbols) <= a.max_confirm:
+            progress(a, "Descargando %d graficos diarios (v8, 1 ano)..." % len(symbols))
+            data, failed = fetch_charts(symbols, a.pause, a)
+        else:
+            staged = True
+            progress(a, "Stage 1: daily closes for %s symbols..." % "{:,}".format(len(symbols)))
+            spark, failed = fetch_spark(symbols, "1y", "1d", a.pause, a)
+            ranked = []
+            for sym in symbols:
+                s = spark.get(sym)
+                if not s:
+                    continue
+                closes = [c for _, c in daily_closes(s, now)]
+                meta = s.get("meta") or {}
+                px = meta.get("regularMarketPrice") or (closes[-1] if closes else 0)
+                vol = meta.get("regularMarketVolume") or 0
+                if px < floors["min_price"] or px * vol < floors["min_dollar_volume"] / 2.0:
+                    continue
+                if swing_prefilter(closes, setups, p):
+                    ranked.append((-px * vol, sym))
+            ranked.sort()
+            pick = [s for _, s in ranked[:a.max_confirm]]
+            progress(a, "Stage 2: %d daily charts for the candidates..." % len(pick))
+            data, f2 = fetch_charts(pick, a.pause, a)
+            failed.update(f2)
+            if len(ranked) > a.max_confirm:
+                progress(a, "  stopped at --max-confirm %d of %d candidates" % (a.max_confirm, len(ranked)))
+    cands, counts, last = scan_swing(data, symbols if not staged else [s for s in symbols if s in data],
+                                     now, setups, p, floors)
+    counts["requested"] = len(symbols)
+    doc = {"created_by": "trader-scanner", "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "mode": "swing",
+           "as_of": ("%s close" % last.isoformat()) if last else None, "universe": len(symbols),
+           "scanned": counts["scanned"], "failed": len(failed), "source": source, "setups": setups,
+           "setup_params": p, "filters": floors, "note": NOTE, "candidates": cands}
+    if not a.no_write:
+        write_json(a.out, doc)
+    if a.json:
+        print(json.dumps(dict(doc, counts=counts, seconds=round(time.time() - t0, 1)), indent=2))
+        return 0 if cands else 1
+    print("Scanner swing, %s ET, velas diarias hasta el %s (%s)." % (
+        to_eastern(now).strftime("%a %Y-%m-%d %H:%M"), last.isoformat() if last else "nothing", source))
+    print("Setups: %s. %s de %s graficos revisados (%d sin liquidez, %d con menos de %d dias%s)." % (
+        ", ".join(setups), "{:,}".format(counts["scanned"]), "{:,}".format(len(symbols)), counts["illiquid"],
+        counts["short"], SWING_MIN_BARS, (", %d fallaron" % len(failed)) if failed else ""))
+    if not cands:
+        print("Ningun setup swing.")
+    for c in cands[:a.show]:
+        print("  %-6s %10s  %-15s ATR %7.2f  RSI2 %5.1f  EMA20 %s%s" % (
+            c["symbol"], money(c["price"]), c["setup"], c["atr14"] or 0, c["rsi2"] or 0,
+            money(c["ema20"]) if c["ema20"] else "-", ("  (+%s)" % ", ".join(c["setups"][1:])) if len(c["setups"]) > 1 else ""))
+        if last and c["date"] != last.isoformat():
+            print("         (su ultimo cierre es del %s, no del %s)" % (c["date"], last.isoformat()))
+    if not a.no_write:
+        print("Guardado %s (modo swing, %d candidato%s)." % (a.out, len(cands), "" if len(cands) == 1 else "s"))
+    print("Un scan es una lista de graficos que cumplen una regla, no una lista de acciones para comprar. "
+          "Siguiente: trader-analyst earnings.py check, luego trader-exit plan --mode swing --from %s --pick TICKER."
+          % a.out)
+    return 0 if cands else 1
+
+
 # ---------------------------------------------------------------- commands
 
 def cmd_universe(a):
@@ -1057,6 +1398,14 @@ def main(argv=None):
 
     p = sub.add_parser("daily", help="pre-market setups from daily closes")
     common(p, 5.0, 1000000)
+    p = sub.add_parser("swing", help="multi-day setups on daily bars -> trader/swing.json")
+    common(p, 5.0, 0)
+    p.set_defaults(out="trader/swing.json", min_price=None)
+    p.add_argument("--setups", help="comma list: breakout20, pullback_ema20, rsi2 (default: config swing.setups, all)")
+    p.add_argument("--min-dollar-volume", type=float, help="20-day average close x volume (default 20,000,000)")
+    p.add_argument("--max-confirm", type=int, default=MAX_CONFIRM,
+                   help="daily charts to fetch: a list up to this size goes straight to v8 charts")
+    p.add_argument("--config", default="trader/config.json")
     p = sub.add_parser("orb", help="opening-range breakouts so far today")
     common(p, 5.0, 0)
     p.add_argument("--or-minutes", type=int, default=15)
@@ -1070,7 +1419,7 @@ def main(argv=None):
         ap.print_help()
         return 1
     try:
-        return {"universe": cmd_universe, "daily": cmd_daily, "orb": cmd_orb}[a.cmd](a)
+        return {"universe": cmd_universe, "daily": cmd_daily, "swing": cmd_swing, "orb": cmd_orb}[a.cmd](a)
     except ScanError as e:
         print("scan.py: %s" % e, file=sys.stderr)
         return 1
