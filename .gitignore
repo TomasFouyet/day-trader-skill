@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+
+# Private: account size, positions, tickets, plans, state. Never commit these (the repo is public).
+trader/
+*.env
+.env

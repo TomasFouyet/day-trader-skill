@@ -1,0 +1,153 @@
+# Swing diario: scanner -> resultados -> exit -> Time Machine -> budget -> risk -> alertas -> Telegram.
+#
+# Nunca coloca ordenes y nunca usa trader-broker: los tickets son para comprar a mano.
+# Privacidad (el repo es publico): el tamano de la cuenta, las posiciones, los tickets y el estado
+# viven en Secrets y en el cache de Actions (solo lo leen los workflows de este repo), nunca en un
+# commit ni en un artifact. El log corre con --quiet: pasos y conteos, sin simbolos ni montos.
+#
+# GitHub cron va en UTC y no sabe de horario de verano. Corre a dos horas y el script decide en
+# hora de Nueva York: solo un dia habil NYSE, despues del cierre + 15 min, y una vez al dia.
+#   20:40 UTC = 16:40 Nueva York en verano (EDT) / 15:40 en invierno (EST: todavia no)
+#   21:40 UTC = 17:40 en verano (ya corrio: se salta)      / 16:40 en invierno
+# Los workflows programados solo corren desde la rama por defecto del repo.
+
+name: Swing diario
+
+on:
+  schedule:
+    - cron: "40 20 * * 1-5"
+    - cron: "40 21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Solo mostrar (no enviar a Telegram)"
+        type: boolean
+        default: false
+      force_time:
+        description: "Correr aunque no sea despues del cierre"
+        type: boolean
+        default: false
+      test_message:
+        description: "Enviar un mensaje de prueba a Telegram y terminar"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swing-daily
+  cancel-in-progress: false
+
+jobs:
+  swing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Mensaje de prueba
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.test_message }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python3 trader-alerts/notify_telegram.py --test
+
+      - name: Restaurar estado (cache privado)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_message) }}
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            trader/state
+            trader/alerts.json
+          key: swing-state-${{ github.run_id }}
+          restore-keys: swing-state-
+
+      - name: Reloj de Nueva York
+        id: clock
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.test_message) }}
+        env:
+          FORCE_TIME: ${{ github.event_name == 'workflow_dispatch' && inputs.force_time }}
+        run: |
+          ARGS=""
+          if [ "$FORCE_TIME" = "true" ]; then ARGS="--force-time --force"; fi
+          if python3 trader-alerts/swing_pipeline.py --check-clock $ARGS; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Config, cartera y watchlist desde Secrets
+        if: ${{ steps.clock.outputs.go == 'true' }}
+        env:
+          TRADER_CONFIG_JSON: ${{ secrets.TRADER_CONFIG_JSON }}
+          TRADER_PORTFOLIO_JSON: ${{ secrets.TRADER_PORTFOLIO_JSON }}
+          TRADER_WATCHLIST: ${{ secrets.TRADER_WATCHLIST }}
+          TRADER_WATCHLIST_EXCLUDE: ${{ secrets.TRADER_WATCHLIST_EXCLUDE }}
+        run: |
+          mkdir -p trader/state
+          if [ -n "$TRADER_CONFIG_JSON" ]; then
+            printf '%s' "$TRADER_CONFIG_JSON" > trader/config.json
+          else
+            cp trader-budget/config.swing.example.json trader/config.json
+          fi
+          if [ -n "$TRADER_PORTFOLIO_JSON" ]; then printf '%s' "$TRADER_PORTFOLIO_JSON" > trader/portfolio.json; fi
+          if [ -n "$TRADER_WATCHLIST" ]; then printf '%s\n' "$TRADER_WATCHLIST" > trader/watchlist.txt; fi
+          if [ -n "$TRADER_WATCHLIST_EXCLUDE" ]; then printf '%s\n' "$TRADER_WATCHLIST_EXCLUDE" > trader/watchlist_exclude.txt; fi
+
+      - name: Watchlist de esta semana (cache)
+        id: wlcache
+        if: ${{ steps.clock.outputs.go == 'true' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: trader/watchlist-built.txt
+          key: swing-watchlist-${{ steps.clock.outputs.week }}
+
+      - name: Generar la watchlist (250 por volumen en dolares) si falta
+        if: ${{ steps.clock.outputs.go == 'true' }}
+        run: |
+          if [ -f trader/watchlist.txt ]; then
+            echo "Watchlist desde el Secret TRADER_WATCHLIST."
+          elif [ -f trader/watchlist-built.txt ]; then
+            cp trader/watchlist-built.txt trader/watchlist.txt
+            echo "Watchlist de esta semana desde el cache."
+          else
+            python3 trader-scanner/watchlist_top.py --quiet --out trader/watchlist-built.txt
+            cp trader/watchlist-built.txt trader/watchlist.txt
+          fi
+
+      - name: Guardar la watchlist de esta semana
+        if: ${{ steps.clock.outputs.go == 'true' && steps.wlcache.outputs.cache-hit != 'true' && hashFiles('trader/watchlist-built.txt') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: trader/watchlist-built.txt
+          key: swing-watchlist-${{ steps.clock.outputs.week }}
+
+      - name: Pipeline swing (no coloca ordenes)
+        if: ${{ steps.clock.outputs.go == 'true' }}
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          TRADER_BUDGET: ${{ secrets.TRADER_BUDGET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          FORCE_TIME: ${{ github.event_name == 'workflow_dispatch' && inputs.force_time }}
+        run: |
+          ARGS="--quiet"
+          if [ "$DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          if [ "$FORCE_TIME" = "true" ]; then ARGS="$ARGS --force-time --force"; fi
+          python3 trader-alerts/swing_pipeline.py $ARGS
+
+      - name: Guardar estado (cache privado)
+        if: ${{ always() && steps.clock.outputs.go == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            trader/state
+            trader/alerts.json
+          key: swing-state-${{ github.run_id }}

@@ -152,29 +152,209 @@ for the 60 days to October 19 2026, the 10:15 AM opening-range scan, Yahoo's
 TSLA headlines that morning, the House Clerk's 2026 index, real PTR text and
 real XBRL facts. They reproduce every number in the example above.
 
-## Modo swing (este fork)
+## Modo swing (este fork, en español)
 
-Swing de 5 a 7 dias en acciones de EE. UU. que compras a mano (Fintual u otra
-app). Nada coloca ordenes: los tickets van a `trader/swing_orders.json`, que
-trader-broker nunca lee. Copia `trader-budget/config.swing.example.json` a
-`trader/config.json` y ajusta `budget` y el bloque `"swing"`.
+Swing de 5 a 7 días en acciones de EE. UU. que compras **a mano** (Fintual u
+otra app). Cada día, después del cierre, el pipeline busca setups, descarta
+los que tienen resultados trimestrales dentro del horizonte, fija stop,
+objetivo y stop de tiempo, simula 10.000 trayectorias, calcula el tamaño,
+revisa tus límites y te manda un aviso por Telegram.
 
-El flujo diario, despues del cierre (`S` es la carpeta de las skills):
+**Nada en este modo coloca órdenes.** Los tickets van a
+`trader/swing_orders.json`, un archivo que trader-broker nunca lee, y el
+pipeline no carga trader-broker (un test lo verifica). Tú decides y compras a
+mano. Es educación y herramientas, no asesoría financiera. Una simulación no
+es una predicción.
+
+### 1. Instalación paso a paso
+
+1. Python 3.8 o más nuevo (`python3 --version`). No hay nada que instalar con pip.
+2. Clona tu fork y entra a la carpeta:
+
+   ```bash
+   git clone https://github.com/TU_USUARIO/day-trader-skill.git
+   cd day-trader-skill
+   git checkout swing-mode
+   ```
+
+3. Crea tu carpeta privada `trader/` (está en `.gitignore`: nunca se sube) y
+   copia la config de ejemplo:
+
+   ```bash
+   mkdir -p trader
+   cp trader-budget/config.swing.example.json trader/config.json
+   ```
+
+   En `trader/config.json` revisa el bloque `"swing"`: `horizon_days` (7),
+   `stop` (`atr:2`), `target` (`2R`), `time_stop_days`,
+   `max_risk_per_trade_pct` (1 % de la cuenta por trade), `max_positions`,
+   `max_exposure_pct`, los setups y `block_on_earnings`. El tamaño de la cuenta
+   puede ir en `"budget"` o, mejor, en la variable `TRADER_BUDGET`. Si tienes
+   posiciones abiertas, anótalas en `trader/portfolio.json`
+   (`{"cash": 3000, "positions": [{"ticker": "AAPL", "shares": 3, "price": 340, "swing": true}]}`).
+
+4. El SEC pide identificarse (nombre y email) para leer las fechas de
+   resultados. Ponlo en una variable de entorno, no en un archivo del repo:
+
+   ```bash
+   export SEC_USER_AGENT="Tu Nombre tu@email.com"
+   ```
+
+5. Comprueba que todo anda (sin red):
+
+   ```bash
+   python3 -m unittest discover -s tests
+   ```
+
+### 2. La watchlist (las 250 más negociadas)
 
 ```bash
-python3 $S/trader-scanner/scan.py swing                      # trader/watchlist.txt o el universo -> trader/swing.json
-python3 $S/trader-news/news.py --watchlist trader/swing.json --json > trader/news.json
-python3 $S/trader-analyst/earnings.py check --news trader/news.json   # marca y bloquea resultados dentro del horizonte
-python3 $S/trader-exit/exit.py plan --from trader/swing.json --pick TICKER --write
-python3 $S/trader-timemachine/timemachine.py run --write     # 10.000 trayectorias de N dias + el historial real
-python3 $S/trader-budget/size.py --write                     # ticket manual en trader/swing_orders.json
-python3 $S/trader-risk/check.py                              # PASS / BLOCK -> trader/state/swing_risk.json
-python3 $S/trader-alerts/alerts.py add --from-plan           # stop, objetivo y stop de tiempo
+python3 trader-scanner/watchlist_top.py            # -> trader/watchlist.txt
 ```
 
-La alerta por Telegram y la automatizacion con GitHub Actions llegan en la
-fase 5. Las fechas de resultados son estimaciones a partir del SEC salvo que
-las pongas en `trader/earnings_dates.json`: confirmalas antes de comprar.
+Toma el universo de Nasdaq Trader, saca ETFs, warrants, preferentes y
+similares, descarta las acciones bajo US$5 y las de poca liquidez, y escribe
+las 250 con mayor volumen en dólares promedio de 3 meses (velas diarias de
+Yahoo). Tarda unos minutos: unas 300 consultas rápidas y hasta 750 gráficos.
+`trader-scanner/watchlist.example.txt` es un ejemplo real generado así.
+
+Las que Fintual no permita: bórralas de `trader/watchlist.txt` o, mejor,
+ponlas en `trader/watchlist_exclude.txt` (un ticker por línea) para que no
+vuelvan cuando regeneres la lista. Con `trader/watchlist.txt` presente, el
+scanner swing revisa **solo** esos tickers.
+
+### 3. El flujo diario a mano
+
+```bash
+python3 trader-scanner/scan.py swing                          # -> trader/swing.json
+python3 trader-news/news.py --watchlist trader/swing.json --json > trader/news.json
+python3 trader-analyst/earnings.py check --news trader/news.json
+python3 trader-exit/exit.py plan --from trader/swing.json --pick TICKER --write
+python3 trader-timemachine/timemachine.py run --write
+python3 trader-budget/size.py --write
+python3 trader-risk/check.py
+python3 trader-alerts/alerts.py add --from-plan
+```
+
+O todo junto, mostrando los mensajes en vez de enviarlos:
+
+```bash
+python3 trader-alerts/swing_pipeline.py --dry-run --force-time
+```
+
+`--force-time` es solo para probar a cualquier hora: sin él, el pipeline corre
+únicamente en un día hábil NYSE, desde las 16:15 de Nueva York (13:15 en
+medio día) y una vez por día.
+
+### 4. Telegram
+
+1. En Telegram habla con **@BotFather**, envía `/newbot`, elige nombre y
+   usuario. Te da un token `123456789:AA...`. Es una contraseña: no lo pegues
+   en ningún archivo del repo ni en el chat.
+2. Abre tu bot y envíale `/start`.
+3. Tu chat id: abre en el navegador
+   `https://api.telegram.org/bot<TOKEN>/getUpdates` y busca `"chat":{"id":...}`.
+4. Exporta las dos variables y manda **un** mensaje de prueba:
+
+   ```bash
+   export TELEGRAM_BOT_TOKEN="123456789:AA..."
+   export TELEGRAM_CHAT_ID="123456789"
+   python3 trader-alerts/notify_telegram.py --test
+   ```
+
+Cada setup que pasa risk llega una sola vez (el estado queda en
+`trader/state/telegram.json`) con símbolo, entrada, stop, objetivo, tamaño
+sugerido, stop de tiempo, probabilidades del Time Machine, casos del
+historial real y las advertencias de resultados. `--dry-run` muestra los
+mensajes sin enviar ni recordar nada.
+
+### 5. GitHub Actions (automático)
+
+El workflow `.github/workflows/swing-daily.yml` corre el pipeline completo de
+lunes a viernes a las 20:40 y 21:40 UTC. GitHub no sabe de horario de verano,
+así que el script mira la hora de Nueva York: en verano (EDT) corre el de las
+20:40 (16:40 en Nueva York) y el de las 21:40 se salta porque ya corrió; en
+invierno (EST) el de las 20:40 cae a las 15:40, antes del cierre, y corre el de
+las 21:40.
+
+1. **Los workflows programados solo corren desde la rama por defecto.** Une
+   `swing-mode` a `main` (o haz `swing-mode` la rama por defecto en
+   Settings > Branches).
+2. En tu repo: **Settings > Secrets and variables > Actions > New repository
+   secret**. Crea:
+
+   | Secret | qué | obligatorio |
+   | --- | --- | --- |
+   | `TELEGRAM_BOT_TOKEN` | el token de @BotFather | sí |
+   | `TELEGRAM_CHAT_ID` | tu chat id | sí |
+   | `SEC_USER_AGENT` | `Tu Nombre tu@email.com` | sí, para las fechas de resultados |
+   | `TRADER_BUDGET` | el tamaño de tu cuenta en dólares, p. ej. `5000` | sí (si no, usa el 5000 del ejemplo) |
+   | `TRADER_CONFIG_JSON` | tu `trader/config.json` completo | no (si no, la config de ejemplo) |
+   | `TRADER_PORTFOLIO_JSON` | tu `trader/portfolio.json` (caja y posiciones abiertas) | no |
+   | `TRADER_WATCHLIST` | tu watchlist ya limpia, un ticker por línea | no (si no, se genera cada semana) |
+   | `TRADER_WATCHLIST_EXCLUDE` | tickers que tu app no permite | no |
+
+3. **Actions > Swing diario > Run workflow** con `test_message` marcado: llega
+   el mensaje de prueba. Después, con `dry_run` y `force_time` marcados, para
+   ver que el pipeline corre de punta a punta.
+
+**Privacidad (el repo es público).** El tamaño de cuenta, la cartera, los
+tickets, los planes y el estado nunca se commitean: `trader/` está en
+`.gitignore`, los datos entran por Secrets, y el estado (avisos ya enviados,
+última corrida) se guarda en el **cache** de Actions, que solo leen los
+workflows de tu repo. No se suben artifacts (en un repo público cualquiera
+podría descargarlos). Los logs de Actions de un repo público son públicos: por
+eso el pipeline corre con `--quiet` y solo imprime pasos y conteos, sin
+tickers, tamaños ni montos. Los detalles llegan solo a tu Telegram.
+
+### 6. Si Yahoo bloquea las IP de GitHub
+
+Yahoo Finance **no es una API oficial**: es gratis, puede atrasarse y puede
+limitar o bloquear las IP de los servidores de GitHub. Señales: en el log del
+workflow aparecen pasos con `exit 1` en el scanner, o el pipeline termina con
+0 candidatos todos los días. Entonces córrelo en tu computador:
+
+1. Deja tus variables en un archivo `.env` en la carpeta del repo (está en
+   `.gitignore`):
+
+   ```bash
+   export TELEGRAM_BOT_TOKEN="..."
+   export TELEGRAM_CHAT_ID="..."
+   export SEC_USER_AGENT="Tu Nombre tu@email.com"
+   export TRADER_BUDGET="5000"
+   ```
+
+2. Programa el pipeline varias veces por la tarde con `crontab -e` (macOS o
+   Linux). La hora es la de tu computador; el script revisa la de Nueva York y
+   corre una sola vez por día:
+
+   ```bash
+   40 17,18,19 * * 1-5 cd "$HOME/day-trader-skill" && . ./.env && python3 trader-alerts/swing_pipeline.py >> trader/state/cron.log 2>&1
+   ```
+
+   En Windows: Programador de tareas, una tarea diaria que ejecute
+   `python trader-alerts\swing_pipeline.py` en la carpeta del repo, con las
+   variables de entorno definidas en tu usuario.
+
+3. Apaga el workflow programado en GitHub (Actions > Swing diario > `...` >
+   Disable workflow) para que no corran los dos.
+
+Dominios que usa: `query1.finance.yahoo.com`, `query2.finance.yahoo.com`,
+`feeds.finance.yahoo.com`, `www.nasdaqtrader.com`, `www.sec.gov`,
+`data.sec.gov` y `api.telegram.org`.
+
+### 7. Límites que quedan
+
+- Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
+  SEC (el calendario de Yahoo pide un token de sesión). Confírmalas en la web
+  de la empresa o anótalas en `trader/earnings_dates.json`
+  (`{"AAPL": "2026-10-29"}`). Los ETF y los emisores extranjeros quedan como
+  "fecha desconocida" (aviso, no bloqueo, salvo `block_on_unknown_earnings`).
+- El calendario de feriados NYSE incluido llega a 2027.
+- La entrada sugerida es el último cierre: compras al día siguiente y el
+  precio puede abrir con gap. El stop es un plan, no una garantía.
+- El historial real de un setup suele tener pocos casos por acción: con menos
+  de 30, el aviso lo dice.
 
 ## Fine print
 

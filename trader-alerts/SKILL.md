@@ -76,6 +76,27 @@ and the target watched every day from the signal day to the time stop
 (`"from"` and `"until"` on the rule), and a time alert at 15:30 on the time
 stop day: "stop de tiempo: si sigues dentro, vende hoy al cierre". No flat-by.
 
+## Telegram and the daily swing pipeline
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/notify_telegram.py" --test       # one test message
+python3 "${CLAUDE_SKILL_DIR}/notify_telegram.py" --dry-run    # print what would be sent
+python3 "${CLAUDE_SKILL_DIR}/swing_pipeline.py" --dry-run      # scanner -> earnings -> exit -> time machine -> budget -> risk -> alerts -> Telegram
+```
+
+- `notify_telegram.py` sends one message per swing ticket that passed TODAY's
+  `check.py --swing` and is still the exact ticket that was checked: symbol,
+  entry, stop, target, size, time stop, the Time Machine's odds and verdict,
+  the history count and the earnings warnings. Each setup is sent once
+  (`trader/state/telegram.json`). The token and chat id come only from
+  `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, never a file.
+- `swing_pipeline.py` runs the whole day in one go, on an NYSE trading day
+  after the close + 15 minutes in New York (daylight time worked out in the
+  script) and once a day. `--quiet` prints steps and counts only, for public
+  CI logs. `.github/workflows/swing-daily.yml` runs it on GitHub Actions.
+- Neither one places an order or loads trader-broker: the tickets are for the
+  user to buy by hand.
+
 ## Quotes
 
 - `yahoo` (default): `query2.finance.yahoo.com/v8/finance/chart/<TICKER>`, an

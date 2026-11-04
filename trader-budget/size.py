@@ -787,7 +787,8 @@ def write_orders(path, orders, cfg, source="", now_utc=None):
 #     position cap   account x max_position_pct / entry
 #     max order      max_order_usd / entry
 #     cash           (cash minus the cash buffer) / entry
-#   account = budget, or cash + positions in trader/portfolio.json. Positions
+#   account = --budget, else cash + positions in trader/portfolio.json, else
+#   TRADER_BUDGET in the environment (a GitHub Secret), else "budget" in the config. Positions
 #   marked "swing": true are the open swing trades (all of them when none is
 #   marked). "fractional": true sizes to 0.0001 shares (apps that buy by amount).
 #
@@ -1040,6 +1041,17 @@ def write_swing(path, ticket, cfg, now_utc, append=True):
     return len(tickets)
 
 
+def env_budget():
+    """TRADER_BUDGET: the account size from the environment (a GitHub Secret), so it never sits in a file."""
+    v = os.environ.get("TRADER_BUDGET")
+    if not v:
+        return None
+    b = _f(v.replace(",", "").replace("$", ""))
+    if not b or b <= 0:
+        raise SizeError("TRADER_BUDGET must be a number above 0")
+    return b
+
+
 def run_swing(a, cfg, plan):
     now = parse_now(a.now)
     today = to_eastern(now).date().isoformat()
@@ -1052,7 +1064,8 @@ def run_swing(a, cfg, plan):
     ppath = a.prices or ("trader/prices.json" if os.path.exists("trader/prices.json") else None)
     prices = load_prices(ppath) if ppath else {}
     tm = read_json(a.timemachine, "time machine") if a.timemachine and os.path.exists(a.timemachine) else None
-    s = size_swing(plan, cfg, a.budget, limit, portfolio, prices, today, tm)
+    budget = a.budget if a.budget is not None else (env_budget() if portfolio is None else None)
+    s = size_swing(plan, cfg, budget, limit, portfolio, prices, today, tm)
     ticket = swing_ticket(s)
     n = None
     if ticket and a.write:

@@ -980,6 +980,11 @@ def main_swing(a, now):
         raise RiskError("no tickets in %s" % path)
     cfg = read_json(a.config, "config", required=False) or {}
     portfolio = read_json(a.portfolio, "portfolio", required=False)
+    if os.environ.get("TRADER_BUDGET") and portfolio is None:
+        b = _f(os.environ["TRADER_BUDGET"].replace(",", "").replace("$", ""))
+        if not b or b <= 0:
+            raise RiskError("TRADER_BUDGET must be a number above 0")
+        cfg = dict(cfg, budget=b)
     pdoc = read_json(a.prices, "prices", required=False) or {}
     prices, _ = load_prices(pdoc)
     res = check_swing(tickets, cfg, portfolio, prices, a.today or to_eastern(now).date().isoformat())

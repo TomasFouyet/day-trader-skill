@@ -813,7 +813,8 @@ def read_offline_daily(path, sym):
     """A saved Yahoo daily chart (.json or .json.gz), or a folder holding <SYM>-5y1d.json(.gz)."""
     if os.path.isdir(path):
         for name in ("%s-5y1d.json" % sym.upper(), "%s-5y1d.json.gz" % sym.upper(),
-                     "%s-1y1d.json" % sym.upper(), "%s-1y1d.json.gz" % sym.upper()):
+                     "%s-1y1d.json" % sym.upper(), "%s-1y1d.json.gz" % sym.upper(),
+                     "%s.json" % sym.upper(), "%s.json.gz" % sym.upper()):
             if os.path.exists(os.path.join(path, name)):
                 path = os.path.join(path, name)
                 break
