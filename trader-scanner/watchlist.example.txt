@@ -1,0 +1,251 @@
+# watchlist_top.py 2026-11-04: a real build (top 250 by 3-month average dollar volume), when-issued lines removed.
+# filters: no ETFs, price >= $5, avg dollar volume >= $20,000,000. Remove what your app cannot buy
+# (or list it in trader/watchlist_exclude.txt). One SYMBOL|Name|avg $ a line.
+MU|Micron Technology, Inc. - Common Stock|25866404220
+NVDA|NVIDIA Corporation - Common Stock|24886513884
+SPCX|Space Exploration Technologies Corp. - Class A Common Stock|14748674292
+AAPL|Apple Inc. - Common Stock|13653032568
+META|Meta Platforms, Inc. - Class A Common Stock|13558336411
+TSLA|Tesla, Inc. - Common Stock|13451722158
+MSFT|Microsoft Corporation - Common Stock|11542787579
+AMD|Advanced Micro Devices, Inc. - Common Stock|11175653724
+INTC|Intel Corporation - Common Stock|10761718131
+AMZN|Amazon.com, Inc. - Common Stock|9409188222
+GOOGL|Alphabet Inc. - Class A Common Stock|9263888930
+AVGO|Broadcom Inc. - Common Stock|8234037900
+GOOG|Alphabet Inc. - Class C Capital Stock|6072014260
+MRVL|Marvell Technology, Inc. - Common Stock|5257919061
+PLTR|Palantir Technologies Inc. - Class A Common Stock|5111958533
+LITE|Lumentum Holdings Inc. - Common Stock|4613271255
+TSM|Taiwan Semiconductor Manufacturing Company Ltd.|4490060083
+ORCL|Oracle Corporation Common Stock|4435323304
+NBIS|Nebius Group N.V. - Class A Ordinary Shares|4277944769
+DELL|Dell Technologies Inc. Class C Common Stock|3840963089
+MRNA|Moderna, Inc. - Common Stock|3723698494
+STX|Seagate Technology Holdings PLC - Ordinary Shares (Ireland)|3658650184
+BE|Bloom Energy Corporation Class A Common Stock|3619368160
+WDC|Western Digital Corporation - Common Stock|3399722703
+SKHY|SK hynix Inc. - American Depositary Shares|3383745662
+AMAT|Applied Materials, Inc. - Common Stock|3205900180
+MSTR|Strategy Inc - Class A Common Stock|3060556092
+LLY|Eli Lilly and Company Common Stock|3022137066
+CRWV|CoreWeave, Inc. - Class A Common Stock|3002785780
+CRM|Salesforce, Inc. Common Stock|2738618704
+LRCX|Lam Research Corporation - Common Stock|2682302236
+WMT|Walmart Inc. - Common Stock|2586263089
+NFLX|Netflix, Inc. - Common Stock|2577576462
+V|Visa Inc.|2407151945
+JPM|JP Morgan Chase & Co. Common Stock|2374409702
+ASML|ASML Holding N.V. - New York Registry Shares|2315743544
+CRWD|CrowdStrike Holdings, Inc. - Class A Common Stock|2308718287
+BRK.B|Berkshire Hathaway Inc. New Common Stock|2292171613
+GEV|GE Vernova Inc. Common Stock|2273235376
+XOM|ExxonMobil Holdings Corporation Common Stock|2236491490
+PANW|Palo Alto Networks, Inc. - Common Stock|2201236055
+HOOD|Robinhood Markets, Inc. - Class A Common Stock|2179041648
+NOW|ServiceNow, Inc. Common Stock|2104930580
+CAT|Caterpillar, Inc. Common Stock|2090842410
+COHR|Coherent Corp. Common Stock|2074829536
+BAC|Bank of America Corporation Common Stock|2068447854
+QCOM|QUALCOMM Incorporated - Common Stock|2025960833
+CSCO|Cisco Systems, Inc. - Common Stock|2003392591
+COST|Costco Wholesale Corporation - Common Stock|1999916176
+UNH|UnitedHealth Group Incorporated Common Stock (DE)|1975938028
+GS|Goldman Sachs Group, Inc. (The) Common Stock|1964518359
+KLAC|KLA Corporation - Common Stock|1826597949
+JNJ|Johnson & Johnson Common Stock|1821298810
+CVX|Chevron Corporation Common Stock|1765680272
+TXN|Texas Instruments Incorporated - Common Stock|1755897137
+MA|Mastercard Incorporated Common Stock|1730724996
+IREN|IREN Limited - Ordinary Shares|1689026726
+COIN|Coinbase Global, Inc. - Class A Common Stock|1615904055
+SMCI|Super Micro Computer, Inc. - Common Stock|1587744325
+SNOW|Snowflake Inc. Common Stock|1544508728
+APP|Applovin Corporation - Class A Common Stock|1512490104
+MDT|Medtronic plc. Ordinary Shares|1508102054
+BA|Boeing Company (The) Common Stock|1499443754
+MRK|Merck & Company, Inc. Common Stock (new)|1499049201
+CBRS|Cerebras Systems Inc. - Class A Common Stock|1484782541
+CRDO|Credo Technology Group Holding Ltd - Ordinary Shares|1463686092
+GE|GE Aerospace Common Stock|1416152353
+KO|Coca-Cola Company (The) Common Stock|1398827667
+HD|Home Depot, Inc. (The) Common Stock|1398238808
+ADI|Analog Devices, Inc. - Common Stock|1372494224
+TMO|Thermo Fisher Scientific Inc Common Stock|1365676215
+PG|Procter & Gamble Company (The) Common Stock|1362378693
+SHOP|Shopify Inc. - Class A Subordinate Voting Shares|1356767851
+VRT|Vertiv Holdings, LLC Class A Common Stock|1339110369
+MCD|McDonald's Corporation Common Stock|1322602860
+GLW|Corning Incorporated Common Stock|1320302945
+RKLB|Rocket Lab Corporation - Common Stock|1294034816
+IBM|International Business Machines Corporation Common Stock|1272790956
+ARM|Arm Holdings plc - American Depositary Shares|1260960023
+ACN|Accenture plc Class A Ordinary Shares (Ireland)|1260389570
+UBER|Uber Technologies, Inc. Common Stock|1259886814
+ABBV|AbbVie Inc. Common Stock|1257488243
+NKE|Nike, Inc. Common Stock|1232868692
+BKNG|Booking Holdings Inc. - Common Stock|1220872175
+ALAB|Astera Labs, Inc. - Common Stock|1213115985
+HPE|Hewlett Packard Enterprise Company Common Stock|1200817692
+ADBE|Adobe Inc. - Common Stock|1196778303
+C|Citigroup, Inc. Common Stock|1196455186
+WFC|Wells Fargo & Company Common Stock|1190978952
+INTU|Intuit Inc. - Common Stock|1173157184
+PEP|PepsiCo, Inc. - Common Stock|1170222164
+VLO|Valero Energy Corporation Common Stock|1167219078
+AMGN|Amgen Inc. - Common Stock|1142942655
+NU|Nu Holdings Ltd. Class A Ordinary Shares|1132720076
+BABA|Alibaba Group Holding Limited American Depositary Shares each representing eight Ordinary share|1107250857
+ANET|Arista Networks, Inc. Common Stock|1105789840
+CRCL|Circle Internet Group, Inc. Class A Common Stock|1094071562
+AAOI|Applied Optoelectronics, Inc. - Common Stock|1085743149
+VZ|Verizon Communications Inc. Common Stock|1077970100
+NET|Cloudflare, Inc. Class A Common Stock|1067732487
+TJX|TJX Companies, Inc. (The) Common Stock|1037790037
+MS|Morgan Stanley Common Stock|1036619762
+MELI|MercadoLibre, Inc. - Common Stock|1021066208
+TER|Teradyne, Inc. - Common Stock|1020304157
+MPC|Marathon Petroleum Corporation Common Stock|1019934168
+T|AT&T Inc.|1010026560
+CIEN|Ciena Corporation Common Stock|1000339831
+LIN|Linde plc - Ordinary Shares|987292372
+APH|Amphenol Corporation Common Stock|981867483
+ISRG|Intuitive Surgical, Inc. - Common Stock|959084545
+NEE|NextEra Energy, Inc. Common Stock|950829986
+PFE|Pfizer, Inc. Common Stock|949987704
+MPWR|Monolithic Power Systems, Inc. - Common Stock|937935215
+DDOG|Datadog, Inc. - Class A Common Stock|935958720
+SNPS|Synopsys, Inc. - Common Stock|923264552
+AXP|American Express Company Common Stock|920359457
+ABT|Abbott Laboratories Common Stock|919356443
+RTX|RTX Corporation Common Stock|914006131
+GILD|Gilead Sciences, Inc. - Common Stock|898468311
+RDDT|Reddit, Inc. Class A Common Stock|897588656
+TMUS|T-Mobile US, Inc. - Common Stock|896410782
+BSX|Boston Scientific Corporation Common Stock|895767720
+COP|ConocoPhillips Common Stock|883943852
+ETN|Eaton Corporation, PLC Ordinary Shares|883595079
+DIS|Walt Disney Company (The) Common Stock|879464069
+SPOT|Spotify Technology S.A. Ordinary Shares|875944248
+BMNR|BitMine Immersion Technologies, Inc. Common Stock|874758187
+FCX|Freeport-McMoRan, Inc. Common Stock|867110641
+DHR|Danaher Corporation Common Stock|862927884
+PM|Philip Morris International Inc Common Stock|860322519
+DASH|DoorDash, Inc. - Common Stock|860092649
+NXPI|NXP Semiconductors N.V. - Common Stock|856167744
+IONQ|IonQ, Inc. Common Stock|852582839
+AAL|American Airlines Group, Inc. - Common Stock|835780877
+MDB|MongoDB, Inc. - Class A Common Stock|834620200
+TWLO|Twilio Inc. Class A Common Stock|833708285
+NEM|Newmont Corporation|832259056
+CLS|Celestica, Inc. Common Stock|824970866
+SCHW|Charles Schwab Corporation (The) Common Stock|822779478
+AZO|AutoZone, Inc. Common Stock|811836360
+VST|Vistra Corp. Common Stock|809846385
+ABNB|Airbnb, Inc. - Class A Common Stock|809212198
+SYK|Stryker Corporation Common Stock|805999606
+SOFI|SoFi Technologies, Inc. - Common Stock|805893776
+DE|Deere & Company Common Stock|801171359
+HWM|Howmet Aerospace Inc. Common Stock|790797185
+SPGI|S&P Global Inc. Common Stock|787396921
+NOK|Nokia Corporation Sponsored American Depositary Shares|775452996
+CDNS|Cadence Design Systems, Inc. - Common Stock|772652749
+OKTA|Okta, Inc. - Class A Common Stock|771697463
+MCK|McKesson Corporation Common Stock|768177902
+FTNT|Fortinet, Inc. - Common Stock|758833354
+SBUX|Starbucks Corporation - Common Stock|752586445
+ON|ON Semiconductor Corporation - Common Stock|751888350
+PSX|Phillips 66 Common Stock|743969107
+CVS|CVS Health Corporation Common Stock|735334755
+COF|Capital One Financial Corporation Common Stock|728483093
+MCHP|Microchip Technology Incorporated - Common Stock|715202179
+PATH|UiPath, Inc. Class A Common Stock|711695311
+ASTS|AST SpaceMobile, Inc. - Class A Common Stock|707934497
+UNP|Union Pacific Corporation Common Stock|705075455
+LMT|Lockheed Martin Corporation Common Stock|699376222
+BMY|Bristol-Myers Squibb Company Common Stock|682409329
+ILMN|Illumina, Inc. - Common Stock|680644523
+PWR|Quanta Services, Inc. Common Stock|675390307
+CMCSA|Comcast Corporation - Class A Common Stock|672419483
+TEAM|Atlassian Corporation - Class A Common Stock|667491290
+BLK|BlackRock, Inc. Common Stock|666348029
+AXTI|AXT Inc - Common Stock|664723473
+PYPL|PayPal Holdings, Inc. - Common Stock|664124306
+CDE|Coeur Mining, Inc. Common Stock|656281241
+SLB|SLB Limited Common Shares|652694315
+FIX|Comfort Systems USA, Inc. Common Stock|643529475
+VRTX|Vertex Pharmaceuticals Incorporated - Common Stock|642500428
+WELL|Welltower Inc. Common Stock|640906317
+TGT|Target Corporation Common Stock|637891866
+HONA|Honeywell Aerospace Inc. - Common Stock|637570882
+RCL|Royal Caribbean Cruises Ltd. Common Stock|636473615
+LOW|Lowe's Companies, Inc. Common Stock|635269335
+WDAY|Workday, Inc. - Class A Common Stock|624813617
+HON|Honeywell International Inc. - Common Stock|617725140
+REGN|Regeneron Pharmaceuticals, Inc. - Common Stock|613163471
+HL|Hecla Mining Company Common Stock|611070137
+PH|Parker-Hannifin Corporation Common Stock|600356690
+MO|Altria Group, Inc.|599111016
+ADP|Automatic Data Processing, Inc. - Common Stock|595999795
+NTRA|Natera, Inc. - Common Stock|593215626
+GM|General Motors Company Common Stock|588876304
+CMG|Chipotle Mexican Grill, Inc. Common Stock|587747363
+ZS|Zscaler, Inc. - Common Stock|586931506
+SHEL|Shell PLC American Depositary Shares (each representing two (2) Ordinary Shares)|585615933
+HLT|Hilton Worldwide Holdings Inc. Common Stock|583704242
+CVNA|Carvana Co. Class A Common Stock|580730485
+CMI|Cummins Inc. Common Stock|579334643
+FICO|Fair Isaac Corporation Common Stock|577163258
+F|Ford Motor Company Common Stock|572160843
+P|Everpure, Inc. Class A common stock|572029197
+HCA|HCA Healthcare, Inc. Common Stock|571481808
+BX|Blackstone Inc. Common Stock|569924286
+SHW|Sherwin-Williams Company (The) Common Stock|566056307
+EQIX|Equinix, Inc. - Common Stock|566031882
+PCG|Pacific Gas & Electric Co. Common Stock|560143531
+LNG|Cheniere Energy, Inc. Common Stock|558725447
+CIFR|Cipher Digital Inc. - Common Stock|555091845
+CB|Chubb Limited Common Stock|555050442
+PGR|Progressive Corporation (The) Common Stock|550603535
+TTWO|Take-Two Interactive Software, Inc. - Common Stock|547883185
+TRV|The Travelers Companies, Inc. Common Stock|546571144
+MAR|Marriott International - Class A Common Stock|546542972
+WMB|Williams Companies, Inc. (The) Common Stock|544038477
+CCL|Carnival Corporation Ltd. Common Shares|540645347
+TT|Trane Technologies plc|536664820
+CME|CME Group Inc. - Class A Common Stock|535994976
+LULU|lululemon athletica inc. - Common Stock|533582964
+ROST|Ross Stores, Inc. - Common Stock|529622497
+SO|Southern Company (The) Common Stock|518559547
+MMM|3M Company Common Stock|517760647
+URI|United Rentals, Inc. Common Stock|516537742
+DAL|Delta Air Lines, Inc. Common Stock|515958436
+EXPE|Expedia Group, Inc. - Common Stock|515186033
+AZN|AstraZeneca PLC Ordinary Shares|514961940
+PBR|Petroleo Brasileiro S.A. Petrobras ADS|514289247
+DVN|Devon Energy Corporation Common Stock|513479960
+SE|Sea Limited American Depositary Shares, each representing one Class A Ordinary Share|512428264
+CSX|CSX Corporation - Common Stock|512428073
+BNY|The Bank of New York Mellon Corporation Common Stock|511171314
+SMTC|Semtech Corporation - Common Stock|511004705
+OXY|Occidental Petroleum Corporation Common Stock|510500722
+SWKS|Skyworks Solutions, Inc. - Common Stock|509627174
+RBLX|Roblox Corporation Class A Common Stock|507559214
+AON|Aon plc Class A Ordinary Shares (Ireland)|502801808
+JCI|Johnson Controls International plc Ordinary Share|501310294
+NVO|Novo Nordisk A/S Common Stock|499701807
+ICE|Intercontinental Exchange Inc. Common Stock|499615804
+WULF|TeraWulf Inc. - Common Stock|499509002
+TEM|Tempus AI, Inc. - Class A Common Stock|497456345
+EBAY|eBay Inc. - Common Stock|497149250
+WM|Waste Management, Inc. Common Stock|497069068
+HUM|Humana Inc. Common Stock|495077264
+PDD|PDD Holdings Inc. - American Depositary Shares|494833864
+NTAP|NetApp, Inc. - Common Stock|493628179
+ORLY|O'Reilly Automotive, Inc. - Common Stock|493315930
+AKAM|Akamai Technologies, Inc. - Common Stock|493158401
+SAP|SAP SE ADS|490277640
+AMT|American Tower Corporation (REIT) Common Stock|489873560
+DKS|Dick's Sporting Goods Inc Common Stock|484830553
+DUK|Duke Energy Corporation (Holding Company) Common Stock|484696213
+PLD|Prologis, Inc. Common Stock|484054876

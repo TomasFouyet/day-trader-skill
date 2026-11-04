@@ -162,6 +162,22 @@ python3 "${CLAUDE_SKILL_DIR}/scan.py" swing --symbols AAPL,NVDA,WMT --setups rsi
   tags. Next: `trader-analyst earnings.py check`, then
   `exit.py plan --mode swing --from trader/swing.json --pick TICKER`.
 
+## The watchlist builder (`watchlist_top.py`)
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/watchlist_top.py"                   # top 250 -> trader/watchlist.txt
+python3 "${CLAUDE_SKILL_DIR}/watchlist_top.py" --top 100 --exclude trader/watchlist_exclude.txt
+```
+
+The universe rule above (no ETFs, warrants, units, notes or preferreds), then
+no stock under `--min-price` (5) and none under `--min-dollar-volume` (20
+million a day). Stage 1, spark closes for every stock: price and the latest
+volume shortlist `--prefilter` (750). Stage 2, a 3-month v8 daily chart each:
+the average of close x volume. The `--top` (250) biggest go to
+`trader/watchlist.txt`, which `scan.py swing` then scans alone. Tickers in
+`--exclude` (default `trader/watchlist_exclude.txt`) stay out on every
+rebuild. `watchlist.example.txt` is a real build. `--offline DIR` for tests.
+
 ## Data and limits
 
 - Yahoo's chart and spark endpoints are free, unofficial and can lag. Bars are
