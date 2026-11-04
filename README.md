@@ -254,6 +254,11 @@ medio día) y una vez por día.
 2. Abre tu bot y envíale `/start`.
 3. Tu chat id: abre en el navegador
    `https://api.telegram.org/bot<TOKEN>/getUpdates` y busca `"chat":{"id":...}`.
+   **No** es el número que va antes de los dos puntos en el token: ese es el id
+   del bot, y Telegram responde "the bot can't send messages to the bot". Si
+   `getUpdates` sale vacío (`"result":[]`), envíale otra vez `/start` al bot y
+   recarga. Tu id personal suele ser un número positivo; el de un grupo empieza
+   con `-`.
 4. Exporta las dos variables y manda **un** mensaje de prueba:
 
    ```bash

@@ -209,6 +209,10 @@ def credentials():
         raise NotifyError("set %s in the environment (never in a file): see the README" % " and ".join(missing))
     if not re.match(r"^\d+:[A-Za-z0-9_-]{20,}$", tok):
         raise NotifyError("TELEGRAM_BOT_TOKEN does not look like a bot token (digits:letters from @BotFather)")
+    if chat == tok.split(":")[0]:
+        raise NotifyError("TELEGRAM_CHAT_ID is the bot's own id (the number before ':' in the token). Use YOUR "
+                          "chat id: send /start to the bot, open https://api.telegram.org/bot<TOKEN>/getUpdates "
+                          "and copy the number in \"chat\":{\"id\": ...}")
     return tok, chat
 
 
@@ -229,7 +233,12 @@ def send(token, chat, text):
             if e.code == 429 and attempt == 0 and wait:
                 _sleep(min(float(wait), 60))
                 continue
-            raise NotifyError("Telegram answered HTTP %d: %s" % (e.code, body.get("description") or "no reason"))
+            why = body.get("description") or "no reason"
+            if e.code == 403 and "bot" in why.lower():
+                why += (" (TELEGRAM_CHAT_ID must be YOUR chat id, not the bot's; and send /start to the bot first)")
+            elif e.code == 400 and "chat not found" in why.lower():
+                why += " (send /start to the bot, then take the chat id from getUpdates)"
+            raise NotifyError("Telegram answered HTTP %d: %s" % (e.code, why))
         except (urllib.error.URLError, OSError) as e:
             raise NotifyError("could not reach api.telegram.org: %s" % getattr(e, "reason", e))
         if not res.get("ok"):
