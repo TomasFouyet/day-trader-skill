@@ -57,6 +57,10 @@ the data. Same plan, same data and same --seed give the same numbers on any
 machine. A simulation built from the stock's own recent bars is not a
 prediction: earnings, news and halts can do what the last 60 days never did.
 
+Swing (multi-day): --horizon-days N, or a plan.json with "mode": "swing" from
+trader-exit, replays the next N trading days on daily bars instead. See the
+"swing: multi-day" section below for the method.
+
 Data: https://query2.finance.yahoo.com/v8/finance/chart/<T>?range=60d&interval=5m
 (unofficial and free, can lag; falls back to query1 on 429 or 5xx).
 --offline FILE reads a saved chart JSON (.json or .json.gz) instead.
@@ -200,15 +204,16 @@ def _get(url, timeout=20):
         return r.read().decode("utf-8", "replace")
 
 
-def fetch_chart(sym):
-    """One request for 60 days of 5-min bars. query2 first, one retry after a 429,
-    then query1 on 429 or 5xx."""
+def fetch_chart(sym, url_for=None):
+    """One request for 60 days of 5-min bars (or url_for's chart). query2 first,
+    one retry after a 429, then query1 on 429 or 5xx."""
+    url_for = url_for or chart_url
     last = None
     for n, host in enumerate(HOSTS):
         if n:
             _sleep(PAUSE)
         for attempt in (0, 1):
-            url = chart_url(sym, host)
+            url = url_for(sym, host)
             try:
                 return _get(url)
             except urllib.error.HTTPError as e:
@@ -753,6 +758,527 @@ def time_machine(text, plan, now_utc, replays=10000, seed=19, window=2, until=No
     }
 
 
+# ---------------------------------------------------------------- swing: multi-day, daily bars
+#
+# --horizon-days N (or a plan.json with "mode": "swing") replays the next N
+# trading days instead of the rest of one session:
+#   1. Fetch 5 years of daily bars (Yahoo v8 chart, range=5y interval=1d; one
+#      request). Today's bar counts only once the session has closed.
+#   2. The pool: the last --window-days daily bars up to the plan's signal day
+#      (252, about one year), each as (open, high, low, close) / the previous
+#      close. The overnight gap is in the open.
+#   3. One path starts at the entry and walks N days. It is built from blocks
+#      of --block-days (5) CONSECUTIVE days of the pool: a random start, then
+#      the following days in order (circular block bootstrap, so a calm week
+#      stays calm and a wild week stays wild). random.Random(seed): same plan,
+#      same data, same seed, same numbers.
+#   4. Each day, in this order: an open at or under the stop = stopped at the
+#      open (a gap: worse than -1R); a low at or under the stop = -1R; an open
+#      at or over the target = the target's R (no credit for the gap up); a
+#      high at or over the target = the target's R. A day that touches both
+#      counts as the stop. Still open after day N = unresolved, closed at day
+#      N's close: R = (close - entry) / risk. That is the time stop.
+#   5. Expectancy = the average R of all paths.
+#   6. History: the same setup on the stock's real daily bars before the
+#      signal day (the 5 years), one trade at a time, entry at the signal
+#      day's close, same stop rule, target R, horizon and day rules. Fewer than
+#      30 cases gets a warning: too few to lean on.
+# Verdict: |P(target first) - P(stop first)| under 5 points = close to a coin
+# flip. It is a simulation built from the stock's own past, not a prediction.
+
+SWING_RANGE = "5y"
+SWING_WINDOW = 252
+SWING_BLOCK = 5
+SWING_MIN_WINDOW = 60
+SWING_MIN_CASES = 30
+SWING_SETUPS = ("breakout20", "pullback_ema20", "rsi2")
+SWING_PARAMS = {"breakout_days": 20, "ema_days": 20, "trend_days": 50, "ema_touch_pct": 1.0,
+                "rsi_days": 2, "rsi_max": 10.0, "rsi_trend_days": 200}
+SWING_HOLIDAYS = {  # NYSE full closures, to know when today's daily bar is final
+    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03",
+    "2026-09-07", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26",
+    "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24"}
+
+
+def daily_chart_url(sym, host="query2"):
+    return "https://%s.finance.yahoo.com/v8/finance/chart/%s?range=%s&interval=1d" % (
+        host, urllib.parse.quote(sym.upper().replace(".", "-")), SWING_RANGE)
+
+
+def fetch_daily(sym):
+    return fetch_chart(sym, daily_chart_url)
+
+
+def read_offline_daily(path, sym):
+    """A saved Yahoo daily chart (.json or .json.gz), or a folder holding <SYM>-5y1d.json(.gz)."""
+    if os.path.isdir(path):
+        for name in ("%s-5y1d.json" % sym.upper(), "%s-5y1d.json.gz" % sym.upper(),
+                     "%s-1y1d.json" % sym.upper(), "%s-1y1d.json.gz" % sym.upper()):
+            if os.path.exists(os.path.join(path, name)):
+                path = os.path.join(path, name)
+                break
+        else:
+            raise TMError("no hay %s-5y1d.json(.gz) en %s" % (sym.upper(), path))
+    return read_offline(path, sym)
+
+
+def parse_daily(result, now_utc):
+    """Yahoo daily chart result -> (meta, bars) oldest first, one bar a date.
+    Today's bar is left out until the 4:00 PM close (1:00 PM on a half day)."""
+    meta = result.get("meta") or {}
+    stamps = result.get("timestamp") or []
+    q = ((result.get("indicators") or {}).get("quote") or [{}])[0] or {}
+    cols = [q.get(k) or [] for k in ("open", "high", "low", "close")]
+    local = to_eastern(now_utc)
+    today = local.date().isoformat()
+    close_min = EARLY_MIN if today in NYSE_EARLY_CLOSE else CLOSE_MIN
+    open_today = (local.weekday() < 5 and today not in SWING_HOLIDAYS
+                  and local.hour * 60 + local.minute < close_min)
+    by_date = {}
+    for i, ts in enumerate(stamps):
+        o, h, l, c = [col[i] if i < len(col) else None for col in cols]
+        if ts is None or c is None:
+            continue
+        d = to_eastern(utc_of(int(ts))).date().isoformat()
+        if d > today or (d == today and open_today):
+            continue
+        o = c if o is None else o
+        h = max(c, o) if h is None else h
+        l = min(c, o) if l is None else l
+        by_date[d] = {"date": d, "o": float(o), "h": float(h), "l": float(l), "c": float(c)}
+    return meta, [by_date[d] for d in sorted(by_date)]
+
+
+# ---- indicators (causal: the value at i uses bars 0..i only)
+
+def ema_series(values, n):
+    out = [None] * len(values)
+    if len(values) < n:
+        return out
+    k = 2.0 / (n + 1)
+    e = sum(values[:n]) / n
+    out[n - 1] = e
+    for i in range(n, len(values)):
+        e = values[i] * k + e * (1 - k)
+        out[i] = e
+    return out
+
+
+def sma_series(values, n):
+    out = [None] * len(values)
+    s = 0.0
+    for i, v in enumerate(values):
+        s += v
+        if i >= n:
+            s -= values[i - n]
+        if i >= n - 1:
+            out[i] = s / n
+    return out
+
+
+def rsi_series(closes, n=2):
+    """Wilder's RSI."""
+    out = [None] * len(closes)
+    if len(closes) <= n:
+        return out
+    gains = [max(0.0, closes[i] - closes[i - 1]) for i in range(1, len(closes))]
+    losses = [max(0.0, closes[i - 1] - closes[i]) for i in range(1, len(closes))]
+    ag, al = sum(gains[:n]) / n, sum(losses[:n]) / n
+    for i in range(n, len(closes)):
+        if i > n:
+            ag = (ag * (n - 1) + gains[i - 1]) / n
+            al = (al * (n - 1) + losses[i - 1]) / n
+        out[i] = 100.0 if al == 0 else 100.0 - 100.0 / (1.0 + ag / al)
+    return out
+
+
+def atr_series(bars, n=14):
+    """ATR at i = the simple average of the last n true ranges up to bar i (the gap counted)."""
+    out = [None] * len(bars)
+    trs = [None]
+    for i in range(1, len(bars)):
+        b, pc = bars[i], bars[i - 1]["c"]
+        trs.append(max(b["h"] - b["l"], abs(b["h"] - pc), abs(b["l"] - pc)))
+        if i >= n:
+            out[i] = sum(trs[i - n + 1:i + 1]) / n
+    return out
+
+
+def indicators(bars, params=None):
+    p = dict(SWING_PARAMS, **(params or {}))
+    closes = [b["c"] for b in bars]
+    return {"p": p, "ema": ema_series(closes, p["ema_days"]), "trend": sma_series(closes, p["trend_days"]),
+            "rsi": rsi_series(closes, p["rsi_days"]), "rsi_trend": sma_series(closes, p["rsi_trend_days"])}
+
+
+def setup_fires(setup, bars, i, ind):
+    """Does the setup fire at the close of bar i?"""
+    p, b = ind["p"], bars[i]
+    if setup == "breakout20":
+        n = p["breakout_days"]
+        return i >= n and b["c"] > max(x["h"] for x in bars[i - n:i])
+    if setup == "pullback_ema20":
+        e, t = ind["ema"][i], ind["trend"][i]
+        e5 = ind["ema"][i - 5] if i >= 5 else None
+        if None in (e, t, e5):
+            return False
+        return (b["c"] > t and e > e5 and b["l"] <= e * (1 + p["ema_touch_pct"] / 100.0) and b["c"] >= e)
+    if setup == "rsi2":
+        r, t = ind["rsi"][i], ind["rsi_trend"][i]
+        return r is not None and t is not None and r < p["rsi_max"] and b["c"] > t
+    return True   # "any": every day is an entry, the honest baseline
+
+
+def walk_days(days, entry, stop, target, risk, r_target):
+    """days = [(o, h, l, c)] -> (outcome, R, day, gapped). The stop is checked first."""
+    c = entry
+    for d, (o, h, l, c) in enumerate(days, 1):
+        if o <= stop:
+            return "stop", (o - entry) / risk, d, True
+        if l <= stop:
+            return "stop", -1.0, d, False
+        if o >= target:
+            return "target", r_target, d, True
+        if h >= target:
+            return "target", r_target, d, False
+    return "open", (c - entry) / risk, len(days), False
+
+
+def simulate_swing(rets, entry, stop, target, horizon, paths=10000, seed=19, block=SWING_BLOCK):
+    """Circular block bootstrap of the daily pool, `paths` paths of `horizon` days."""
+    rng = random.Random(seed)
+    n = len(rets)
+    risk = entry - stop
+    r_target = (target - entry) / risk
+    count = {"target": 0, "stop": 0, "open": 0}
+    rs, gaps, days_to = [], 0, {"target": [], "stop": []}
+    for _ in range(paths):
+        p, pos, days = entry, 0, []
+        for d in range(horizon):
+            pos = rng.randrange(n) if d % block == 0 else (pos + 1) % n
+            ro, rh, rl, rc = rets[pos]
+            days.append((p * ro, p * rh, p * rl, p * rc))
+            p = p * rc
+        out, r, day, gapped = walk_days(days, entry, stop, target, risk, r_target)
+        count[out] += 1
+        rs.append(r)
+        if out != "open":
+            days_to[out].append(day)
+            if gapped and out == "stop":
+                gaps += 1
+    srt = sorted(rs)
+    return {
+        "paths": paths, "seed": seed, "block_days": block, "horizon_days": horizon, "pool_days": n,
+        "p_target": count["target"] / paths, "p_stop": count["stop"] / paths,
+        "p_unresolved": count["open"] / paths, "expectancy_R": sum(rs) / paths,
+        "r_at_target": round(r_target, 4), "p_gap_stop": gaps / paths,
+        "R_p5": pct(srt, 0.05), "R_median": pct(srt, 0.5), "R_p95": pct(srt, 0.95),
+        "median_days_to_target": statistics.median(days_to["target"]) if days_to["target"] else None,
+        "median_days_to_stop": statistics.median(days_to["stop"]) if days_to["stop"] else None,
+    }
+
+
+def swing_rule(plan):
+    """How the history replay places the stop: the plan's ATR multiple, or its distance in percent."""
+    rule = {"target_r": plan["target_r"], "horizon_days": plan["horizon_days"]}
+    if plan.get("stop_rule") == "atr" and plan.get("stop_param"):
+        rule.update(stop="atr", atr_mult=float(plan["stop_param"]), atr_days=int(plan.get("atr_bars") or 14))
+    elif plan.get("stop_rule") == "pct" and plan.get("stop_param"):
+        rule.update(stop="pct", stop_pct=float(plan["stop_param"]))
+    else:
+        rule.update(stop="pct", stop_pct=round(100.0 * plan["risk_per_share"] / plan["entry"], 4))
+    return rule
+
+
+def history_swing(bars, upto, setup, rule, params=None):
+    """The setup on the real daily bars 0..upto (the signal day), one trade at a time.
+    A trade needs its whole horizon inside the data before the signal day."""
+    ind = indicators(bars, params)
+    atr = atr_series(bars, rule.get("atr_days", 14)) if rule["stop"] == "atr" else None
+    hz = rule["horizon_days"]
+    count = {"target": 0, "stop": 0, "open": 0}
+    rs, trades = [], []
+    i, first = 1, None
+    while i + hz <= upto:
+        if not setup_fires(setup, bars, i, ind):
+            i += 1
+            continue
+        entry = bars[i]["c"]
+        if rule["stop"] == "atr":
+            if atr[i] is None:
+                i += 1
+                continue
+            stop = math.floor((entry - rule["atr_mult"] * atr[i]) * 100 + 1e-9) / 100.0
+        else:
+            stop = math.floor(entry * (1 - rule["stop_pct"] / 100.0) * 100 + 1e-9) / 100.0
+        risk = entry - stop
+        if risk <= 0 or stop <= 0:
+            i += 1
+            continue
+        target = entry + rule["target_r"] * risk
+        days = [(b["o"], b["h"], b["l"], b["c"]) for b in bars[i + 1:i + 1 + hz]]
+        out, r, d, gapped = walk_days(days, entry, stop, target, risk, rule["target_r"])
+        count[out] += 1
+        rs.append(r)
+        first = first or bars[i]["date"]
+        trades.append({"date": bars[i]["date"], "entry": round(entry, 2), "stop": round(stop, 2),
+                       "target": round(target, 2), "outcome": out, "R": round(r, 3), "days": d})
+        i += d + 1
+    n = len(rs)
+    return {"setup": setup, "rule": rule, "days_scanned": max(0, upto), "from": bars[0]["date"] if bars else None,
+            "to": bars[upto]["date"] if bars else None, "triggered": n, "target": count["target"],
+            "stop": count["stop"], "unresolved": count["open"],
+            "hit_rate": (count["target"] / n) if n else None, "avg_R": (sum(rs) / n) if n else None,
+            "few_cases": n < SWING_MIN_CASES, "trades": trades[-40:]}
+
+
+def normalize_swing_plan(raw, src, horizon=None):
+    sym = str(raw.get("symbol") or "").strip().upper()
+    if not re.match(r"^[A-Z][A-Z0-9.\-]{0,9}$", sym):
+        raise TMError("the plan needs a ticker symbol, got %r" % raw.get("symbol"))
+    side = str(raw.get("side") or "buy").lower()
+    if side not in ("buy", "long"):
+        raise TMError("el modo swing simula solo largos (compras), no %r" % raw.get("side"))
+    try:
+        date = datetime.date.fromisoformat(str(raw.get("date") or "")).isoformat()
+    except ValueError:
+        raise TMError("the plan needs a date like 2026-10-30, got %r" % raw.get("date"))
+    entry, stop, target = (_num(raw.get(k), k) for k in ("entry", "stop", "target"))
+    if not stop < entry < target:
+        raise TMError("a buy needs stop < entry < target (got stop %s, entry %s, target %s)" % (stop, entry, target))
+    hz = horizon if horizon is not None else (raw.get("time_stop_days") or raw.get("horizon_days") or 7)
+    try:
+        hz = int(hz)
+    except (TypeError, ValueError):
+        raise TMError("--horizon-days must be a whole number of trading days")
+    if not 1 <= hz <= 60:
+        raise TMError("--horizon-days must be between 1 and 60 trading days")
+    risk = entry - stop
+    setup = str(raw.get("setup") or "manual").lower()
+    sp = raw.get("stop_param")
+    return {"mode": "swing", "symbol": sym, "side": "buy", "date": date, "setup": setup, "entry": entry,
+            "stop": stop, "target": target, "risk_per_share": round(risk, 2),
+            "target_r": round((target - entry) / risk, 2), "horizon_days": hz,
+            "stop_rule": str(raw.get("stop_rule") or "price"), "stop_param": float(sp) if sp else None,
+            "atr_bars": raw.get("atr_bars"), "time_stop_date": raw.get("time_stop_date"), "interval": "1d",
+            "from": src}
+
+
+def swing_verdict(mc):
+    pt, ps, pu = mc["p_target"], mc["p_stop"], mc["p_unresolved"]
+    n = mc["horizon_days"]
+    if pt + ps <= 0:
+        return "Ninguna trayectoria toco el objetivo ni el stop en %d dias: el cierre del dia %d decide todas." % (n, n)
+    d = pt - ps
+    if abs(d) < COIN_FLIP:
+        head = "Cercano a una moneda al aire"
+    elif abs(d) < STRONG:
+        head = "Se inclina hacia el objetivo" if d > 0 else "Se inclina hacia el stop"
+    else:
+        head = "Claramente hacia el objetivo" if d > 0 else "Claramente hacia el stop"
+    return "%s: objetivo primero %.1f %% vs stop primero %.1f %% (sin resolver al dia %d: %.1f %%)." % (
+        head, 100 * pt, 100 * ps, n, 100 * pu)
+
+
+def swing_notes(mc, history):
+    notes = []
+    pt, ps = mc["p_target"], mc["p_stop"]
+    r = mc["r_at_target"]
+    if pt + ps > 0 and abs(r - 1.0) >= 0.005:
+        notes.append("Con un objetivo de %gR alcanza con que el objetivo llegue primero en el %.0f %% de las "
+                     "trayectorias que tocan un lado para no perder; aqui llega en el %.0f %%."
+                     % (round(r, 2), 100.0 / (1 + r), 100.0 * pt / (pt + ps)))
+    ex = mc["expectancy_R"]
+    notes.append("Expectativa: %+.2fR por trade (el promedio de las %s trayectorias)." % (ex, "{:,}".format(mc["paths"])))
+    lean_d = pt - ps
+    if abs(lean_d) >= COIN_FLIP and round(ex, 2) != 0 and (ex > 0) != (lean_d > 0):
+        notes.append("Ojo: la expectativa va en contra de la inclinacion; las trayectorias sin resolver y el "
+                     "tamano del objetivo (%gR) la empujan hacia el otro lado." % round(r, 2))
+    if mc["p_unresolved"] > MANY_NEITHER:
+        notes.append("%.1f %% de las trayectorias siguen abiertas al dia %d: el stop de tiempo (el cierre de ese "
+                     "dia) decide esas." % (100 * mc["p_unresolved"], mc["horizon_days"]))
+    if mc["p_gap_stop"] > 0:
+        notes.append("En el %.1f %% de las trayectorias el precio abrio por debajo del stop (gap): la salida es "
+                     "peor que -1R." % (100 * mc["p_gap_stop"]))
+    if history.get("few_cases"):
+        notes.append("Advertencia: el historial real tiene solo %d caso(s) de este setup (menos de %d): muy pocos "
+                     "para sacar conclusiones." % (history["triggered"], SWING_MIN_CASES))
+    return notes
+
+
+def swing_time_machine(text, plan, now_utc, paths=10000, seed=19, window=SWING_WINDOW, block=SWING_BLOCK,
+                       source="yahoo"):
+    if not 1 <= paths <= 1000000:
+        raise TMError("--replays must be between 1 and 1,000,000")
+    if not SWING_MIN_WINDOW <= window <= 5000:
+        raise TMError("--window-days must be between %d and 5,000 daily bars" % SWING_MIN_WINDOW)
+    if not 1 <= block <= 60:
+        raise TMError("--block-days must be between 1 and 60")
+    sym = plan["symbol"]
+    result = chart_result(text, sym)
+    meta, bars = parse_daily(result, now_utc)
+    msym = str(meta.get("symbol") or "").upper()
+    if msym and msym != sym.replace(".", "-"):
+        raise TMError("the data is for %s but the plan is for %s" % (msym, sym))
+    gran = meta.get("dataGranularity")
+    if gran and gran != "1d":
+        raise TMError("the data has %s bars; the multi-day time machine needs daily bars (1d)" % gran)
+    upto = None
+    for j, b in enumerate(bars):
+        if b["date"] <= plan["date"]:
+            upto = j
+    if upto is None or upto < 1:
+        raise TMError("no closed daily bars of %s on or before %s in the data" % (sym, plan["date"]))
+    warn = []
+    sig = bars[upto]
+    if sig["date"] != plan["date"]:
+        warn.append("no hay vela diaria del %s; la ultima antes es del %s" % (plan["date"], sig["date"]))
+    if abs(plan["entry"] / sig["c"] - 1) > 0.03:
+        warn.append("la entrada %.2f esta a %.1f %% del cierre del %s (%.2f)"
+                    % (plan["entry"], 100 * (plan["entry"] / sig["c"] - 1), sig["date"], sig["c"]))
+    lo = max(1, upto - window + 1)
+    rets = [(bars[j]["o"] / bars[j - 1]["c"], bars[j]["h"] / bars[j - 1]["c"], bars[j]["l"] / bars[j - 1]["c"],
+             bars[j]["c"] / bars[j - 1]["c"]) for j in range(lo, upto + 1)]
+    if len(rets) < SWING_MIN_WINDOW:
+        raise TMError("solo %d dias de %s hasta el %s; la simulacion multi-dia necesita al menos %d"
+                      % (len(rets), sym, sig["date"], SWING_MIN_WINDOW))
+    if len(rets) < window:
+        warn.append("la ventana tiene %d dias, menos que los %d pedidos" % (len(rets), window))
+    mc = simulate_swing(rets, plan["entry"], plan["stop"], plan["target"], plan["horizon_days"], paths, seed, block)
+    mc.update(window_days=len(rets), window_from=bars[lo]["date"], window_to=sig["date"])
+    setup = plan["setup"] if plan["setup"] in SWING_SETUPS else "any"
+    history = history_swing(bars, upto, setup, swing_rule(plan))
+    if setup == "any":
+        history["note"] = ("el setup %r no tiene un detector, asi que el historial usa cada dia como entrada "
+                           "(la linea base)" % plan["setup"])
+    return {
+        "created_by": "trader-timemachine", "mode": "swing",
+        "created_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), "source": source,
+        "data": {"symbol": msym or sym, "interval": "1d", "range": SWING_RANGE, "first_bar": bars[0]["date"],
+                 "last_bar": bars[-1]["date"]},
+        "plan": {k: v for k, v in plan.items() if v is not None},
+        "mc": mc, "history": history, "verdict": swing_verdict(mc), "verdict_notes": swing_notes(mc, history),
+        "warnings": warn,
+        "note": ("Es una simulacion construida con los ultimos %d dias de %s, no una prediccion: resultados "
+                 "trimestrales, noticias y gaps pueden hacer lo que ese ano nunca hizo. Misma semilla, mismos numeros."
+                 % (len(rets), sym)),
+    }
+
+
+def setup_name(setup):
+    return "cualquier dia (linea base)" if setup == "any" else setup
+
+
+def report_swing(doc):
+    p, m, h = doc["plan"], doc["mc"], doc["history"]
+    n = m["horizon_days"]
+    lines = [
+        "%s largo (swing), senal del %s: entrada %.2f, stop %.2f, objetivo %.2f (%gR, riesgo %.2f por accion)."
+        % (p["symbol"], p["date"], p["entry"], p["stop"], p["target"], p["target_r"], p["risk_per_share"]),
+        "%s trayectorias de %d dias habiles: bootstrap de bloques de %d dias sobre los ultimos %d dias de %s "
+        "(%s a %s), semilla %d."
+        % ("{:,}".format(m["paths"]), n, m["block_days"], m["window_days"], p["symbol"], m["window_from"],
+           m["window_to"], m["seed"]),
+        "",
+        "  objetivo primero      %s" % pc(m["p_target"]),
+        "  stop primero          %s" % pc(m["p_stop"]),
+        "  sin resolver dia %-3d  %-8s se cierra al cierre del dia %d (stop de tiempo)" % (n, pc(m["p_unresolved"]), n),
+        "  expectativa           %+.2fR" % m["expectancy_R"],
+        "",
+        "  R por trayectoria: mediana %+.2f, 90 %% entre %+.2f y %+.2f." % (m["R_median"], m["R_p5"], m["R_p95"]),
+    ]
+    dd = []
+    if m.get("median_days_to_target") is not None:
+        dd.append("al objetivo %g" % m["median_days_to_target"])
+    if m.get("median_days_to_stop") is not None:
+        dd.append("al stop %g" % m["median_days_to_stop"])
+    if dd:
+        lines.append("  Dias hasta resolver (mediana): %s." % ", ".join(dd))
+    lines.append("")
+    ru = h["rule"]
+    stop_words = ("%g x ATR(%d)" % (ru["atr_mult"], ru["atr_days"]) if ru["stop"] == "atr"
+                  else "%.2f %% bajo la entrada" % ru["stop_pct"])
+    if h.get("note"):
+        lines.append("Historial: " + h["note"] + ".")
+    if h["triggered"]:
+        lines.append("Historial real: el setup %s (stop %s, objetivo %gR, %d dias) en las velas diarias de %s a %s "
+                     "se disparo %d veces: %d objetivo, %d stop, %d sin resolver. Acierto %.0f %%, expectativa %+.2fR."
+                     % (setup_name(h["setup"]), stop_words, ru["target_r"], ru["horizon_days"], h["from"], h["to"],
+                        h["triggered"], h["target"], h["stop"], h["unresolved"], 100 * h["hit_rate"], h["avg_R"]))
+    else:
+        lines.append("Historial real: el setup %s no se disparo nunca de %s a %s."
+                     % (setup_name(h["setup"]), h["from"], h["to"]))
+    lines += ["", doc["verdict"]] + list(doc.get("verdict_notes") or []) + [""]
+    for w in doc.get("warnings") or []:
+        lines.append("Nota: " + w + ".")
+    lines.append(doc["note"] + " Repite con --seed %d." % m["seed"])
+    return lines
+
+
+def read_raw_plan(a):
+    """(raw plan dict, source) from --plan or the flags, without the intraday checks."""
+    if a.symbol:
+        return ({"symbol": a.symbol, "side": a.side, "date": a.date, "entry": a.entry, "stop": a.stop,
+                 "target": a.target, "setup": a.setup, "stop_rule": None if a.stop_rule == "auto" else a.stop_rule},
+                "flags")
+    if not os.path.exists(a.plan):
+        raise TMError("no plan at %s: run /trader-exit first, or pass --symbol --date --entry --stop --target" % a.plan)
+    try:
+        with open(a.plan, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except ValueError as e:
+        raise TMError("%s is not valid JSON: %s" % (a.plan, e))
+    if not isinstance(raw, dict):
+        raise TMError("%s is not a plan" % a.plan)
+    return raw, a.plan
+
+
+def swing_settings(a):
+    """--window-days / --block-days, else the config's swing block, else 252 / 5."""
+    sw = {}
+    path = getattr(a, "config", None)
+    if path and os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                doc = json.load(fh)
+            sw = doc.get("swing") if isinstance(doc, dict) and isinstance(doc.get("swing"), dict) else {}
+        except ValueError:
+            raise TMError("%s is not valid JSON" % path)
+    window = a.window_days if a.window_days is not None else sw.get("timemachine_window_days", SWING_WINDOW)
+    block = a.block_days if a.block_days is not None else sw.get("timemachine_block_days", SWING_BLOCK)
+    try:
+        return int(window), int(block)
+    except (TypeError, ValueError):
+        raise TMError("timemachine_window_days and timemachine_block_days must be whole numbers")
+
+
+def wants_swing(a):
+    if a.horizon_days is not None:
+        return True
+    if a.symbol or not os.path.exists(a.plan):
+        return False
+    try:
+        with open(a.plan, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except ValueError:
+        return False
+    return isinstance(raw, dict) and (raw.get("mode") == "swing" or raw.get("interval") == "1d")
+
+
+def compute_swing(a):
+    now = parse_now(a.now)
+    raw, src = read_raw_plan(a)
+    if not raw.get("date"):
+        raw = dict(raw, date=to_eastern(now).date().isoformat())
+    plan = normalize_swing_plan(raw, src, a.horizon_days)
+    window, block = swing_settings(a)
+    if a.offline:
+        text, source = read_offline_daily(a.offline, plan["symbol"]), "offline"
+    else:
+        text, source = fetch_daily(plan["symbol"]), "yahoo"
+    return swing_time_machine(text, plan, now, a.replays, a.seed, window, block, source)
+
+
 # ---------------------------------------------------------------- output
 
 def pc(x):
@@ -868,6 +1394,8 @@ def _write(path, doc):
 
 
 def compute(a):
+    if wants_swing(a):
+        return compute_swing(a)
     now = parse_now(a.now)
     plan = load_plan(a, now)
     if a.offline:
@@ -885,7 +1413,7 @@ def cmd_run(a):
         slim = dict(doc, mc={k: v for k, v in doc["mc"].items() if k != "sample_paths"})
         print(json.dumps(slim, indent=2))
     else:
-        print("\n".join(report(doc)))
+        print("\n".join(report_swing(doc) if doc.get("mode") == "swing" else report(doc)))
         if a.write:
             print("Wrote %s." % a.write)
         print("Next: /trader-budget sizes it to your budget and your max loss per trade.")
@@ -904,6 +1432,8 @@ def cmd_chart(a):
             raise TMError("%s is not a time machine result" % a.from_file)
     else:
         doc = compute(a)
+    if doc.get("mode") == "swing":
+        raise TMError("el fan chart es solo intradia: para un plan swing usa timemachine.py run")
     print("\n".join(render_chart(doc)))
     print("\n".join([doc.get("verdict", "")] + list(doc.get("verdict_notes") or [])))
     return 0
@@ -922,7 +1452,7 @@ def main(argv=None):
         p.add_argument("--stop", type=float)
         p.add_argument("--target", type=float)
         p.add_argument("--entry-time", help='the entry bar\'s close, e.g. "10:15 AM"')
-        p.add_argument("--setup", default="orb")
+        p.add_argument("--setup", help="orb (intraday default); breakout20, pullback_ema20, rsi2 or manual (swing)")
         p.add_argument("--or-minutes", type=int, default=15)
         p.add_argument("--stop-rule", default="auto", choices=["auto", "or_mid", "or_low", "or_high", "pct"])
         p.add_argument("--replays", type=int, default=10000)
@@ -931,6 +1461,12 @@ def main(argv=None):
         p.add_argument("--until", help="end each replay at this time (default 16:00, the close)")
         p.add_argument("--offline", metavar="FILE", help="a saved Yahoo chart JSON (.json or .json.gz), no network")
         p.add_argument("--now", help='pretend it is this time ("2026-10-19 10:15" New York, or ISO with Z)')
+        p.add_argument("--horizon-days", type=int,
+                       help="swing: replay the next N trading days on daily bars (default for a swing plan: its "
+                            "time_stop_days)")
+        p.add_argument("--window-days", type=int, help="swing: daily bars in the bootstrap pool (default 252)")
+        p.add_argument("--block-days", type=int, help="swing: consecutive days per bootstrap block (default 5)")
+        p.add_argument("--config", default="trader/config.json", help="swing: timemachine_window_days / _block_days")
 
     p = sub.add_parser("run", help="replay the plan: 10,000 simulated sessions plus the history")
     common(p)

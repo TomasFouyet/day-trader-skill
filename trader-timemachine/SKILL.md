@@ -96,6 +96,46 @@ not in the data (wrong date, not closed yet, a future day), or when the plan
 does not make sense (a stop above a buy's entry, an entry off the 5-minute
 grid). A live in-progress bar is never used.
 
+## Swing mode: the next N days (`--horizon-days`)
+
+A plan.json with `"mode": "swing"` (trader-exit `--mode swing`), or
+`--horizon-days N` on any plan, replays the next N trading days on DAILY bars
+instead of the rest of one session:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/timemachine.py" run                       # a swing plan.json: its time_stop_days
+python3 "${CLAUDE_SKILL_DIR}/timemachine.py" run --horizon-days 7 --window-days 252 --block-days 5 --seed 19
+python3 "${CLAUDE_SKILL_DIR}/timemachine.py" run --symbol AAPL --date 2026-10-30 --entry 344.63 \
+    --stop 330 --target 373.89 --setup rsi2 --horizon-days 5
+```
+
+- **Data.** 5 years of daily bars, one request (`range=5y&interval=1d`), or
+  `--offline FILE` / a folder with `<SYM>-5y1d.json(.gz)`. Today's bar counts
+  only after the close.
+- **Pool.** The last `--window-days` (252, about a year) daily bars up to the
+  signal day, each as open, high, low and close over the previous close, so
+  the overnight gap is in it.
+- **Paths.** 10,000 paths of N days by circular block bootstrap: blocks of
+  `--block-days` (5) consecutive days, so a calm week stays calm and a wild
+  week stays wild. Seed 19 by default: same plan, same data, same numbers.
+  `timemachine_window_days` and `timemachine_block_days` in the config's
+  `"swing"` block set the defaults.
+- **Each day.** Open at or under the stop: out at the open, worse than -1R
+  (a gap). Low at or under the stop: -1R. Open or high at or over the target:
+  the target's R. A day touching both counts as the stop. Still open after
+  day N: closed at day N's close (the time stop).
+- **Reports** P(target first), P(stop first), P(unresolved at day N), the
+  expectancy in R, the share of gap stops and the median days to resolve.
+- **History.** The same setup (`breakout20`, `pullback_ema20`, `rsi2`; any
+  other setup uses every day as the baseline) on the stock's real daily bars
+  before the signal day, one trade at a time, same stop rule (ATR multiple or
+  percent), target R and horizon. Fewer than 30 cases prints a warning.
+- **Verdict.** If |P(target) - P(stop)| is under 5 points: "Cercano a una
+  moneda al aire". Then the break-even share at the target's R, the
+  expectancy, and a note when the expectancy goes against the lean. The
+  output is in Spanish. It is a simulation, not a prediction: earnings and
+  news can do what the last year never did. `chart` stays intraday only.
+
 ## Steps
 
 1. Make sure `trader/plan.json` is today's plan from `/trader-exit`. If there
