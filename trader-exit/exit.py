@@ -499,6 +499,10 @@ def read_config(path):
         for k in DEFAULTS:
             if doc.get(k) is not None:
                 cfg[k] = doc[k]
+        if doc.get("mode") is not None:
+            cfg["mode"] = doc["mode"]
+        if doc.get("swing") is not None:
+            cfg["swing"] = doc["swing"]
     return cfg
 
 
@@ -649,8 +653,373 @@ def describe(plan):
     return out
 
 
+# ---------------------------------------------------------------- swing mode (multi-day, daily bars)
+#
+# "mode": "swing" in trader/config.json (or --mode swing) plans a long held for
+# days, not minutes: the stop comes from the DAILY ATR (atr:2 by default), the
+# target is 2R, there is no flat-by (the trade holds overnight) and a time stop
+# closes it at the close of trading day N after the signal, win or lose. The
+# intraday path above is untouched: without "mode": "swing" nothing changes.
+
+SWING_DEFAULTS = {
+    "horizon_days": 7,              # trading days you plan to hold
+    "stop": "atr:2",                # 2 x the 14-day ATR under the entry
+    "target": "2R",
+    "time_stop_days": None,         # None = the horizon: close at the close of day N
+    "max_risk_per_trade_pct": 1.0,  # of the account, for trader-budget / trader-risk
+    "max_positions": 5,             # open swing positions at once
+    "max_exposure_pct": 60.0,       # all open swing positions together, % of the account
+    "atr_days": 14,
+}
+SWING_SETUPS = ("breakout20", "pullback_ema20", "rsi2", "manual")
+SWING_RANGE = "1y"
+SWING_NOTE = ("Un stop es un plan, no una garantia: en swing la accion duerme fuera del mercado y un gap "
+              "de apertura puede ejecutarse por debajo del stop.")
+WORDS_ES = {1: "una vez", 2: "dos veces", 3: "tres veces", 4: "cuatro veces", 5: "cinco veces"}
+DIAS = ("lun", "mar", "mie", "jue", "vie", "sab", "dom")
+
+
+def resolve_mode(a, cfg):
+    m = str(getattr(a, "mode", None) or cfg.get("mode") or "intraday").strip().lower()
+    if m not in ("intraday", "swing"):
+        raise PlanError('"mode" in the config is "intraday" or "swing", not %r' % m)
+    return m
+
+
+def _int_in(v, lo, hi, what):
+    try:
+        n = int(v)
+        if n != float(v):
+            raise ValueError
+    except (TypeError, ValueError):
+        raise PlanError("%s tiene que ser un numero entero, no %r" % (what, v))
+    if not lo <= n <= hi:
+        raise PlanError("%s tiene que estar entre %d y %d (es %d)" % (what, lo, hi, n))
+    return n
+
+
+def _num_in(v, lo, hi, what):
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        raise PlanError("%s tiene que ser un numero, no %r" % (what, v))
+    if not lo < x <= hi:
+        raise PlanError("%s tiene que ser mayor que %g y como mucho %g (es %g)" % (what, lo, hi, x))
+    return x
+
+
+def swing_config(cfg):
+    """The "swing" block of the config, with the defaults filled in and checked."""
+    raw = cfg.get("swing") or {}
+    if not isinstance(raw, dict):
+        raise PlanError('"swing" en la config tiene que ser un objeto {...}')
+    sw = dict(SWING_DEFAULTS)
+    sw.update({k: v for k, v in raw.items() if v is not None})
+    sw["horizon_days"] = _int_in(sw["horizon_days"], 1, 60, "swing.horizon_days")
+    if sw["time_stop_days"] is not None:
+        sw["time_stop_days"] = _int_in(sw["time_stop_days"], 1, 60, "swing.time_stop_days")
+    sw["atr_days"] = _int_in(sw["atr_days"], 2, 100, "swing.atr_days")
+    sw["max_positions"] = _int_in(sw["max_positions"], 1, 100, "swing.max_positions")
+    sw["max_risk_per_trade_pct"] = _num_in(sw["max_risk_per_trade_pct"], 0, 10, "swing.max_risk_per_trade_pct")
+    sw["max_exposure_pct"] = _num_in(sw["max_exposure_pct"], 0, 100, "swing.max_exposure_pct")
+    rule, _ = parse_stop(sw["stop"])
+    if rule not in ("atr", "pct", "price"):
+        raise PlanError("swing.stop es atr:K, pct:X o price:X (no hay rango de apertura en swing), no %r" % sw["stop"])
+    parse_target(sw["target"])
+    return sw
+
+
+def add_trading_days(day, n):
+    """The NYSE session n trading days after day (weekends and the holiday table skipped)."""
+    d, k = day, 0
+    while k < n:
+        d += datetime.timedelta(days=1)
+        if session(d):
+            k += 1
+    return d
+
+
+def last_closed_session(now_utc):
+    """The latest New York session that has already closed at now_utc."""
+    local = to_eastern(now_utc)
+    d = local.date()
+    s = session(d)
+    if s and local.time() >= s[1]:
+        return d
+    d -= datetime.timedelta(days=1)
+    while not session(d):
+        d -= datetime.timedelta(days=1)
+    return d
+
+
+def load_daily(sym, offline, now_utc):
+    """Daily bars [{date, o, h, l, c}] oldest first. Today's bar is dropped until the session closes."""
+    ysym = sym.upper().replace(".", "-")
+    if offline:
+        path = offline
+        if os.path.isdir(offline):
+            for name in ("%s-1y1d.json" % ysym, "%s-5y1d.json" % ysym, "%s-1d.json" % ysym, "%s.json" % ysym):
+                for cand in (name, name + ".gz"):
+                    if os.path.exists(os.path.join(offline, cand)):
+                        path = os.path.join(offline, cand)
+                        break
+                if path != offline:
+                    break
+        if not os.path.isfile(path):
+            raise PlanError("no hay archivo offline de velas diarias de %s en %s" % (ysym, offline))
+        try:
+            text = read_text(path)
+        except (OSError, ValueError) as e:
+            raise PlanError("no se pudo leer %s: %s" % (path, e))
+    else:
+        text = yahoo_get("/v8/finance/chart/%s?range=%s&interval=1d" % (ysym, SWING_RANGE))
+    try:
+        data = json.loads(text)
+        res = data["chart"]["result"]
+    except (ValueError, KeyError, TypeError):
+        raise PlanError("Yahoo returned something unexpected for %s" % sym)
+    if not res:
+        err = (data.get("chart") or {}).get("error") or {}
+        raise PlanError("Yahoo has no data for %s: %s" % (sym, err.get("description") or "unknown ticker"))
+    r = res[0] or {}
+    meta = r.get("meta") or {}
+    if str(meta.get("symbol") or ysym).upper() != ysym:
+        raise PlanError("the chart file holds %s, not %s" % (meta.get("symbol"), sym))
+    gran = meta.get("dataGranularity")
+    if gran and gran != "1d":
+        raise PlanError("el modo swing necesita velas diarias (1d); el archivo tiene %s" % gran)
+    q = ((r.get("indicators") or {}).get("quote") or [{}])[0] or {}
+
+    def at(key, i):
+        arr = q.get(key) or []
+        return arr[i] if i < len(arr) else None
+
+    local = to_eastern(now_utc)
+    today = local.date()
+    s_today = session(today)
+    by_date = {}
+    for i, t in enumerate(r.get("timestamp") or []):
+        c = at("close", i)
+        if t is None or c is None:
+            continue
+        d = to_eastern(utc_of(t)).date()
+        if d > today or (d == today and s_today and local.time() < s_today[1]):
+            continue   # the session is still open: that bar is not a daily close yet
+        h, lo, o = at("high", i), at("low", i), at("open", i)
+        by_date[d] = {"date": d, "o": float(c if o is None else o), "h": float(c if h is None else h),
+                      "l": float(c if lo is None else lo), "c": float(c)}
+    return [by_date[d] for d in sorted(by_date)]
+
+
+def daily_atr(bars, n):
+    """Average true range of the last n daily bars, the overnight gap included."""
+    trs = []
+    for prev, b in zip(bars, bars[1:]):
+        trs.append(max(b["h"] - b["l"], abs(b["h"] - prev["c"]), abs(b["l"] - prev["c"])))
+    use = trs[-n:]
+    if not use:
+        return None, 0
+    return sum(use) / len(use), len(use)
+
+
+def r_label_es(r):
+    n = int(r) if r == r.to_integral_value() else None
+    return "%sR (%s el riesgo)" % (num(r), WORDS_ES.get(n, num(r) + " veces"))
+
+
+def gather_swing(a):
+    if a.symbol and a.from_path:
+        raise PlanError("use --from or --symbol, not both")
+    if a.side in ("sell", "short"):
+        raise PlanError("el modo swing planifica solo largos (compras): no hay stops sobre una venta en corto")
+    if a.or_high is not None or a.or_low is not None:
+        raise PlanError("--or-high/--or-low son del intradia: en swing no hay rango de apertura")
+    if a.symbol:
+        return {"symbol": a.symbol.upper(), "entry": a.entry, "date": a.date, "setup": a.setup, "source": "flags"}
+    if not a.from_path:
+        raise PlanError("en modo swing da --symbol TICKER (y --entry PRECIO, o se usa el ultimo cierre diario), "
+                        "o --from un JSON con symbol")
+    doc = read_json(a.from_path, "candidate")
+    if str(doc.get("side") or "buy").lower() not in ("buy", "long"):
+        raise PlanError("%s es un %s: el modo swing planifica solo largos" % (a.from_path, doc.get("side")))
+    sym = str(doc.get("symbol") or "").upper()
+    if not sym:
+        raise PlanError("%s no tiene symbol" % a.from_path)
+    entry = a.entry if a.entry is not None else (doc.get("entry") if doc.get("entry") is not None else doc.get("price"))
+    return {"symbol": sym, "entry": entry, "date": a.date or doc.get("date"), "setup": a.setup or doc.get("setup"),
+            "source": a.from_path}
+
+
+def build_swing_plan(a, now_utc):
+    cfg = read_config(a.config)
+    sw = swing_config(cfg)
+    if a.flat_by:
+        raise PlanError("--flat-by es del intradia: un plan swing se mantiene overnight y termina con el stop de "
+                        "tiempo (--time-stop-days)")
+    info = gather_swing(a)
+    setup = (info["setup"] or "manual").lower()
+    if setup in ("orb", "level"):
+        raise PlanError("el setup %s es intradia; en swing usa %s" % (setup, ", ".join(SWING_SETUPS)))
+    if setup not in SWING_SETUPS:
+        raise PlanError("setup swing desconocido %r: usa %s" % (setup, ", ".join(SWING_SETUPS)))
+    horizon = _int_in(a.horizon_days if a.horizon_days is not None else sw["horizon_days"], 1, 60, "--horizon-days")
+    if a.time_stop_days is not None:
+        tstop = _int_in(a.time_stop_days, 1, 60, "--time-stop-days")
+    else:
+        tstop = sw["time_stop_days"] if sw["time_stop_days"] is not None else horizon
+    stop_text = a.stop or sw["stop"]
+    stop_rule, stop_param = parse_stop(stop_text)
+    if stop_rule not in ("atr", "pct", "price"):
+        raise PlanError("en swing el stop es atr:K, pct:X o price:X (no hay rango de apertura), no %r" % stop_text)
+    target_rule, target_param = parse_target(a.target or sw["target"])
+    day = None
+    if info["date"]:
+        try:
+            day = datetime.date.fromisoformat(str(info["date"]))
+        except ValueError:
+            raise PlanError("date wants YYYY-MM-DD, not %r" % info["date"])
+    warnings = []
+    atr = atr_n = None
+    basis = "tu precio"
+    entry = info["entry"]
+    if stop_rule == "atr" or entry is None:
+        bars = load_daily(info["symbol"], a.offline, now_utc)
+        if day:
+            bars = [b for b in bars if b["date"] <= day]
+        if not bars:
+            raise PlanError("no hay velas diarias cerradas de %s%s" % (info["symbol"], " hasta el %s" % day if day else ""))
+        if day and bars[-1]["date"] != day:
+            warnings.append("No hay vela diaria de %s el %s: se usa la ultima, del %s."
+                            % (info["symbol"], day, bars[-1]["date"]))
+        day = bars[-1]["date"]
+        if entry is None:
+            entry = bars[-1]["c"]
+            basis = "cierre del %s" % day.isoformat()
+        if stop_rule == "atr":
+            if len(bars) < 4:
+                raise PlanError("un stop atr necesita al menos 4 velas diarias de %s; hay %d" % (info["symbol"], len(bars)))
+            atr, atr_n = daily_atr(bars, sw["atr_days"])
+    elif day is None:
+        day = last_closed_session(now_utc) if not session(to_eastern(now_utc).date()) else to_eastern(now_utc).date()
+    c = compute(entry, stop_rule, stop_param, target_rule, target_param, atr=atr, atr_bars=atr_n)
+    e = c["entry"]
+    if stop_rule == "atr":
+        a4 = D(round(atr, 6)).quantize(Decimal("0.0001"))
+        raw = e - stop_param * D(round(atr, 6))
+        label = "%s x ATR(%d) diario bajo la entrada" % (num(stop_param), atr_n)
+        detail = "%s - %s x $%s = $%s" % (money(e), num(stop_param), num(a4), num(raw.quantize(Decimal("0.0001"))))
+        if atr_n < sw["atr_days"]:
+            detail += " (solo %d dias de ATR)" % atr_n
+    elif stop_rule == "pct":
+        raw = e * (1 - stop_param / 100)
+        label = "%s%% bajo la entrada" % num(stop_param)
+        detail = "%s x (1 - %s%%) = $%s" % (money(e), num(stop_param), num(raw))
+    else:
+        raw, label, detail = stop_param, "tu precio", ""
+    if c["stop"] != D(raw):
+        detail = (detail + ", redondeado hacia abajo" if detail else "$%s redondeado hacia abajo" % num(raw))
+    t_label = r_label_es(target_param) if target_rule == "r" else "tu precio (%sR)" % ratio(c["reward_risk"])
+    tdate = add_trading_days(day, tstop)
+    plan = {"created_by": "trader-exit", "mode": "swing", "symbol": info["symbol"], "side": "buy",
+            "date": day.isoformat(), "setup": setup, "entry": float(e), "entry_basis": basis, "interval": "1d",
+            "stop": float(c["stop"]), "stop_rule": stop_rule,
+            "stop_param": float(stop_param) if stop_rule in ("atr", "pct") else None,
+            "stop_label": label, "stop_detail": detail,
+            "target": float(c["target"]), "target_r": float(c["target_r"]), "target_label": t_label,
+            "risk_per_share": float(c["risk"]), "reward_risk": float(c["reward_risk"]),
+            "horizon_days": horizon, "time_stop_days": tstop, "time_stop_date": tdate.isoformat(),
+            "time_stop_rule": "cerrar al cierre del dia habil %d despues de la senal, pase lo que pase" % tstop,
+            "flat_by": None,
+            "limits": {"max_risk_per_trade_pct": sw["max_risk_per_trade_pct"], "max_positions": sw["max_positions"],
+                       "max_exposure_pct": sw["max_exposure_pct"]},
+            "created_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), "note": SWING_NOTE}
+    if atr is not None:
+        plan["atr"] = round(atr, 4)
+        plan["atr_bars"] = atr_n
+    if tstop > horizon:
+        warnings.append("El stop de tiempo (dia %d) queda despues del horizonte (%d dias)." % (tstop, horizon))
+    if tdate.year > int(max(NYSE_HOLIDAYS)[:4]):
+        warnings.append("El calendario de feriados NYSE llega a %s: la fecha del stop de tiempo solo salta fines "
+                        "de semana despues de eso." % max(NYSE_HOLIDAYS)[:4])
+    mrr = cfg.get("min_reward_risk")
+    try:
+        if mrr is not None and c["reward_risk"] < D(mrr):
+            warnings.append("Recompensa:riesgo %s esta bajo tu min_reward_risk %s de la config: trader-risk lo revisa."
+                            % (ratio(c["reward_risk"]), num(D(mrr))))
+    except PlanError:
+        pass
+    latest = last_closed_session(now_utc)
+    if day < latest:
+        warnings.append("Este plan es de la senal del %s; la ultima sesion cerrada es el %s." % (day, latest))
+    return plan, warnings
+
+
+def describe_swing(plan):
+    day = datetime.date.fromisoformat(plan["date"])
+    tday = datetime.date.fromisoformat(plan["time_stop_date"])
+    e = D(plan["entry"])
+    pct = (D(plan["risk_per_share"]) / e * 100).quantize(CENT, rounding=ROUND_HALF_UP)
+    out = ["Plan de salida swing: %s largo, senal del %s %s (setup %s), velas diarias" % (
+        plan["symbol"], DIAS[day.weekday()], day.isoformat(), plan.get("setup") or "manual")]
+    basis = plan.get("entry_basis")
+    out.append("  Entrada          %s%s" % (money(plan["entry"]), ("  " + basis) if basis else ""))
+    out.append("  Stop             %s  %s%s" % (money(plan["stop"]), plan.get("stop_label") or "",
+                                                (": " + plan["stop_detail"]) if plan.get("stop_detail") else ""))
+    out.append("  Objetivo         %s  %s" % (money(plan["target"]), plan.get("target_label") or ""))
+    out.append("  Riesgo/accion    %s (%s%% de la entrada)" % (money(plan["risk_per_share"]), pct))
+    out.append("  Recompensa:riesgo %s" % ratio(plan["reward_risk"]))
+    out.append("  Horizonte        %d dias habiles" % plan["horizon_days"])
+    out.append("  Stop de tiempo   al cierre del %s %s (dia habil %d), gane o pierda" % (
+        DIAS[tday.weekday()], tday.isoformat(), plan["time_stop_days"]))
+    out.append("  Sin flat-by: la posicion se mantiene overnight.")
+    out.append("Fijado antes de la entrada. Si el precio toca el stop, sales; nunca lo alejes.")
+    out.append(plan.get("note") or SWING_NOTE)
+    return out
+
+
+def cmd_plan_swing(a, now):
+    plan, warnings = build_swing_plan(a, now)
+    if a.write:
+        d = os.path.dirname(a.write)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(a.write, "w", encoding="utf-8") as fh:
+            json.dump(plan, fh, indent=2)
+            fh.write("\n")
+    if a.json:
+        print(json.dumps(dict(plan, warnings=warnings), indent=2))
+        return 0
+    for line in describe_swing(plan):
+        print(line)
+    for w in warnings:
+        print("Nota: " + w)
+    if a.write:
+        print("Guardado en %s." % a.write)
+    print("Siguiente: /trader-timemachine --horizon-days %d simula los proximos dias, luego /trader-budget lo "
+          "dimensiona. No se coloco nada." % plan["time_stop_days"])
+    return 0
+
+
+def show_swing(plan, a):
+    for k in ("symbol", "date", "entry", "stop", "target", "risk_per_share", "reward_risk", "horizon_days",
+              "time_stop_days", "time_stop_date"):
+        if plan.get(k) is None:
+            raise PlanError("%s no tiene %r: crea un plan nuevo con exit.py plan --mode swing --write" % (a.plan, k))
+    if a.json:
+        print(json.dumps(plan, indent=2))
+        return 0
+    for line in describe_swing(plan):
+        print(line)
+    today = to_eastern(parse_now(a.now)).date().isoformat()
+    if today > plan["time_stop_date"]:
+        print("Nota: el stop de tiempo (%s) ya paso: si sigues dentro, cierra." % plan["time_stop_date"])
+    return 0
+
+
 def cmd_plan(a):
     now = parse_now(a.now)
+    if resolve_mode(a, read_config(a.config)) == "swing":
+        return cmd_plan_swing(a, now)
     plan, warnings = build_plan(a, now)
     if a.write:
         d = os.path.dirname(a.write)
@@ -677,6 +1046,8 @@ def cmd_show(a):
         print("No plan at %s yet. Make one: exit.py plan --write" % a.plan)
         return 1
     plan = read_json(a.plan, "plan")
+    if plan.get("mode") == "swing":
+        return show_swing(plan, a)
     for k in ("symbol", "date", "entry", "stop", "target", "risk_per_share", "reward_risk", "flat_by"):
         if plan.get(k) is None:
             raise PlanError("%s is missing %r: make a new plan with exit.py plan --write" % (a.plan, k))
@@ -701,7 +1072,8 @@ def main(argv=None):
     p.add_argument("--or-high", type=float)
     p.add_argument("--or-low", type=float)
     p.add_argument("--or-minutes", type=int, default=15)
-    p.add_argument("--setup", choices=["orb", "level"])
+    p.add_argument("--setup", choices=["orb", "level", "breakout20", "pullback_ema20", "rsi2", "manual"],
+                   help="orb, level (intraday); breakout20, pullback_ema20, rsi2, manual (swing)")
     p.add_argument("--date", help="session date YYYY-MM-DD (default: the entry's, or today)")
     p.add_argument("--time", help="entry time, e.g. 10:15 AM")
     p.add_argument("--entry-bar", type=int)
@@ -709,9 +1081,14 @@ def main(argv=None):
     p.add_argument("--side", default="buy", choices=["buy", "long", "sell", "short"], help="v2: buy only")
     p.add_argument("--stop", help="or-mid (orb default), or-low, price:X, pct:X, atr:K")
     p.add_argument("--target", help="2R (default), 1R, 1.5R, price:X")
-    p.add_argument("--flat-by", help="HH:MM New York (default: config flat_by, 15:55)")
+    p.add_argument("--flat-by", help="HH:MM New York (default: config flat_by, 15:55). Intraday only")
+    p.add_argument("--mode", choices=["intraday", "swing"],
+                   help="intraday (default) or swing: daily ATR stop, time stop, no flat-by. Default: config \"mode\"")
+    p.add_argument("--horizon-days", type=int, help="swing: trading days you plan to hold (config swing.horizon_days, 7)")
+    p.add_argument("--time-stop-days", type=int,
+                   help="swing: close at the close of trading day N after the signal (default: the horizon)")
     p.add_argument("--config", default="trader/config.json")
-    p.add_argument("--offline", metavar="PATH", help="saved Yahoo chart JSON for an atr stop")
+    p.add_argument("--offline", metavar="PATH", help="saved Yahoo chart JSON for an atr stop (daily bars in swing)")
     p.add_argument("--now", help='pretend it is this New York time, e.g. "2026-10-19 10:15"')
     p.add_argument("--write", nargs="?", const="trader/plan.json", metavar="PATH",
                    help="save the plan (default trader/plan.json)")

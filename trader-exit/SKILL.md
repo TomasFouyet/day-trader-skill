@@ -12,7 +12,7 @@ description: >-
   "where's my stop", "set my stop and target", "plan the exit", "when do I get
   out", "stop loss", "what's my R", "risk reward", or right after
   /trader-entry triggers, before /trader-timemachine.
-argument-hint: "[--stop or-mid|or-low|price:X|pct:X|atr:K] [--target 2R|1R|price:X]"
+argument-hint: "[--mode swing] [--stop or-mid|or-low|price:X|pct:X|atr:K] [--target 2R|1R|price:X]"
 ---
 
 # trader-exit
@@ -69,6 +69,35 @@ A level setup has no opening range to lean on, so it needs a stop you name.
 - **Flat by.** 15:55 by default (or `flat_by` in the config). Out by then,
   win or lose, no overnight hold. On a 1:00 p.m. early close it moves up to
   12:55. An entry at or after the flat-by time is refused.
+
+## Swing mode (multi-day)
+
+`"mode": "swing"` in `trader/config.json` (or `--mode swing`) plans a long you
+hold for days, not minutes. Without it nothing above changes. The settings
+live in a `"swing"` block (see `trader-budget/config.swing.example.json`):
+
+| key | default | what |
+| --- | --- | --- |
+| `horizon_days` | 7 | trading days you plan to hold |
+| `stop` | `atr:2` | 2 x the 14-day ATR under the entry (daily bars, the overnight gap counted). `pct:X` and `price:X` work too; `or-mid` and `or-low` do not |
+| `target` | `2R` | as above |
+| `time_stop_days` | the horizon | close at the close of trading day N after the signal, win or lose |
+| `max_risk_per_trade_pct` | 1.0 | % of the account a trade may lose at the stop (for trader-budget and trader-risk) |
+| `max_positions` | 5 | open swing positions at once |
+| `max_exposure_pct` | 60 | all open swing positions together, % of the account |
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --mode swing --symbol TSLA --setup breakout20 --write
+python3 "${CLAUDE_SKILL_DIR}/exit.py" plan --mode swing --symbol TSLA --entry 400 --stop pct:6 --time-stop-days 5
+```
+
+- The entry is the last daily close unless you give `--entry`. Today's bar
+  counts only after the 4:00 PM close.
+- There is no flat-by: `--flat-by` is refused. The plan carries
+  `time_stop_date` (NYSE weekends and holidays skipped) and `"flat_by": null`.
+- Daily bars come from Yahoo (`range=1y&interval=1d`) or `--offline FILE`.
+- The printed plan is in Spanish. A swing trade sleeps outside the market:
+  an opening gap can fill far past the stop.
 
 ## Steps
 
