@@ -10,7 +10,26 @@
     "max_exposure_pct": 60,
     "atr_days": 14,
     "timemachine_window_days": 252,
-    "timemachine_block_days": 5
+    "timemachine_block_days": 5,
+    "setups": [
+      "breakout20",
+      "pullback_ema20",
+      "rsi2"
+    ],
+    "setup_params": {
+      "breakout_days": 20,
+      "ema_days": 20,
+      "trend_days": 50,
+      "ema_touch_pct": 1.0,
+      "rsi_days": 2,
+      "rsi_max": 10,
+      "rsi_trend_days": 200
+    },
+    "min_price": 5,
+    "min_dollar_volume": 20000000,
+    "block_on_earnings": true,
+    "block_on_unknown_earnings": false,
+    "earnings_margin_days": 5
   },
   "budget": 5000,
   "cash_buffer_pct": 10,

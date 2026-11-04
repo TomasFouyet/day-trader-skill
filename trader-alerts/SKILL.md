@@ -69,6 +69,13 @@ rules carry the plan's date, so yesterday's stop never rings today. A `time`
 rule with `"before_close": true` moves 3 hours earlier on a 1:00 p.m. early
 close, so "flat by close" at 15:55 rings at 12:55 on those days.
 
+## Swing plans
+
+`alerts.py add --from-plan` on a swing plan (`"mode": "swing"`) adds the stop
+and the target watched every day from the signal day to the time stop
+(`"from"` and `"until"` on the rule), and a time alert at 15:30 on the time
+stop day: "stop de tiempo: si sigues dentro, vende hoy al cierre". No flat-by.
+
 ## Quotes
 
 - `yahoo` (default): `query2.finance.yahoo.com/v8/finance/chart/<TICKER>`, an

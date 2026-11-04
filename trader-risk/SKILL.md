@@ -102,6 +102,20 @@ Warnings do not block, but say them to the user: a LIVE account, a number
 sent as a number instead of a string, a stop that lives only in the plan and
 not at the broker, a price too old to use, an early close today.
 
+## Swing mode (manual tickets)
+
+`check.py --swing` (or `"mode": "swing"` in the config) checks
+`trader/swing_orders.json` from trader-budget and writes
+`trader/state/swing_risk.json`. In file order, as if each PASS was bought, a
+ticket is BLOCKED for: a bad format (qty, whole shares unless fractional, stop
+< entry < target, no time stop date), a blocked ticker, a symbol already held
+or twice in the batch, more than `swing.max_positions`, a loss at the stop over
+`swing.max_risk_per_trade_pct` of the account, total swing exposure over
+`swing.max_exposure_pct`, a position over `max_position_pct`, the cash buffer,
+reward:risk under `min_reward_risk`, an earnings check that says BLOCKED (or
+none at all while `swing.block_on_earnings` is on), and a stale signal. No
+market-hours window or day-trade counts: the user buys by hand.
+
 ## Steps
 
 1. If the price may have moved since the plan, refresh it first

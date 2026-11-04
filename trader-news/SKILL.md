@@ -59,6 +59,13 @@ python3 "${CLAUDE_SKILL_DIR}/news.py" --no-sec --json
 - **No predictions.** Report what was published and how far the price is from
   yesterday's close. Never say what the stock will do next.
 
+## Swing candidates
+
+`--watchlist trader/swing.json` watches the swing scanner's candidates too.
+`news.py --watchlist trader/swing.json --json > trader/news.json`, then
+`trader-analyst earnings.py check --news trader/news.json` flags fresh
+earnings headlines on each candidate.
+
 ## Steps
 
 1. Run the check: `python3 "${CLAUDE_SKILL_DIR}/news.py"`. Exit code 1 means

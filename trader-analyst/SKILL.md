@@ -68,6 +68,32 @@ email. It refuses to call SEC without one.
   the business (investment marks, tax items) are inside it. The tool says so.
   Banks and insurers have no gross margin: blank, not zero.
 
+## Earnings inside a swing horizon (`earnings.py`)
+
+A swing trade held for days can sit through a quarterly report. `earnings.py`
+marks each candidate "⚠ resultados dentro del horizonte" when the next
+report lands between the signal day and the close of trading day N, and then
+the setup is BLOCKED (`"block_on_earnings": true` in the config's `"swing"`
+block, the default).
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/earnings.py" check                          # annotates trader/swing.json
+python3 "${CLAUDE_SKILL_DIR}/earnings.py" check --from trader/plan.json  # one swing plan
+python3 "${CLAUDE_SKILL_DIR}/earnings.py" check --news trader/news.json  # plus fresh earnings headlines (trader-news --json)
+python3 "${CLAUDE_SKILL_DIR}/earnings.py" next AAPL KO --date 2026-10-30 --horizon-days 7
+```
+
+- **Your dates first.** `trader/earnings_dates.json` (`{"AAPL": "2026-10-29"}`)
+  wins: an exact date from the company's investor-relations page.
+- **Then SEC EDGAR**, the same submissions feed `facts.py` reads: the filing
+  dates of 8-Ks with item 2.02. A 2.02 filed on or after the signal day is a
+  known date. Otherwise the next one is estimated: the last 2.02 plus the
+  median gap (91 days with only one), moved to the same week as a year earlier
+  when there is one, +- `earnings_margin_days` (5). Overdue counts as imminent.
+- **Unknown** (an ETF, a foreign filer, no SEC User-Agent): a warning; blocked
+  only with `"block_on_unknown_earnings": true`.
+- An estimate is not a calendar: say so, and ask the user to confirm the date.
+
 ## Steps
 
 1. Run it for the companies in question (or the tickers on

@@ -397,13 +397,21 @@ def validate(rule):
         raise AlertError("rule %s needs a numeric pct" % rule.get("id"))
     if t == "time" and _hhmm(rule.get("at")) is None:
         raise AlertError("rule %s needs \"at\" as a New York time like \"15:55\"" % rule.get("id"))
-    if rule.get("date") and not re.match(r"^\d{4}-\d{2}-\d{2}$", str(rule["date"])):
-        raise AlertError("rule %s: date must be YYYY-MM-DD" % rule.get("id"))
+    for k in ("date", "from", "until"):
+        if rule.get(k) and not re.match(r"^\d{4}-\d{2}-\d{2}$", str(rule[k])):
+            raise AlertError("rule %s: %s must be YYYY-MM-DD" % (rule.get("id"), k))
 
 
 def active(rule, today):
-    """A rule with a "date" is watched on that New York date only."""
-    return not rule.get("date") or str(rule["date"]) == today
+    """A rule with a "date" is watched on that New York date only; one with "from" / "until"
+    (a swing plan's stop and target) on the days between, both included."""
+    if rule.get("date") and str(rule["date"]) != today:
+        return False
+    if rule.get("from") and today < str(rule["from"]):
+        return False
+    if rule.get("until") and today > str(rule["until"]):
+        return False
+    return True
 
 
 def _rang_today(stamp, today):
@@ -497,10 +505,35 @@ def _n(x):
     return str(int(x)) if x == int(x) else "%.2f" % x
 
 
+def swing_rules_from_plan(plan, at="15:30"):
+    """A swing plan (trader-exit --mode swing) -> stop and target alerts watched every day from the
+    signal day to the time stop, and a time alert on the time-stop day: no flat-by."""
+    sym = str(plan["symbol"]).upper()
+    start, until = str(plan.get("date") or ""), str(plan.get("time_stop_date") or "")
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", until):
+        raise AlertError("the swing plan has no time_stop_date (run trader-exit --mode swing)")
+    out = []
+    for key, typ, word in (("stop", "stop", "stop swing"), ("target", "target", "objetivo swing")):
+        v = plan.get(key)
+        if not isinstance(v, (int, float)) or v <= 0:
+            raise AlertError("the plan has no %s (run trader-exit)" % key)
+        r = {"id": "%s-swing-%s" % (sym.lower(), key), "symbol": sym, "type": typ, "price": float(v),
+             "note": "%s (hasta el %s)" % (word, until), "until": until}
+        if start:
+            r["from"] = start
+        out.append(r)
+    out.append({"id": "%s-time-stop" % sym.lower(), "symbol": sym, "type": "time", "at": at, "date": until,
+                "label": "stop de tiempo: si sigues dentro, vende hoy al cierre", "before_close": True})
+    return out
+
+
 def rules_from_plan(plan, cfg_flat_by=None):
-    """trader/plan.json -> a stop alert, a target alert and a flat-by-close time alert, for the plan's day."""
+    """trader/plan.json -> a stop alert, a target alert and a flat-by-close time alert, for the plan's day.
+    A swing plan gets swing_rules_from_plan instead."""
     if not isinstance(plan, dict) or not plan.get("symbol"):
         raise AlertError("the plan has no symbol (run trader-exit first)")
+    if plan.get("mode") == "swing":
+        return swing_rules_from_plan(plan)
     sym = str(plan["symbol"]).upper()
     out = []
     for key, typ, word in (("stop", "stop", "plan stop"), ("target", "target", "plan target")):

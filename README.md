@@ -152,6 +152,30 @@ for the 60 days to October 19 2026, the 10:15 AM opening-range scan, Yahoo's
 TSLA headlines that morning, the House Clerk's 2026 index, real PTR text and
 real XBRL facts. They reproduce every number in the example above.
 
+## Modo swing (este fork)
+
+Swing de 5 a 7 dias en acciones de EE. UU. que compras a mano (Fintual u otra
+app). Nada coloca ordenes: los tickets van a `trader/swing_orders.json`, que
+trader-broker nunca lee. Copia `trader-budget/config.swing.example.json` a
+`trader/config.json` y ajusta `budget` y el bloque `"swing"`.
+
+El flujo diario, despues del cierre (`S` es la carpeta de las skills):
+
+```bash
+python3 $S/trader-scanner/scan.py swing                      # trader/watchlist.txt o el universo -> trader/swing.json
+python3 $S/trader-news/news.py --watchlist trader/swing.json --json > trader/news.json
+python3 $S/trader-analyst/earnings.py check --news trader/news.json   # marca y bloquea resultados dentro del horizonte
+python3 $S/trader-exit/exit.py plan --from trader/swing.json --pick TICKER --write
+python3 $S/trader-timemachine/timemachine.py run --write     # 10.000 trayectorias de N dias + el historial real
+python3 $S/trader-budget/size.py --write                     # ticket manual en trader/swing_orders.json
+python3 $S/trader-risk/check.py                              # PASS / BLOCK -> trader/state/swing_risk.json
+python3 $S/trader-alerts/alerts.py add --from-plan           # stop, objetivo y stop de tiempo
+```
+
+La alerta por Telegram y la automatizacion con GitHub Actions llegan en la
+fase 5. Las fechas de resultados son estimaciones a partir del SEC salvo que
+las pongas en `trader/earnings_dates.json`: confirmalas antes de comprar.
+
 ## Fine print
 
 **Not financial advice.** This is software that reads public data and does

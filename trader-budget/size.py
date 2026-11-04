@@ -29,6 +29,10 @@ bigger loss at the same stop. Zero shares (the stop is too far away for your
 max loss) is a plain refusal: no order is written. So is a reward:risk under
 min_reward_risk (the price ran toward the target since the plan).
 
+Swing mode: a plan.json with "mode": "swing" is sized as a manual, multi-day
+ticket (trader/swing_orders.json, never trader/orders.json): see "swing mode"
+below.
+
 Weights mode (kept from v1, no longer the headline): split a budget across a
 list of stocks by weight.
 
@@ -770,12 +774,308 @@ def write_orders(path, orders, cfg, source="", now_utc=None):
     os.replace(tmp, path)
 
 
+# ---------------------------------------------------------------- swing mode (a manual, multi-day ticket)
+#
+# A plan.json with "mode": "swing" (trader-exit --mode swing) is sized as a
+# position you buy BY HAND (Fintual or any app) and hold for days. Nothing
+# here talks to a broker: the ticket goes to trader/swing_orders.json, a file
+# trader-broker never reads.
+#
+#   shares = floor of the smallest of
+#     max loss       account x swing.max_risk_per_trade_pct / risk per share
+#     exposure       account x swing.max_exposure_pct, minus the swing positions you hold, / entry
+#     position cap   account x max_position_pct / entry
+#     max order      max_order_usd / entry
+#     cash           (cash minus the cash buffer) / entry
+#   account = budget, or cash + positions in trader/portfolio.json. Positions
+#   marked "swing": true are the open swing trades (all of them when none is
+#   marked). "fractional": true sizes to 0.0001 shares (apps that buy by amount).
+#
+# Refused, with the reason: max_positions already open, the symbol already
+# held, a stale signal (more than 2 trading days old, or past its time stop),
+# a reward:risk under min_reward_risk, zero shares, and a plan whose earnings
+# check (trader-analyst earnings.py) says BLOCKED.
+
+SWING_LIMITS = {"max_risk_per_trade_pct": 1.0, "max_positions": 5, "max_exposure_pct": 60.0}
+SWING_STALE_DAYS = 2
+SWING_ORDERS = "trader/swing_orders.json"
+
+
+def swing_limits(c):
+    sw = c.get("swing") if isinstance(c.get("swing"), dict) else {}
+    out = dict(SWING_LIMITS)
+    for k in out:
+        v = _f(sw.get(k))
+        if sw.get(k) is not None:
+            if v is None or v <= 0:
+                raise SizeError("swing.%s must be a number above 0" % k)
+            out[k] = v
+    out["max_positions"] = int(out["max_positions"])
+    return out
+
+
+def weekdays_between(a, b):
+    """Weekdays after a up to and including b."""
+    n, d = 0, a
+    while d < b:
+        d += datetime.timedelta(days=1)
+        if d.weekday() < 5:
+            n += 1
+    return n
+
+
+def swing_book(portfolio, prices):
+    """(account value or None, cash or None, [open swing positions {symbol, shares, value}])."""
+    if not isinstance(portfolio, dict):
+        return None, None, []
+    cash = _f(portfolio.get("cash"))
+    rows = []
+    for p in portfolio.get("positions") or []:
+        sym = str(p.get("ticker") or p.get("symbol") or "").upper()
+        n = _f(p.get("shares", p.get("qty")))
+        if not sym or not n:
+            continue
+        px = (prices or {}).get(sym) or _f(p.get("price")) or _f(p.get("entry"))
+        value = n * px if px else (_f(p.get("cost")) or 0.0)
+        rows.append({"symbol": sym, "shares": n, "value": round(value, 2), "swing": bool(p.get("swing"))})
+    tagged = [r for r in rows if r["swing"]]
+    open_ = tagged if tagged else rows
+    total = (cash or 0.0) + sum(r["value"] for r in rows) if cash is not None else None
+    return total, cash, open_
+
+
+def shares_frac(usd, per_share, step):
+    if per_share <= 0 or usd <= 0:
+        return 0
+    if step >= 1:
+        return shares_for(usd, per_share)
+    return math.floor(usd / per_share / step + EPS) * step
+
+
+def size_swing(plan, cfg, budget=None, limit=None, portfolio=None, prices=None, today=None, tm=None):
+    """Pure: a swing plan + rules + the account -> the sizing (a dict). qty may be 0."""
+    c = dict(DEFAULTS)
+    c.update(cfg or {})
+    lim = swing_limits(c)
+    sym = str(plan.get("symbol") or "").strip().upper()
+    if not sym:
+        raise SizeError("el plan no tiene symbol (corre trader-exit --mode swing)")
+    if str(plan.get("side") or "buy").lower() != "buy":
+        raise SizeError("el modo swing dimensiona solo compras (largos)")
+    entry_plan, stop, target = _f(plan.get("entry")), _f(plan.get("stop")), _f(plan.get("target"))
+    for name, v in (("entry", entry_plan), ("stop", stop), ("target", target)):
+        if v is None or v <= 0:
+            raise SizeError("el plan necesita %s positivo (corre trader-exit --mode swing)" % name)
+    if sym in {str(b).upper() for b in (c.get("blocked") or [])}:
+        raise SizeError("%s esta en tu lista blocked" % sym)
+    prices = {str(k).upper(): float(v) for k, v in (prices or {}).items() if _f(v)}
+    acct, cash, held = swing_book(portfolio, prices)
+    account = float(budget) if budget is not None else (acct if acct else _f(c.get("budget")))
+    if not account or account <= 0:
+        raise SizeError("sin tamano de cuenta: pon \"budget\" en trader/config.json, --budget, o trader/portfolio.json")
+    buf_pct = float(c.get("cash_buffer_pct") or 0)
+    exposure = round(sum(r["value"] for r in held), 2)
+    cash_now = cash if cash is not None else account - exposure
+    buffer_usd = round(account * buf_pct / 100.0, 2)
+    available = max(round(cash_now - buffer_usd, 2), 0.0)
+
+    ref = round_cent(limit) if limit is not None else round_cent(entry_plan)
+    stop, target = round_cent(stop), round_cent(target)
+    if not stop < ref < target:
+        raise SizeError("hace falta stop < entrada < objetivo (stop %s, entrada %s, objetivo %s)"
+                        % (_price(stop), _price(ref), _price(target)))
+    risk = round(ref - stop, 2)
+    rr = round((target - ref) / risk, 2)
+    step = 0.0001 if c.get("fractional") else 1
+    risk_usd = round(account * lim["max_risk_per_trade_pct"] / 100.0, 2)
+    room = round(account * lim["max_exposure_pct"] / 100.0 - exposure, 2)
+    limits = [
+        {"name": "max loss", "usd": risk_usd, "shares": shares_frac(risk_usd, risk, step),
+         "how": "%s%% de %s = %s / %s de riesgo por accion" % (_num(lim["max_risk_per_trade_pct"]), money(account),
+                                                               money(risk_usd), _price(risk))},
+        {"name": "exposure", "usd": max(room, 0), "shares": shares_frac(max(room, 0), ref, step),
+         "how": "%s%% de %s menos %s ya invertido en swing = %s / %s" % (
+             _num(lim["max_exposure_pct"]), money(account), money(exposure), money(max(room, 0)), _price(ref))},
+    ]
+    cap_pct = _f(c.get("max_position_pct"))
+    if cap_pct:
+        cap = round(account * cap_pct / 100.0, 2)
+        limits.append({"name": "position cap", "usd": cap, "shares": shares_frac(cap, ref, step),
+                       "how": "%s%% de %s = %s / %s" % (_num(cap_pct), money(account), money(cap), _price(ref))})
+    mo = _f(c.get("max_order_usd"))
+    if mo:
+        limits.append({"name": "max order", "usd": mo, "shares": shares_frac(mo, ref, step),
+                       "how": "%s / %s" % (money(mo), _price(ref))})
+    limits.append({"name": "cash", "usd": available, "shares": shares_frac(available, ref, step),
+                   "how": "caja %s menos el colchon %s = %s / %s" % (money(cash_now), money(buffer_usd),
+                                                                    money(available), _price(ref))})
+    qty = min(l["shares"] for l in limits)
+    qty = round(qty, 4) if step < 1 else int(qty)
+    bound = [l["name"] for l in limits if l["shares"] == min(x["shares"] for x in limits)][0]
+    for l in limits:
+        l["binds"] = l["name"] == bound
+    cost = round(qty * ref, 2)
+    max_loss = round(qty * risk, 2)
+
+    refusal = None
+    t = _date(today)
+    pd, ts = _date(plan.get("date")), _date(plan.get("time_stop_date"))
+    er = plan.get("earnings") if isinstance(plan.get("earnings"), dict) else None
+    if sym in [r["symbol"] for r in held]:
+        refusal = "ya tienes %s en la cartera: un solo swing por accion" % sym
+    elif len(held) >= lim["max_positions"]:
+        refusal = ("ya tienes %d posiciones swing abiertas (%s): tu maximo es %d"
+                   % (len(held), ", ".join(r["symbol"] for r in held), lim["max_positions"]))
+    elif t and ts and t > ts:
+        refusal = "el stop de tiempo del plan (%s) ya paso: es un plan viejo" % ts.isoformat()
+    elif t and pd and weekdays_between(pd, t) > SWING_STALE_DAYS:
+        refusal = ("la senal es del %s, mas de %d dias habiles atras: vuelve a escanear"
+                   % (pd.isoformat(), SWING_STALE_DAYS))
+    elif er and er.get("blocked"):
+        refusal = "⚠ %s (%s): BLOQUEADO por tu regla block_on_earnings" % (
+            er.get("flag") or "resultados", er.get("next") or "fecha desconocida")
+    elif qty <= 0:
+        refusal = ("ni una accion cabe: limita %s (%s)" % (bound, [l["how"] for l in limits if l["binds"]][0]))
+    elif _f(c.get("min_reward_risk")) and rr < _f(c["min_reward_risk"]) - EPS:
+        refusal = "recompensa:riesgo %.2f bajo tu minimo %s" % (rr, _num(c["min_reward_risk"]))
+    elif cost < float(c.get("min_order_usd") or 0) - 0.005:
+        refusal = "%s es menos que tu orden minima %s" % (money(cost), money(c["min_order_usd"]))
+    tm_info = None
+    if isinstance(tm, dict) and tm.get("mode") == "swing":
+        tp = tm.get("plan") or {}
+        if str(tp.get("symbol", "")).upper() == sym and tp.get("date") == plan.get("date"):
+            m, h = tm.get("mc") or {}, tm.get("history") or {}
+            tm_info = {k: m.get(k) for k in ("p_target", "p_stop", "p_unresolved", "expectancy_R", "horizon_days",
+                                              "paths", "seed")}
+            tm_info.update(verdict=tm.get("verdict"), history_cases=h.get("triggered"),
+                           history_hit_rate=h.get("hit_rate"), history_avg_R=h.get("avg_R"),
+                           few_cases=h.get("few_cases"))
+    return {"mode": "swing", "symbol": sym, "setup": plan.get("setup"), "date": plan.get("date"),
+            "entry_plan": round_cent(entry_plan), "entry": ref, "order_type": "limit" if limit is not None else "market",
+            "stop": stop, "target": target, "risk_per_share": risk, "reward_risk": rr,
+            "time_stop_date": plan.get("time_stop_date"), "time_stop_days": plan.get("time_stop_days"),
+            "account": round(account, 2), "exposure_before": exposure, "open_positions": [r["symbol"] for r in held],
+            "limits_swing": lim, "limits": limits, "qty": qty, "bound_by": bound, "cost": cost,
+            "max_loss": max_loss, "fractional": step < 1, "earnings": er, "timemachine": tm_info,
+            "refusal": refusal}
+
+
+def _date(x):
+    try:
+        return datetime.date.fromisoformat(str(x)[:10]) if x else None
+    except ValueError:
+        return None
+
+
+def swing_ticket(s):
+    """The manual ticket: what to buy by hand, where the stop and target go, when to get out."""
+    if s["refusal"] or not s["qty"]:
+        return None
+    t = {"symbol": s["symbol"], "side": "buy", "qty": s["qty"], "type": s["order_type"],
+         "entry": s["entry"], "stop": s["stop"], "target": s["target"], "risk_per_share": s["risk_per_share"],
+         "reward_risk": s["reward_risk"], "max_loss": s["max_loss"], "cost": s["cost"], "setup": s["setup"],
+         "signal_date": s["date"], "time_stop_date": s["time_stop_date"], "time_stop_days": s["time_stop_days"],
+         "manual": True, "earnings": s["earnings"], "timemachine": s["timemachine"],
+         "why": "%s %s: %s acciones, limita %s (%s x %s = %s en el stop)" % (
+             s["setup"] or "swing", s["symbol"], _qty(s["qty"]), s["bound_by"], _qty(s["qty"]),
+             _price(s["risk_per_share"]), money(s["max_loss"]))}
+    if s["order_type"] == "limit":
+        t["limit_price"] = s["entry"]
+    return t
+
+
+def _qty(q):
+    return ("%.4f" % q).rstrip("0").rstrip(".") if isinstance(q, float) else str(q)
+
+
+def swing_report(s, ticket):
+    out = ["%s compra swing (%s), senal del %s: entrada %s, stop %s, objetivo %s (R:R %.2f)."
+           % (s["symbol"], s["setup"] or "manual", s["date"], _price(s["entry"]), _price(s["stop"]),
+              _price(s["target"]), s["reward_risk"]),
+           "Cuenta %s; ya invertido en swing %s en %d posicion(es)%s." % (
+               money(s["account"]), money(s["exposure_before"]), len(s["open_positions"]),
+               (" (" + ", ".join(s["open_positions"]) + ")") if s["open_positions"] else ""),
+           "", "Limites (gana el menor):"]
+    for l in s["limits"]:
+        out.append("  %-13s %-70s %s%s" % (l["name"], l["how"], _qty(round(l["shares"], 4) if s["fractional"] else int(l["shares"])),
+                                          "  <- limita" if l["binds"] else ""))
+    out.append("")
+    if ticket is None:
+        out.append("Sin ticket: " + s["refusal"] + ".")
+        out.append("Educacion y herramientas, no asesoria financiera.")
+        return "\n".join(out)
+    out.append("Tamano sugerido: %s acciones de %s = %s. Perdida maxima en el stop: %s."
+               % (_qty(s["qty"]), s["symbol"], money(s["cost"]), money(s["max_loss"])))
+    out.append("Stop de tiempo: si sigue abierta, vende al cierre del %s." % s["time_stop_date"])
+    if s["timemachine"]:
+        m = s["timemachine"]
+        out.append("Time Machine: objetivo primero %.1f %%, stop primero %.1f %%, sin resolver %.1f %%, "
+                   "expectativa %+.2fR." % (100 * m["p_target"], 100 * m["p_stop"], 100 * m["p_unresolved"],
+                                            m["expectancy_R"]))
+    if s["earnings"] and s["earnings"].get("flag"):
+        out.append("⚠ %s (%s): aviso." % (s["earnings"]["flag"], s["earnings"].get("next")))
+    out.append("Es un ticket para comprar A MANO: nada se coloca. Siguiente: trader-risk check.py --swing.")
+    out.append("Educacion y herramientas, no asesoria financiera.")
+    return "\n".join(out)
+
+
+def write_swing(path, ticket, cfg, now_utc, append=True):
+    doc = read_json(path, "swing orders") if (append and os.path.exists(path)) else None
+    tickets = []
+    if isinstance(doc, dict) and isinstance(doc.get("tickets"), list):
+        tickets = [t for t in doc["tickets"] if t.get("symbol") != ticket["symbol"]
+                   and t.get("signal_date") == ticket["signal_date"]]
+    tickets.append(ticket)
+    out = {"created_by": "trader-budget", "mode": "swing", "created_at": utc_iso(now_utc), "status": "proposed",
+           "manual": True,
+           "note": "Tickets para comprar a mano. Nada se coloca: trader-risk los revisa y tu decides.",
+           "tickets": tickets}
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    with open(path + ".tmp", "w", encoding="utf-8") as fh:
+        json.dump(out, fh, indent=2)
+        fh.write("\n")
+    os.replace(path + ".tmp", path)
+    return len(tickets)
+
+
+def run_swing(a, cfg, plan):
+    now = parse_now(a.now)
+    today = to_eastern(now).date().isoformat()
+    limit = None
+    if a.limit is not None:
+        limit = _f(plan.get("entry")) if a.limit == "plan" else _f(a.limit)
+        if limit is None or limit <= 0:
+            raise SizeError("--limit wants a price, like --limit 364.00")
+    portfolio = read_json(a.portfolio, "portfolio") if a.portfolio and os.path.exists(a.portfolio) else None
+    ppath = a.prices or ("trader/prices.json" if os.path.exists("trader/prices.json") else None)
+    prices = load_prices(ppath) if ppath else {}
+    tm = read_json(a.timemachine, "time machine") if a.timemachine and os.path.exists(a.timemachine) else None
+    s = size_swing(plan, cfg, a.budget, limit, portfolio, prices, today, tm)
+    ticket = swing_ticket(s)
+    n = None
+    if ticket and a.write:
+        path = SWING_ORDERS if a.write == "trader/orders.json" else a.write
+        n = write_swing(path, ticket, cfg, now, append=not a.fresh)
+    if a.json:
+        print(json.dumps({"sizing": s, "tickets": [ticket] if ticket else []}, indent=2))
+    else:
+        print(swing_report(s, ticket))
+        if n:
+            print("Guardado en %s (%d ticket(s) de esta senal)." % (
+                SWING_ORDERS if a.write == "trader/orders.json" else a.write, n))
+    return 0 if ticket else 1
+
+
 # ---------------------------------------------------------------- main
 
 def run_plan(a, cfg):
     now = parse_now(a.now)
     today = to_eastern(now).date().isoformat()
     plan = read_json(a.plan, "plan (run trader-exit first, or use --weights for a split)")
+    if isinstance(plan, dict) and plan.get("mode") == "swing":
+        return run_swing(a, cfg, plan)
     limit = None
     if a.limit is not None:
         if a.limit == "plan":
@@ -858,6 +1158,9 @@ def main(argv=None):
     ap.add_argument("--write", nargs="?", const="trader/orders.json", metavar="PATH",
                     help="write the proposed order (default trader/orders.json)")
     ap.add_argument("--json", action="store_true", help="print JSON instead of the report")
+    ap.add_argument("--timemachine", default="trader/timemachine.json",
+                    help="swing: attach the Time Machine odds to the ticket when they are for this plan")
+    ap.add_argument("--fresh", action="store_true", help="swing: start trader/swing_orders.json over")
     g = ap.add_argument_group("weights mode (split a budget across a list)")
     g.add_argument("--weights", help="inline weights: AAPL=22.04,AXP=17.14")
     g.add_argument("--targets", help="a weights file: {\"weights\": [{\"ticker\", \"weight\"}]}")

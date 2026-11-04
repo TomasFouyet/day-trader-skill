@@ -130,7 +130,7 @@ def watch_from_files(portfolio="trader/portfolio.json", watchlist="trader/watchl
     """{ticker: name or None}: the scanner's hits, the planned trade and your holdings."""
     out = {}
     wl = load_json(watchlist) or {}
-    for h in wl.get("hits", []):
+    for h in wl.get("hits", []) + wl.get("candidates", []):   # candidates: scan.py swing (trader/swing.json)
         sym = h.get("symbol") or h.get("ticker")
         if sym:
             out[sym.upper()] = h.get("name")

@@ -126,6 +126,27 @@ more than the $50 max loss: no order. At 10:52 the real quote was 366.48, so
 the same plan sizes to 6 shares at 8.16 a share, and reward:risk falls to
 0.44: refused, because the move it was waiting for has mostly happened.
 
+## Swing mode (a manual ticket)
+
+A plan with `"mode": "swing"` (trader-exit `--mode swing`) is sized as a
+position the user buys BY HAND (Fintual or any app) and holds for days. The
+ticket goes to `trader/swing_orders.json`, never `trader/orders.json`, so
+trader-broker never sees it.
+
+- **Shares** = the smallest of: account x `swing.max_risk_per_trade_pct` /
+  risk per share; account x `swing.max_exposure_pct` minus the open swing
+  positions, / entry; `max_position_pct`; `max_order_usd`; cash after the
+  buffer. Account = `budget`, or cash + positions in `trader/portfolio.json`
+  (positions marked `"swing": true` are the open swing trades; all, when none
+  is marked). `"fractional": true` sizes to 0.0001 shares.
+- **Refused:** `swing.max_positions` already open, the symbol already held, a
+  signal more than 2 weekdays old or past its time stop, an earnings check that
+  says BLOCKED, zero shares, reward:risk under `min_reward_risk`.
+- The ticket carries the time stop date, the earnings check and, when
+  `trader/timemachine.json` is for the same plan, the Time Machine's odds.
+  `--write` adds it next to the other tickets of the same signal day
+  (`--fresh` starts over). Next: `check.py --swing`.
+
 ## Weights mode (kept from v1)
 
 `--weights AAPL=22.04,KO=10.86` or `--targets FILE` (`targets.example.json`
