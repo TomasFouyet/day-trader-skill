@@ -318,7 +318,7 @@ def rank(items):
     return sorted(items, key=key)
 
 
-def pending(risk_doc, tickets_doc, state, today, any_date=False):
+def pending(risk_doc, tickets_doc, state, today, any_date=False, resend=False):
     """-> ([(key, ticket, result)], skipped [(symbol, why)]). Pure."""
     skipped = []
     if not isinstance(risk_doc, dict) or risk_doc.get("mode") != "swing":
@@ -337,7 +337,7 @@ def pending(risk_doc, tickets_doc, state, today, any_date=False):
             skipped.append((r.get("symbol"), "the ticket changed after the risk check: run check.py --swing again"))
             continue
         k = key_of(t)
-        if k in sent:
+        if k in sent and not resend:
             skipped.append((t["symbol"], "already sent on %s" % sent[k].get("at", "?")[:10]))
             continue
         out.append((k, t, r))
@@ -419,6 +419,7 @@ def main(argv=None):
     ap.add_argument("--test", action="store_true", help="send one test message and stop")
     ap.add_argument("--heartbeat", action="store_true", help="also send a short note when nothing new passed")
     ap.add_argument("--any-date", action="store_true", help="use a risk check from another day (testing)")
+    ap.add_argument("--resend", action="store_true", help="send today's setups again even if they went out before")
     ap.add_argument("--now", help="pretend it is this time (New York, or ISO with Z)")
     ap.add_argument("--quiet", action="store_true", help="print counts only (for public CI logs)")
     a = ap.parse_args(argv)
@@ -438,7 +439,7 @@ def main(argv=None):
         risk_doc = read_json(a.risk, "swing risk check (run trader-risk check.py --swing)")
         tickets = read_json(a.tickets, "swing tickets (run trader-budget)")
         state = read_json(a.state, "state", required=False) or {}
-        todo, skipped = pending(risk_doc, tickets, state, today, a.any_date)
+        todo, skipped = pending(risk_doc, tickets, state, today, a.any_date, a.resend)
         tok = chat = None
         if not a.dry_run and (todo or a.heartbeat):
             tok, chat = credentials()

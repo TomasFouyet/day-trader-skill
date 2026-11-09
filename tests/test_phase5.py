@@ -222,6 +222,8 @@ class Telegram(Tmp):
         code, text, _ = run(tg, ["--now", "2026-11-02 21:00"])
         self.assertEqual(len(self.posts), 1)                # not again
         self.assertIn("already sent", text)
+        code, text, _ = run(tg, ["--now", "2026-11-02 21:05", "--resend"])
+        self.assertEqual(len(self.posts), 2)                # unless asked to
 
     def test_only_todays_passes_with_the_same_ticket(self):
         self.files(tickets=(TICKET, dict(TICKET, symbol="XOM", qty=500)))   # XOM blocked by its loss

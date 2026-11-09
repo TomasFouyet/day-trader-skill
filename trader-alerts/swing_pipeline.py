@@ -278,6 +278,8 @@ def pipeline(a):
             na.append("--quiet")
         if a.heartbeat:
             na.append("--heartbeat")
+        if a.resend:
+            na.append("--resend")
         if not os.path.exists("trader/state/swing_risk.json"):
             write_json("trader/state/swing_risk.json", {"mode": "swing", "date": today, "results": [], "pass": 0,
                                                         "block": 0})
@@ -306,6 +308,7 @@ def main(argv=None):
     ap.add_argument("--replays", type=int, default=10000, help="Time Machine paths per candidate")
     ap.add_argument("--heartbeat", action="store_true", help="send a short Telegram note when nothing passed")
     ap.add_argument("--skip-news", action="store_true")
+    ap.add_argument("--resend", action="store_true", help="Telegram: send today's setups even if sent before")
     ap.add_argument("--check-clock", action="store_true",
                     help="only say whether it should run now: exit 0 yes, 1 no (for the workflow)")
     ap.add_argument("--quiet", action="store_true", help="CI: step names and counts only")

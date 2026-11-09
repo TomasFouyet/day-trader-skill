@@ -25,6 +25,10 @@ on:
         description: "Solo mostrar (no enviar a Telegram)"
         type: boolean
         default: false
+      resend:
+        description: "Reenviar los setups aunque ya se hayan avisado antes"
+        type: boolean
+        default: false
       force_time:
         description: "Correr aunque no sea la hora (08:15 a 09:59 Nueva York)"
         type: boolean
@@ -139,8 +143,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
           FORCE_TIME: ${{ github.event_name == 'workflow_dispatch' && inputs.force_time }}
+          RESEND: ${{ github.event_name == 'workflow_dispatch' && inputs.resend }}
         run: |
           ARGS="--quiet"
+          if [ "$RESEND" = "true" ]; then ARGS="$ARGS --resend"; fi
           if [ "$DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           if [ "$FORCE_TIME" = "true" ]; then ARGS="$ARGS --force-time --force"; fi
           python3 trader-alerts/swing_pipeline.py $ARGS
