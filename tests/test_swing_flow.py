@@ -134,7 +134,7 @@ class Risk(unittest.TestCase):
             (dict(t, earnings=None), "sin revision de resultados"),
             (dict(t, earnings=dict(EARN_OK, blocked=True, flag="resultados dentro del horizonte")), "earnings:"),
             (dict(t, earnings=dict(EARN_OK, signal_date="2026-10-01")), "otra senal"),
-            (dict(t, side="sell"), "solo compra"),
+            (dict(t, side="sell"), "no tiene short habilitado"),
             (dict(t, target=125.0), "reward:risk"),
         ]
         for tk, msg in cases:
@@ -223,11 +223,13 @@ class DailyFlow(unittest.TestCase):
         self.assertEqual([t["symbol"] for t in doc["tickets"]], ["WMT", "XOM"])
         self.assertTrue(all(t["timemachine"] and t["timemachine"]["paths"] == 2000 for t in doc["tickets"]))
         code, text, err = run(risk, ["--now", "2026-11-02 09:00"])     # "mode": "swing" in the config
-        self.assertEqual(code, 0, err + text)
-        self.assertIn("2 pasan, 0 bloqueados", text)
+        self.assertEqual(code, 1, err + text)
+        # Fintual holds 70 % of $5,000; 60 % of that is $2,100: WMT fits, XOM on top does not
+        self.assertIn("1 pasan, 1 bloqueados", text)
+        self.assertIn("supera el 60% del capital de fintual ($2,100)", text)
         with open(os.path.join("trader", "state", "swing_risk.json")) as fh:
             rec = json.load(fh)
-        self.assertEqual((rec["mode"], rec["pass"]), ("swing", 2))
+        self.assertEqual((rec["mode"], rec["pass"]), ("swing", 1))
         self.assertFalse(os.path.exists(os.path.join("trader", "state", "risk.json")))
         code, text, _ = run(alerts, ["add", "--from-plan"])
         self.assertEqual(code, 0)

@@ -11,11 +11,6 @@
     "atr_days": 14,
     "timemachine_window_days": 252,
     "timemachine_block_days": 5,
-    "setups": [
-      "breakout20",
-      "pullback_ema20",
-      "rsi2"
-    ],
     "setup_params": {
       "breakout_days": 20,
       "ema_days": 20,
@@ -29,7 +24,31 @@
     "min_dollar_volume": 20000000,
     "block_on_earnings": true,
     "block_on_unknown_earnings": false,
-    "earnings_margin_days": 5
+    "earnings_margin_days": 5,
+    "sides": [
+      "long",
+      "short"
+    ],
+    "venues": {
+      "fintual": {
+        "capital_pct": 70,
+        "max_leverage": 1,
+        "short": false,
+        "fractional": true
+      },
+      "bitunix": {
+        "capital_pct": 30,
+        "max_leverage": 5,
+        "short": true,
+        "max_margin_per_trade_pct": 25,
+        "maintenance_margin_pct": 0.5,
+        "fee_pct": 0.06,
+        "liq_buffer": 1.5,
+        "qty_step": 0.001,
+        "symbols": []
+      }
+    },
+    "min_expectancy_R": 0.0
   },
   "budget": 5000,
   "cash_buffer_pct": 10,

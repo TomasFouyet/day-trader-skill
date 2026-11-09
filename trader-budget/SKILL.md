@@ -147,6 +147,18 @@ trader-broker never sees it.
   `--write` adds it next to the other tickets of the same signal day
   (`--fresh` starts over). Next: `check.py --swing`.
 
+### Long or short, cash or leveraged venue
+
+`"swing": {"venues": {...}}` splits the account: a cash venue (`max_leverage`
+1, e.g. Fintual: longs only, fractional shares) and a leveraged one (e.g.
+Bitunix perpetuals, `short: true`). The max loss per trade is always a percent
+of the WHOLE account; leverage only changes the margin. For the leveraged venue
+it picks the smallest leverage that fits the notional into
+`max_margin_per_trade_pct` of that venue, never above `max_leverage`, and never
+one whose liquidation price (isolated margin, `maintenance_margin_pct`) is
+closer than `liq_buffer` x the stop distance: then it sizes down. A short goes
+to the leveraged venue; with no venues configured, shorts are refused.
+
 ## Weights mode (kept from v1)
 
 `--weights AAPL=22.04,KO=10.86` or `--targets FILE` (`targets.example.json`

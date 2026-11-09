@@ -513,7 +513,10 @@ def swing_rules_from_plan(plan, at="15:30"):
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", until):
         raise AlertError("the swing plan has no time_stop_date (run trader-exit --mode swing)")
     out = []
-    for key, typ, word in (("stop", "stop", "stop swing"), ("target", "target", "objetivo swing")):
+    short = str(plan.get("side") or "buy").lower() in ("sell", "short")
+    pairs = ((("stop", "above", "stop del short"), ("target", "below", "objetivo del short")) if short else
+             (("stop", "stop", "stop swing"), ("target", "target", "objetivo swing")))
+    for key, typ, word in pairs:
         v = plan.get(key)
         if not isinstance(v, (int, float)) or v <= 0:
             raise AlertError("the plan has no %s (run trader-exit)" % key)

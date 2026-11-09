@@ -25,6 +25,7 @@ for you to read, then buy by hand if you want. Not financial advice.
 import argparse
 import datetime
 import hashlib
+import html
 import json
 import os
 import re
@@ -37,7 +38,7 @@ API = "https://api.telegram.org/bot%s/sendMessage"
 MAX_LEN = 4000
 KEEP_DAYS = 60
 UA = "day-trader-skill/2.0 (+https://github.com/Jakeschincariol/day-trader-skill)"
-FOOT = "Simulacion, no prediccion. No es asesoria financiera. No se compro nada: es un aviso para decidir tu."
+FOOT = "Simulación, no predicción. No es asesoría financiera. Nada se operó: decides tú."
 
 
 class NotifyError(Exception):
@@ -126,40 +127,135 @@ def _pc(x):
     return "%.1f %%" % (100.0 * float(x))
 
 
+SETUP_ES = {"breakout20": "Ruptura del máximo de 20 días", "pullback_ema20": "Pullback a la EMA20 en tendencia alcista",
+            "rsi2": "RSI(2) sobrevendido en tendencia alcista", "breakdown20": "Quiebre del mínimo de 20 días",
+            "pullback_ema20_short": "Rebote a la EMA20 en tendencia bajista",
+            "rsi2_short": "RSI(2) sobrecomprado en tendencia bajista", "manual": "Setup manual"}
+VENUE_NAME = {"fintual": "Fintual", "bitunix": "Bitunix", "manual": "Tu app"}
+
+
+def esc(x):
+    return html.escape(str(x), quote=False)
+
+
+def _d(iso):
+    """2026-11-12 -> 12-11-2026."""
+    s = str(iso or "")
+    return "%s-%s-%s" % (s[8:10], s[5:7], s[:4]) if len(s) >= 10 else s
+
+
+def _pct_move(a, b):
+    return "%+.1f%%" % (100.0 * (float(b) / float(a) - 1))
+
+
+def venue_line(v, primary):
+    name = VENUE_NAME.get(v.get("venue"), str(v.get("venue")).capitalize())
+    mark = " ⭐" if v.get("venue") == primary else ""
+    if v.get("refusal"):
+        return "▸ %s: <i>%s</i>" % (esc(name), esc(v["refusal"]))
+    if not v.get("leveraged"):
+        return "▸ %s 1x: <b>%s acciones</b> = <b>%s</b> (%s%% de tu cuenta, %s%% de tu capital ahí)%s" % (
+            esc(name), _q(v["qty"]), _m(v.get("cost") or 0), v.get("margin_pct_of_account", "?"),
+            v.get("margin_pct_of_venue"), mark)
+    ok = "✅" if v.get("liquidation") is not None else ""
+    return ("▸ %s <b>%dx</b>: <b>%s u.</b> · nocional %s · margen <b>%s</b> (%s%% de tu cuenta, %s%% de tu "
+            "capital ahí) · liquidación ~%s %s%s" % (
+                esc(name), int(v.get("leverage") or 1), _q(v["qty"]), _m(v["notional"]), _m(v["margin"]),
+                v.get("margin_pct_of_account", "?"), v.get("margin_pct_of_venue"), _m(v["liquidation"]), ok, mark))
+
+
 def message(t, result):
-    lines = ["\U0001F7E2 Setup swing: %s (%s)" % (t["symbol"], t.get("setup") or "manual"),
-             "Senal del %s. Para comprar a mano en tu app." % t.get("signal_date"),
-             "Entrada ~%s | Stop %s | Objetivo %s (%sR)" % (
-                 _m(t["entry"]), _m(t["stop"]), _m(t["target"]), ("%.2f" % float(t.get("reward_risk") or 0)).rstrip("0").rstrip(".")),
-             "Tamano sugerido: %s acciones (~%s). Perdida maxima en el stop: %s." % (
-                 _q(t["qty"]), _m(t.get("cost") or float(t["qty"]) * float(t["entry"])), _m(t.get("max_loss") or 0)),
-             "Stop de tiempo: vende al cierre del %s si sigue abierta (%s dias habiles)." % (
-                 t.get("time_stop_date"), t.get("time_stop_days") or "?")]
-    m = t.get("timemachine") or {}
-    if m.get("p_target") is not None:
-        lines.append("Time Machine (%s trayectorias): objetivo primero %s, stop primero %s, sin resolver %s, "
-                     "expectativa %+.2fR." % ("{:,}".format(int(m.get("paths") or 0)).replace(",", "."),
-                                              _pc(m["p_target"]), _pc(m["p_stop"]), _pc(m["p_unresolved"]),
-                                              float(m.get("expectancy_R") or 0)))
-        if m.get("verdict"):
-            lines.append("Veredicto: " + m["verdict"])
-        if m.get("history_cases") is not None:
-            lines.append("Historial real: %d caso(s)%s." % (
-                m["history_cases"], ", pocos (menos de 30): tomalo con pinzas" if m.get("few_cases") else ""))
+    short = str(t.get("side") or "buy") == "sell"
+    sym = esc(t["symbol"])
+    head = "%s <b>%s · %s</b>" % ("🔴" if short else "🟢", "SHORT" if short else "LONG", sym)
+    if t.get("name"):
+        head += " · %s" % esc(t["name"])
+    rr = ("%.2f" % float(t.get("reward_risk") or 0)).rstrip("0").rstrip(".")
+    lines = [head,
+             "<i>%s · señal del %s (al cierre)</i>" % (esc(SETUP_ES.get(t.get("setup"), t.get("setup") or "")),
+                                                         _d(t.get("signal_date"))),
+             "",
+             "📍 <b>Operación</b> (%s)" % ("vender en corto" if short else "comprar"),
+             "<code>Entrada  %s</code>" % _m(t["entry"]),
+             "<code>Stop     %s  (%s)</code>" % (_m(t["stop"]), _pct_move(t["entry"], t["stop"])),
+             "<code>Objetivo %s  (%s) %sR</code>" % (_m(t["target"]), _pct_move(t["entry"], t["target"]), rr),
+             "⏳ Cierre por tiempo: <b>%s</b> (%s días hábiles)" % (_d(t.get("time_stop_date")),
+                                                                     t.get("time_stop_days") or "?"),
+             ""]
+    risk_usd = t.get("risk_usd") or t.get("max_loss")
+    acct = t.get("account")
+    lines.append("💰 <b>Tamaño</b> · riesgo máx. <b>%s</b>%s" % (
+        _m(risk_usd or 0), (" (%.1f%% de %s)" % (100.0 * float(risk_usd) / float(acct), _m(acct))) if acct and risk_usd else ""))
+    venues = t.get("venues") or {}
+    if venues and (len(venues) > 1 or "manual" not in venues):
+        for v in venues.values():
+            lines.append(venue_line(v, t.get("venue")))
+        lines.append("Pérdida si toca el stop: <b>%s</b>" % _m(t.get("max_loss") or 0))
     else:
-        lines.append("Time Machine: sin simulacion para este ticket.")
+        lines.append("▸ <b>%s acciones</b> (~%s) · pérdida si toca el stop <b>%s</b>" % (
+            _q(t["qty"]), _m(t.get("cost") or float(t["qty"]) * float(t["entry"])), _m(t.get("max_loss") or 0)))
+    m = t.get("timemachine") or {}
+    lines.append("")
+    if m.get("p_target") is not None:
+        lines.append("🎲 <b>Time Machine</b> (%s trayectorias, %s días)" % (
+            "{:,}".format(int(m.get("paths") or 0)).replace(",", "."), m.get("horizon_days") or t.get("time_stop_days")))
+        lines.append("Objetivo <b>%s</b> · Stop <b>%s</b> · Abierta al final <b>%s</b>" % (
+            _pc(m["p_target"]), _pc(m["p_stop"]), _pc(m["p_unresolved"])))
+        hist = ("Historial real: %d casos%s" % (m["history_cases"], " (pocos)" if m.get("few_cases") else "")
+                if m.get("history_cases") is not None else "")
+        lines.append("Expectativa <b>%+.2fR</b>%s" % (float(m.get("expectancy_R") or 0), (" · " + hist) if hist else ""))
+        if m.get("verdict"):
+            v = m["verdict"].split(":")[0]
+            if float(m.get("p_unresolved") or 0) > 0.6:
+                v += "; la mayoría se decide al cierre por tiempo"
+            lines.append("→ %s" % esc(v))
+    else:
+        lines.append("🎲 Time Machine: sin simulación para este ticket.")
     er = t.get("earnings") or {}
+    lines.append("")
     if er.get("flag"):
-        lines.append("⚠ %s (%s)." % (er["flag"], er.get("next") or "fecha desconocida"))
+        lines.append("📅 ⚠ <b>%s</b> (%s)" % (esc(er["flag"]), esc(_d(er.get("next")) or "fecha desconocida")))
     elif er.get("next"):
-        lines.append("Resultados: proximos %s (%s), fuera del horizonte." % (
-            er["next"], "fecha conocida" if er.get("known") else "estimada"))
-    warns = list((result or {}).get("warnings") or [])
-    for w in warns[:6]:
-        lines.append("~ " + w)
-    lines.append(FOOT)
+        lines.append("📅 Resultados: ~%s (%s) ✅ fuera del horizonte" % (
+            _d(er["next"]), "confirmada" if er.get("known") else "estimada"))
+    else:
+        lines.append("📅 Resultados: fecha desconocida, revísala")
+    news = er.get("news") or []
+    if news:
+        lines += ["", "📰 <b>Noticias</b>"]
+        for n in news[:3]:
+            lines.append("• %s %s" % (esc(_d(n.get("time"))[:5]) if n.get("time") else "", esc(n["title"][:140])))
+    other = [w for w in (result or {}).get("warnings") or []
+             if not w.startswith("Noticia de resultados") and "estimacion" not in w and "menos de 30" not in w]
+    if other:
+        lines.append("")
+        for w in other[:3]:
+            lines.append("⚠ %s" % esc(w))
+    lines += ["", "<i>%s</i>" % esc(FOOT)]
     text = "\n".join(lines)
     return text if len(text) <= MAX_LEN else text[:MAX_LEN - 3] + "..."
+
+
+def summary(items, today):
+    """One short message ranking today's new setups by the Time Machine's expectancy."""
+    longs = sum(1 for _, t, _ in items if t.get("side") != "sell")
+    lines = ["📊 <b>Swing %s</b>: %d setup(s) nuevos (%d long, %d short)" % (
+        _d(today), len(items), longs, len(items) - longs), ""]
+    for n, (_, t, _) in enumerate(items, 1):
+        m = t.get("timemachine") or {}
+        exp = ("%+.2fR" % float(m["expectancy_R"])) if m.get("expectancy_R") is not None else "s/d"
+        lines.append("%d. %s <b>%s</b> %s · exp. %s · %s" % (
+            n, "🔴" if t.get("side") == "sell" else "🟢", esc(t["symbol"]),
+            "SHORT" if t.get("side") == "sell" else "LONG", exp, esc(t.get("setup") or "")))
+    lines += ["", "<i>Ordenados por expectativa del Time Machine. El detalle de cada uno va abajo.</i>"]
+    return "\n".join(lines)
+
+
+def rank(items):
+    def key(x):
+        m = x[1].get("timemachine") or {}
+        return -(float(m["expectancy_R"]) if m.get("expectancy_R") is not None else -99.0)
+    return sorted(items, key=key)
 
 
 def pending(risk_doc, tickets_doc, state, today, any_date=False):
@@ -221,7 +317,8 @@ def send(token, chat, text):
     url = API % token
     for attempt in (0, 1):
         try:
-            res = _post(url, {"chat_id": chat, "text": text, "disable_web_page_preview": True})
+            res = _post(url, {"chat_id": chat, "text": text, "parse_mode": "HTML",
+                              "disable_web_page_preview": True})
         except urllib.error.HTTPError as e:
             try:
                 body = json.loads(e.read().decode("utf-8", "replace"))
@@ -269,7 +366,7 @@ def main(argv=None):
         now = parse_now(a.now)
         if a.test:
             text = ("✅ Prueba de day-trader-skill (%s UTC): el bot y el chat funcionan. Los avisos de setups "
-                    "swing llegaran aqui." % now.strftime("%Y-%m-%d %H:%M"))
+                    "swing llegarán aquí." % now.strftime("%Y-%m-%d %H:%M"))
             if a.dry_run:
                 print(text)
                 return 0
@@ -286,6 +383,14 @@ def main(argv=None):
         if not a.dry_run and (todo or a.heartbeat):
             tok, chat = credentials()
         sent = 0
+        todo = rank(todo)
+        if len(todo) >= 2:
+            text = summary(todo, today)
+            if a.dry_run:
+                if not a.quiet:
+                    print(text + "\n")
+            else:
+                send(tok, chat, text)
         for k, t, r in todo:
             text = message(t, r)
             if a.dry_run:

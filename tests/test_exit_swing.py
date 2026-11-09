@@ -4,6 +4,7 @@ AAPL's real daily bars from Yahoo, saved up to Fri 2026-10-30 (5 years)."""
 
 import datetime
 import gzip
+import math
 import io
 import json
 import os
@@ -196,7 +197,8 @@ class SwingPlan(unittest.TestCase):
             (["--symbol", "TSLA", "--flat-by", "15:00"], "--flat-by es del intradia"),
             (["--symbol", "TSLA", "--stop", "or-mid"], "atr:K, pct:X o price:X"),
             (["--symbol", "TSLA", "--setup", "orb"], "es intradia"),
-            (["--symbol", "TSLA", "--side", "sell"], "solo largos"),
+            (["--symbol", "TSLA", "--side", "sell", "--setup", "breakout20"], "usa --side buy"),
+            (["--symbol", "TSLA", "--side", "sell", "--entry", "300", "--stop", "price:290"], "sobre la entrada"),
             (["--symbol", "TSLA", "--or-high", "1", "--or-low", "0.5"], "rango de apertura"),
             ([], "da --symbol"),
             (["--symbol", "TSLA", "--entry", "300", "--stop", "price:310"], "at or above the entry"),
@@ -211,6 +213,25 @@ class SwingPlan(unittest.TestCase):
         self.cfg({"mode": "swing", "swing": {"max_positions": -1}})
         code, _, err = self.plan("--symbol", "TSLA")
         self.assertIn("swing.max_positions", err)
+
+    def test_short_plan(self):
+        code, text, err = self.plan("--mode", "swing", "--symbol", "TSLA", "--side", "sell", "--setup", "breakdown20",
+                                    "--json")
+        self.assertEqual(code, 0, err)
+        p = json.loads(text)
+        rows = raw_daily(TSLA_D)
+        atr = atr14(rows)
+        entry = rows[-1][2]
+        self.assertEqual((p["side"], p["entry"]), ("sell", entry))
+        self.assertEqual(p["stop"], math.ceil((entry + 2 * atr) * 100) / 100)    # rounded UP, away from the entry
+        risk = round(p["stop"] - entry, 2)
+        self.assertEqual((p["risk_per_share"], p["target"]), (risk, round(entry - 2 * risk, 2)))
+        self.assertIn("sobre la entrada", p["stop_label"])
+        code, text, _ = self.plan("--mode", "swing", "--symbol", "TSLA", "--side", "sell", "--entry", "100",
+                                  "--stop", "pct:5", "--target", "1R")
+        self.assertIn("corto (SHORT)", text)
+        self.assertIn("$105.00", text)
+        self.assertIn("$95.00", text)
 
     def test_intraday_is_untouched_without_mode(self):
         # no config at all: the intraday path, which refuses a symbol-only plan as before

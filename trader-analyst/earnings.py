@@ -207,6 +207,58 @@ def assess(sym, signal, horizon, sw, manual=None, sec_dates=None, sec_error=None
     return out
 
 
+NAME_STOP = {"inc", "inc.", "corp", "corp.", "corporation", "company", "co", "co.", "the", "group", "holdings",
+             "plc", "ltd", "sa", "s.a.", "class", "common", "stock", "incorporated", "limited", "&", "and"}
+
+
+def name_words(name):
+    """The words of a company name worth matching in a headline: 'Welltower Inc.' -> ['welltower']."""
+    out = []
+    for w in re.split(r"[\s,()]+", str(name or "").lower()):
+        w = w.strip(".")
+        if len(w) >= 3 and w not in NAME_STOP:
+            out.append(w)
+    return out[:2]
+
+
+def relevant(title, sym, name=None):
+    """Does a headline talk about THIS company (its ticker or the first word of its name)?"""
+    t = " %s " % re.sub(r"[^A-Za-z0-9&.]+", " ", str(title or "")).lower()
+    if re.search(r"\b%s\b" % re.escape(sym.lower()), t) and (len(sym) > 1 or "(%s)" % sym in str(title)):
+        return True
+    words = name_words(name)
+    return bool(words) and words[0] in t.split()
+
+
+def news_items(news_doc, sym, now_utc, name=None, hours=NEWS_HOURS, limit=3):
+    """Headlines from trader-news --json about this company, newest first: [{time, title, tags, earnings}]."""
+    out = []
+    for it in (news_doc or {}).get("items", []) if isinstance(news_doc, dict) else []:
+        if sym not in [str(t).upper() for t in (it.get("touches") or [it.get("ticker")])]:
+            continue
+        if not relevant(it.get("title"), sym, name):
+            continue
+        t = it.get("time")
+        try:
+            when = datetime.datetime.fromisoformat(str(t).replace("Z", "+00:00"))
+            if when.tzinfo:
+                when = (when - when.utcoffset()).replace(tzinfo=None)
+        except (TypeError, ValueError):
+            when = None
+        if when is not None and now_utc is not None and (now_utc - when).total_seconds() > hours * 3600:
+            continue
+        out.append({"time": str(t)[:16] if t else None, "title": it.get("title", ""),
+                    "earnings": "earnings" in (it.get("tags") or [])})
+    out.sort(key=lambda x: x["time"] or "", reverse=True)
+    seen, uniq = set(), []
+    for x in out:
+        k = x["title"].lower()
+        if k not in seen:
+            seen.add(k)
+            uniq.append(x)
+    return uniq[:limit]
+
+
 def news_flags(news_doc, sym, now_utc, hours=NEWS_HOURS):
     """Earnings-tagged items from trader-news --json for this ticker, in the last `hours`."""
     out = []
@@ -271,7 +323,10 @@ def annotate(items, sw, sec, manual, horizon=None, news=None, now_utc=None, defa
         dates, err = (None, None) if manual.get(sym) else sec.dates(sym)
         res = assess(sym, signal, horizon_of(it, sw, horizon), sw, manual.get(sym), dates, err)
         if news is not None:
-            res["warnings"].extend(news_flags(news, sym, now_utc))
+            res["news"] = news_items(news, sym, now_utc, it.get("name"))
+            for n in res["news"]:
+                if n["earnings"]:
+                    res["warnings"].append("Noticia de resultados (%s): %s" % (n["time"] or "sin fecha", n["title"]))
         it["earnings"] = res
         out.append(res)
     return out

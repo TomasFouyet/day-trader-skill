@@ -861,24 +861,39 @@ def check_swing(tickets, cfg, portfolio=None, prices=None, today=None):
     risk_cap = account * float(sw["max_risk_per_trade_pct"]) / 100.0
     exp_cap = account * float(sw["max_exposure_pct"]) / 100.0
     pos_cap = account * float(c.get("max_position_pct") or 100) / 100.0
+    venues = {str(k).lower(): v for k, v in (raw.get("venues") or {}).items() if isinstance(v, dict)}
+    vcap = {k: account * float(_f(v.get("capital_pct")) or 0) / 100.0 for k, v in venues.items()}
+    vused = {k: 0.0 for k in venues}
     seen = set()
     results = []
     for i, t in enumerate(tickets, 1):
         reasons, warns = [], []
         sym = str(t.get("symbol") or "").upper()
+        side = {"buy": "buy", "long": "buy", "sell": "sell", "short": "sell"}.get(str(t.get("side") or "buy").lower())
+        vname = str(t.get("venue") or "manual").lower()
+        vcfg = venues.get(vname)
+        lev_venue = bool(vcfg) and float(_f(vcfg.get("max_leverage")) or 1) > 1
         qty, entry, stop, target = (_f(t.get(k)) for k in ("qty", "entry", "stop", "target"))
         if t.get("limit_price") is not None:
             entry = _f(t["limit_price"])
         if not sym or not TICKER.match(sym):
             reasons.append("format: falta un ticker valido")
-        if str(t.get("side") or "buy").lower() != "buy":
-            reasons.append("format: el modo swing solo compra (largos)")
+        if side is None:
+            reasons.append("format: side tiene que ser buy (long) o sell (short)")
+        elif side == "sell" and not (lev_venue and vcfg.get("short")):
+            reasons.append("short: %s no tiene short habilitado (swing.venues.<venue>.short): Fintual no permite "
+                           "vender en corto" % vname)
+        if venues and vname not in venues:
+            reasons.append("format: el venue %r no esta en swing.venues" % vname)
         if not qty or qty <= 0:
             reasons.append("format: qty tiene que ser mayor que 0")
-        elif not frac and abs(qty - round(qty)) > 1e-9:
+        elif not lev_venue and not (vcfg.get("fractional", frac) if vcfg else frac) and abs(qty - round(qty)) > 1e-9:
             reasons.append("format: %s acciones no es un numero entero y \"fractional\" es false" % qty)
-        if None in (entry, stop, target) or not stop < entry < target:
-            reasons.append("format: hace falta stop < entrada < objetivo")
+        ordered = None not in (entry, stop, target) and (
+            (target < entry < stop) if side == "sell" else (stop < entry < target))
+        if not ordered:
+            reasons.append("format: hace falta %s" % ("objetivo < entrada < stop" if side == "sell"
+                                                       else "stop < entrada < objetivo"))
         ts, sd = _iso(t.get("time_stop_date")), _iso(t.get("signal_date"))
         if not ts:
             reasons.append("format: sin time_stop_date (el stop de tiempo es obligatorio en swing)")
@@ -891,25 +906,48 @@ def check_swing(tickets, cfg, portfolio=None, prices=None, today=None):
         if npos + 1 > sw["max_positions"]:
             reasons.append("positions: %d abiertas + esta = %d, tu maximo es %d" % (npos, npos + 1, sw["max_positions"]))
         cost = loss = rr = None
-        if not reasons or (qty and entry and stop and target and stop < entry < target):
+        if qty and qty > 0 and ordered:
             cost = qty * entry
-            loss = qty * (entry - stop)
-            rr = (target - entry) / (entry - stop)
+            loss = qty * abs(entry - stop)
+            rr = abs(target - entry) / abs(entry - stop)
             if loss > risk_cap + CENT:
                 reasons.append("loss: %s en el stop supera el %s%% de la cuenta (%s)"
                                % (money(round(loss, 2)), _num(sw["max_risk_per_trade_pct"]), money(round(risk_cap, 2))))
-            if exposure + cost > exp_cap + CENT:
-                reasons.append("exposure: %s ya invertido + %s = %s supera el %s%% de la cuenta (%s)"
-                               % (money(round(exposure, 2)), money(round(cost, 2)), money(round(exposure + cost, 2)),
-                                  _num(sw["max_exposure_pct"]), money(round(exp_cap, 2))))
-            if cost > pos_cap + CENT:
-                reasons.append("position: %s supera max_position_pct (%s)" % (money(round(cost, 2)), money(round(pos_cap, 2))))
-            if cost > cash - buffer_usd + CENT:
-                reasons.append("cash: %s deja la caja bajo el colchon (caja %s, colchon %s)"
-                               % (money(round(cost, 2)), money(round(cash, 2)), money(round(buffer_usd, 2))))
             mrr = _f(c.get("min_reward_risk"))
             if mrr and rr < mrr - 1e-9:
                 reasons.append("reward:risk %.2f bajo tu minimo %s" % (rr, _num(mrr)))
+        if lev_venue and cost is not None:
+            lev = _f(t.get("leverage")) or 1.0
+            liq = _f(t.get("liquidation"))
+            margin = _f(t.get("margin")) or cost / lev
+            mx = float(_f(vcfg.get("max_leverage")) or 1)
+            if lev > mx + 1e-9:
+                reasons.append("leverage: %gx supera tu maximo %gx en %s" % (lev, mx, vname))
+            if lev > 1 and liq is None:
+                reasons.append("leverage: falta el precio de liquidacion")
+            elif liq is not None and ((side == "buy" and liq >= stop) or (side == "sell" and liq <= stop)):
+                reasons.append("liquidation: la liquidacion (~%s) llega antes que el stop (%s): baja el apalancamiento"
+                               % (_p(liq), _p(stop)))
+            if vused[vname] + margin > vcap[vname] + CENT:
+                reasons.append("margin: %s de margen + %s en uso supera el capital de %s (%s)"
+                               % (money(round(margin, 2)), money(round(vused[vname], 2)), vname,
+                                  money(round(vcap[vname], 2))))
+        elif cost is not None:
+            v_exp_cap = vcap[vname] * float(sw["max_exposure_pct"]) / 100.0 if vcfg else exp_cap
+            v_cash = (vcap[vname] - vused[vname]) if vcfg else cash
+            v_buffer = vcap[vname] * float(c.get("cash_buffer_pct") or 0) / 100.0 if vcfg else buffer_usd
+            v_exposure = vused[vname] if vcfg else exposure
+            if v_exposure + cost > v_exp_cap + CENT:
+                reasons.append("exposure: %s ya invertido + %s = %s supera el %s%% %s (%s)"
+                               % (money(round(v_exposure, 2)), money(round(cost, 2)), money(round(v_exposure + cost, 2)),
+                                  _num(sw["max_exposure_pct"]), ("del capital de %s" % vname) if vcfg else "de la cuenta",
+                                  money(round(v_exp_cap, 2))))
+            v_pos_cap = vcap[vname] * float(c.get("max_position_pct") or 100) / 100.0 if vcfg else pos_cap
+            if cost > v_pos_cap + CENT:
+                reasons.append("position: %s supera max_position_pct (%s)" % (money(round(cost, 2)), money(round(v_pos_cap, 2))))
+            if cost > v_cash - v_buffer + CENT:
+                reasons.append("cash: %s deja la caja bajo el colchon (caja %s, colchon %s)"
+                               % (money(round(cost, 2)), money(round(v_cash, 2)), money(round(v_buffer, 2))))
         er = t.get("earnings") if isinstance(t.get("earnings"), dict) else None
         if er is None:
             if sw["block_on_earnings"]:
@@ -933,14 +971,26 @@ def check_swing(tickets, cfg, portfolio=None, prices=None, today=None):
         tmi = t.get("timemachine") or {}
         if tmi.get("few_cases"):
             warns.append("el historial real del setup tiene menos de 30 casos")
+        mexp = _f(raw.get("min_expectancy_R"))
+        if mexp is not None:
+            if tmi.get("expectancy_R") is None:
+                reasons.append("expectancy: sin simulacion del Time Machine y swing.min_expectancy_R esta activo")
+            elif float(tmi["expectancy_R"]) < mexp - 1e-9:
+                reasons.append("expectancy: el Time Machine da %+.2fR, bajo tu minimo %+.2fR"
+                               % (float(tmi["expectancy_R"]), mexp))
         verdict = "BLOCK" if reasons else "PASS"
         if verdict == "PASS":
-            exposure += cost
-            cash -= cost
+            used = (_f(t.get("margin")) or cost / (_f(t.get("leverage")) or 1.0)) if lev_venue else cost
+            if vcfg:
+                vused[vname] += used
+            if not lev_venue:
+                exposure += cost
+                cash -= cost
             npos += 1
-            held[sym] = cost
+            held[sym] = used
         seen.add(sym)
-        results.append({"index": i, "symbol": sym, "qty": qty, "entry": entry, "stop": stop, "target": target,
+        results.append({"index": i, "symbol": sym, "side": side, "venue": vname, "leverage": _f(t.get("leverage")) or 1,
+                        "qty": qty, "entry": entry, "stop": stop, "target": target,
                         "cost": None if cost is None else round(cost, 2),
                         "max_loss": None if loss is None else round(loss, 2),
                         "reward_risk": None if rr is None else round(rr, 2),
@@ -956,9 +1006,11 @@ def report_swing(res):
     lines = ["ATENCION: " + w for w in res["warnings"]]
     for r in res["results"]:
         q = r["qty"]
-        lines.append("%-5s #%d compra %s %s acciones a %s, stop %s, objetivo %s, cierre por tiempo %s" % (
-            r["verdict"], r["index"], r["symbol"], ("%g" % q) if q else "?", _p(r["entry"] or 0), _p(r["stop"] or 0),
-            _p(r["target"] or 0), r["time_stop_date"]))
+        lines.append("%-5s #%d %s %s %s a %s, stop %s, objetivo %s, cierre por tiempo %s (%s%s)" % (
+            r["verdict"], r["index"], "SHORT" if r.get("side") == "sell" else "compra", r["symbol"],
+            ("%g" % q) if q else "?", _p(r["entry"] or 0), _p(r["stop"] or 0), _p(r["target"] or 0),
+            r["time_stop_date"], r.get("venue", "manual"),
+            (" %gx" % r["leverage"]) if r.get("leverage", 1) > 1 else ""))
         for x in r["reasons"]:
             lines.append("        - " + x)
         for x in r["warnings"]:

@@ -860,9 +860,13 @@ def money(x):
 # for liquidity and a close-only pre-filter, then the v8 chart of the most
 # traded candidates. Output: trader/swing.json (candidates, newest close).
 
-SWING_SETUPS = ("breakout20", "pullback_ema20", "rsi2")
-SWING_LABEL = {"breakout20": "20-day high breakout", "pullback_ema20": "pullback to the EMA20 in an uptrend",
-               "rsi2": "RSI(2) oversold in an uptrend"}
+SWING_LONG_SETUPS = ("breakout20", "pullback_ema20", "rsi2")
+SWING_SHORT_SETUPS = ("breakdown20", "pullback_ema20_short", "rsi2_short")
+SWING_SETUPS = SWING_LONG_SETUPS + SWING_SHORT_SETUPS
+SWING_LABEL = {"breakout20": "ruptura del maximo de 20 dias", "pullback_ema20": "pullback a la EMA20 en tendencia alcista",
+               "rsi2": "RSI(2) sobrevendido en tendencia alcista",
+               "breakdown20": "quiebre del minimo de 20 dias", "pullback_ema20_short": "rebote a la EMA20 en tendencia bajista",
+               "rsi2_short": "RSI(2) sobrecomprado en tendencia bajista"}
 SWING_PARAMS = {"breakout_days": 20, "ema_days": 20, "trend_days": 50, "ema_touch_pct": 1.0,
                 "rsi_days": 2, "rsi_max": 10.0, "rsi_trend_days": 200}
 SWING_DEFAULTS = {"min_price": 5.0, "min_dollar_volume": 20000000.0}
@@ -934,7 +938,14 @@ def swing_params(cfg):
             raise ScanError("swing.setup_params.%s must be a number" % k)
         if p[k] <= 0:
             raise ScanError("swing.setup_params.%s must be above 0" % k)
-    setups = sw.get("setups", list(SWING_SETUPS))
+    sides = sw.get("sides", ["long"])
+    if isinstance(sides, str):
+        sides = [x for x in re.split(r"[,\s]+", sides) if x]
+    if not sides or any(x not in ("long", "short") for x in sides):
+        raise ScanError('swing.sides is a list of "long" and/or "short"')
+    default = (list(SWING_LONG_SETUPS) if "long" in sides else []) + \
+        (list(SWING_SHORT_SETUPS) if "short" in sides else [])
+    setups = sw.get("setups", default)
     if isinstance(setups, str):
         setups = [s for s in re.split(r"[,\s]+", setups) if s]
     for s in setups:
@@ -973,6 +984,18 @@ def swing_fires(setup, bars, i, ind, p):
     if setup == "rsi2":
         r, t = ind["rsi"][i], ind["rsi_trend"][i]
         return r is not None and t is not None and r < p["rsi_max"] and b["c"] > t
+    if setup == "breakdown20":
+        n = p["breakout_days"]
+        return i >= n and b["c"] < min(x["l"] for x in bars[i - n:i])
+    if setup == "pullback_ema20_short":
+        e, t = ind["ema"][i], ind["trend"][i]
+        e5 = ind["ema"][i - 5] if i >= 5 else None
+        if None in (e, t, e5):
+            return False
+        return b["c"] < t and e < e5 and b["h"] >= e * (1 - p["ema_touch_pct"] / 100.0) and b["c"] <= e
+    if setup == "rsi2_short":
+        r, t = ind["rsi"][i], ind["rsi_trend"][i]
+        return r is not None and t is not None and r > 100.0 - p["rsi_max"] and b["c"] < t
     return False
 
 
@@ -1016,6 +1039,18 @@ def swing_prefilter(closes, setups, p):
         r = rsi_series(closes, p["rsi_days"])[-1]
         if r is not None and r < p["rsi_max"]:
             return True
+    if "breakdown20" in setups and closes[-1] < min(closes[-1 - p["breakout_days"]:-1]):
+        return True   # a close under the lowest low is under the lowest close too
+    if "pullback_ema20_short" in setups:
+        ema = ema_series(closes, p["ema_days"])
+        t = sma_series(closes, p["trend_days"])[-1]
+        e, e5 = ema[-1], (ema[-6] if len(ema) >= 6 else None)
+        if None not in (e, e5, t) and closes[-1] <= e and closes[-1] < t and e < e5:
+            return True
+    if "rsi2_short" in setups:
+        r = rsi_series(closes, p["rsi_days"])[-1]
+        if r is not None and r > 100.0 - p["rsi_max"]:
+            return True
     return False
 
 
@@ -1037,11 +1072,15 @@ def swing_candidate(sym, bars, setups, p, floors):
 
     def r2(x):
         return None if x is None else round(x, 2)
-    return {"symbol": sym, "setup": hits[0], "setups": hits, "date": last["date"].isoformat(),
+    side = "sell" if hits[0] in SWING_SHORT_SETUPS else "buy"
+    hits = [h for h in hits if (h in SWING_SHORT_SETUPS) == (side == "sell")]
+    return {"symbol": sym, "side": side, "direction": "SHORT" if side == "sell" else "LONG",
+            "setup": hits[0], "setups": hits, "date": last["date"].isoformat(),
             "price": round(last["c"], 2), "atr14": r2(atr_last(bars, 14)), "ema20": r2(ind["ema"][i]),
             "sma50": r2(ind["trend"][i]), "sma200": r2(ind["rsi_trend"][i]), "rsi2": r2(ind["rsi"][i]),
             "high20": r2(max(b["h"] for b in bars[-1 - p["breakout_days"]:-1])),
-            "dollar_volume_20d": int(dv), "daily_tags": daily_tags}, "hit"
+            "dollar_volume_20d": int(dv), "daily_tags": daily_tags,
+            "why": SWING_LABEL.get(hits[0], hits[0])}, "hit"
 
 
 def scan_swing(data, symbols, now_utc, setups, p, floors):
@@ -1058,6 +1097,9 @@ def scan_swing(data, symbols, now_utc, setups, p, floors):
             counts["no_ohlc"] += 1
             continue
         cand, why = swing_candidate(sym, bars, setups, p, floors)
+        if cand:
+            meta = s.get("meta") or {}
+            cand["name"] = " ".join(str(meta.get("longName") or meta.get("shortName") or "").split())
         if why in ("short", "illiquid"):
             counts[why] += 1
             continue

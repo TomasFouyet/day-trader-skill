@@ -156,8 +156,8 @@ class RealData(unittest.TestCase):
         self.assertEqual(m["p_gap_stop"], 0.0401)
         self.assertEqual((h["setup"], h["triggered"], h["target"], h["stop"], h["unresolved"]),
                          ("breakout20", 38, 7, 13, 18))
-        self.assertEqual(h["rule"], {"target_r": 2.0, "horizon_days": 7, "stop": "atr", "atr_mult": 2.0,
-                                     "atr_days": 14})
+        self.assertEqual(h["rule"], {"target_r": 2.0, "horizon_days": 7, "side": "buy", "stop": "atr",
+                                     "atr_mult": 2.0, "atr_days": 14})
         self.assertFalse(h["few_cases"])
         self.assertTrue(d["verdict"].startswith("Claramente hacia el stop: objetivo primero 4.8 % vs stop primero "
                                                 "30.6 % (sin resolver al dia 7: 64.6 %)"))
@@ -198,7 +198,8 @@ class RealData(unittest.TestCase):
 
     def test_refusals(self):
         bad = [
-            (dict(PLAN, side="sell"), "solo largos"),
+            (dict(PLAN, side="sell"), "a short needs target < entry < stop"),
+            (dict(PLAN, side="sideways"), "side es buy"),
             (dict(PLAN, stop=410.0), "stop < entry < target"),
             (dict(PLAN, date="nope"), "date"),
             (dict(PLAN, horizon_days=None, time_stop_days=99), "between 1 and 60"),

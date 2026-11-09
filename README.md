@@ -348,7 +348,52 @@ Dominios que usa: `query1.finance.yahoo.com`, `query2.finance.yahoo.com`,
 `feeds.finance.yahoo.com`, `www.nasdaqtrader.com`, `www.sec.gov`,
 `data.sec.gov` y `api.telegram.org`.
 
-### 7. Límites que quedan
+### 7. Long o short, Fintual y Bitunix (apalancamiento)
+
+El scanner busca setups en las dos direcciones (`"sides": ["long", "short"]`
+en el bloque `"swing"`). Los short son las mismas tres reglas, al revés:
+quiebre del mínimo de 20 días, rebote a la EMA20 en tendencia bajista y RSI(2)
+sobrecomprado bajo la media de 200 días. Cada aviso dice arriba
+**🟢 LONG** o **🔴 SHORT**.
+
+Tu cuenta se reparte entre venues en `"swing": {"venues": {...}}`:
+
+| venue | `capital_pct` | `max_leverage` | `short` | para qué |
+| --- | --- | --- | --- | --- |
+| `fintual` | 70 | 1 | no | longs sin apalancamiento, compras fraccionadas |
+| `bitunix` | 30 | 5 | sí | shorts, y longs apalancados si prefieres |
+
+El tamaño de cuenta total sale de `TRADER_BUDGET` (o de `portfolio.json`).
+Para cada setup el aviso calcula los dos venues:
+
+- **El riesgo es siempre el mismo:** `max_risk_per_trade_pct` (1 %) de la
+  cuenta **total**. Si el stop se cumple, pierdes eso, con o sin
+  apalancamiento. El apalancamiento solo cambia cuánto margen inmovilizas.
+- **Fintual (1x):** acciones (fraccionadas) = riesgo / distancia al stop,
+  con tope de exposición, posición y caja sobre el 70 % de la cuenta.
+- **Bitunix:** nocional = riesgo / % de stop. El margen máximo por trade es
+  el 25 % del capital de Bitunix (`max_margin_per_trade_pct`). Usa el
+  **menor apalancamiento** que hace caber ese nocional en ese margen. Nunca
+  pasa de `max_leverage` y nunca deja la **liquidación** antes del stop: el
+  precio de liquidación tiene que quedar a más de 1,5 veces la distancia del
+  stop (`liq_buffer`). Si no cabe, achica la posición (menos riesgo, nunca
+  más). Muestra nocional, margen, % de tu cuenta, % del capital del venue,
+  liquidación aproximada y comisiones estimadas (`fee_pct`).
+- trader-risk bloquea: short en un venue sin short, apalancamiento sobre el
+  máximo, liquidación antes del stop, margen sobre el capital libre, y setups
+  con expectativa del Time Machine bajo `min_expectancy_R` (0 en el ejemplo).
+
+**Antes de usar Bitunix:**
+- Verifica que Bitunix tenga el contrato de cada acción. No sé qué acciones de
+  EE. UU. ofrece, ni si las tiene todas. Puedes limitar con
+  `"symbols": ["AAPL", "TSLA", ...]` en su venue.
+- Un perpetuo no es la acción: paga o cobra *funding* cada pocas horas, puede
+  cotizar distinto que la acción y opera cuando la bolsa está cerrada. La
+  liquidación que calcula el aviso es aproximada (margen aislado); la real
+  depende de las reglas de Bitunix. Revisa ambas en la plataforma.
+- Pon el stop en la plataforma apenas abras la posición.
+
+### 8. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
   SEC (el calendario de Yahoo pide un token de sesión). Confírmalas en la web

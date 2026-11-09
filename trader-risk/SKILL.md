@@ -116,6 +116,11 @@ reward:risk under `min_reward_risk`, an earnings check that says BLOCKED (or
 none at all while `swing.block_on_earnings` is on), and a stale signal. No
 market-hours window or day-trade counts: the user buys by hand.
 
+With `swing.venues`, a ticket is also BLOCKED for: a short on a venue without
+`short: true`, leverage over `max_leverage`, a liquidation price at or before
+the stop, margin over the venue's free capital, and (with
+`swing.min_expectancy_R`) a Time Machine expectancy under the minimum.
+
 ## Steps
 
 1. If the price may have moved since the plan, refresh it first

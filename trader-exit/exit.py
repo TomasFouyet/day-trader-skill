@@ -48,7 +48,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from decimal import Decimal, InvalidOperation, ROUND_FLOOR, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 BACKOFF = 5.0
@@ -671,7 +671,8 @@ SWING_DEFAULTS = {
     "max_exposure_pct": 60.0,       # all open swing positions together, % of the account
     "atr_days": 14,
 }
-SWING_SETUPS = ("breakout20", "pullback_ema20", "rsi2", "manual")
+SWING_SETUPS = ("breakout20", "pullback_ema20", "rsi2", "breakdown20", "pullback_ema20_short", "rsi2_short", "manual")
+SHORT_SETUPS = ("breakdown20", "pullback_ema20_short", "rsi2_short")
 SWING_RANGE = "1y"
 SWING_NOTE = ("Un stop es un plan, no una garantia: en swing la accion duerme fuera del mercado y un gap "
               "de apertura puede ejecutarse por debajo del stop.")
@@ -830,13 +831,11 @@ def r_label_es(r):
 def gather_swing(a):
     if a.symbol and a.from_path:
         raise PlanError("use --from or --symbol, not both")
-    if a.side in ("sell", "short"):
-        raise PlanError("el modo swing planifica solo largos (compras): no hay stops sobre una venta en corto")
     if a.or_high is not None or a.or_low is not None:
         raise PlanError("--or-high/--or-low son del intradia: en swing no hay rango de apertura")
     if a.symbol:
         return {"symbol": a.symbol.upper(), "entry": a.entry, "date": a.date, "setup": a.setup, "source": "flags",
-                "setup_params": None, "earnings": None}
+                "setup_params": None, "earnings": None, "side": side_of(a.side), "name": None}
     if not a.from_path:
         raise PlanError("en modo swing da --symbol TICKER (y --entry PRECIO, o se usa el ultimo cierre diario), "
                         "o --from un JSON con symbol")
@@ -859,14 +858,50 @@ def gather_swing(a):
         top = read_json(a.from_path, "candidate")
         if not doc.get("setup_params") and isinstance(top.get("setup_params"), dict):
             doc["setup_params"] = top["setup_params"]
-    if str(doc.get("side") or "buy").lower() not in ("buy", "long"):
-        raise PlanError("%s es un %s: el modo swing planifica solo largos" % (a.from_path, doc.get("side")))
     sym = str(doc.get("symbol") or "").upper()
     if not sym:
         raise PlanError("%s no tiene symbol" % a.from_path)
     entry = a.entry if a.entry is not None else (doc.get("entry") if doc.get("entry") is not None else doc.get("price"))
     return {"symbol": sym, "entry": entry, "date": a.date or doc.get("date"), "setup": a.setup or doc.get("setup"),
-            "source": a.from_path, "setup_params": doc.get("setup_params"), "earnings": doc.get("earnings")}
+            "source": a.from_path, "setup_params": doc.get("setup_params"), "earnings": doc.get("earnings"),
+            "side": side_of(doc.get("side") or a.side), "name": doc.get("name")}
+
+
+def side_of(x):
+    s = {"buy": "buy", "long": "buy", "sell": "sell", "short": "sell"}.get(str(x or "buy").lower())
+    if s is None:
+        raise PlanError("side es buy/long o sell/short, no %r" % x)
+    return s
+
+
+def compute_short(entry, stop_rule, stop_param, target_rule, target_param, atr=None):
+    """The short side of compute(): the stop ABOVE the entry, rounded up (away), the target below."""
+    e = cents(entry)
+    if e <= 0:
+        raise PlanError("the entry price must be above $0")
+    if stop_rule == "atr":
+        if atr is None:
+            raise PlanError("an atr stop needs the daily bars")
+        raw = e + stop_param * D(round(atr, 6))
+    elif stop_rule == "pct":
+        raw = e * (1 + stop_param / 100)
+    else:
+        raw = stop_param
+    stop = D(raw).quantize(CENT, rounding=ROUND_CEILING)
+    if stop <= e:
+        raise PlanError("el stop %s de un short tiene que ir sobre la entrada %s" % (money(stop), money(e)))
+    risk = stop - e
+    if risk < e * MIN_RISK_PCT / 100:
+        raise PlanError("el stop esta a %s de la entrada: demasiado cerca para sobrevivir el spread" % money(risk))
+    if target_rule == "r":
+        target = cents(e - target_param * risk)
+    else:
+        target = cents(target_param)
+    if target >= e or target <= 0:
+        raise PlanError("el objetivo %s de un short tiene que ir bajo la entrada %s y sobre $0" % (money(target), money(e)))
+    rr = ((e - target) / risk).quantize(CENT, rounding=ROUND_HALF_UP)
+    return {"entry": e, "stop": stop, "target": target, "risk": risk, "reward_risk": rr,
+            "target_r": target_param if target_rule == "r" else rr, "raw": raw}
 
 
 def build_swing_plan(a, now_utc):
@@ -881,6 +916,10 @@ def build_swing_plan(a, now_utc):
         raise PlanError("el setup %s es intradia; en swing usa %s" % (setup, ", ".join(SWING_SETUPS)))
     if setup not in SWING_SETUPS:
         raise PlanError("setup swing desconocido %r: usa %s" % (setup, ", ".join(SWING_SETUPS)))
+    if setup != "manual" and (setup in SHORT_SETUPS) != (info.get("side") == "sell"):
+        raise PlanError("el setup %s es %s pero el plan es %s: usa --side %s" % (
+            setup, "short" if setup in SHORT_SETUPS else "long", "short" if info.get("side") == "sell" else "long",
+            "sell" if setup in SHORT_SETUPS else "buy"))
     horizon = _int_in(a.horizon_days if a.horizon_days is not None else sw["horizon_days"], 1, 60, "--horizon-days")
     if a.time_stop_days is not None:
         tstop = _int_in(a.time_stop_days, 1, 60, "--time-stop-days")
@@ -920,9 +959,27 @@ def build_swing_plan(a, now_utc):
             atr, atr_n = daily_atr(bars, sw["atr_days"])
     elif day is None:
         day = last_closed_session(now_utc) if not session(to_eastern(now_utc).date()) else to_eastern(now_utc).date()
-    c = compute(entry, stop_rule, stop_param, target_rule, target_param, atr=atr, atr_bars=atr_n)
+    short = info.get("side") == "sell"
+    if short:
+        c = compute_short(entry, stop_rule, stop_param, target_rule, target_param, atr=atr)
+    else:
+        c = compute(entry, stop_rule, stop_param, target_rule, target_param, atr=atr, atr_bars=atr_n)
     e = c["entry"]
-    if stop_rule == "atr":
+    if short:
+        raw = c["raw"]
+        if stop_rule == "atr":
+            label = "%s x ATR(%d) diario sobre la entrada" % (num(stop_param), atr_n)
+            detail = "%s + %s x $%s = $%s" % (money(e), num(stop_param),
+                                               num(D(round(atr, 6)).quantize(Decimal("0.0001"))),
+                                               num(D(raw).quantize(Decimal("0.0001"))))
+        elif stop_rule == "pct":
+            label = "%s%% sobre la entrada" % num(stop_param)
+            detail = "%s x (1 + %s%%) = $%s" % (money(e), num(stop_param), num(raw))
+        else:
+            label, detail = "tu precio", ""
+        if c["stop"] != D(raw):
+            detail = (detail + ", redondeado hacia arriba" if detail else "$%s redondeado hacia arriba" % num(raw))
+    elif stop_rule == "atr":
         a4 = D(round(atr, 6)).quantize(Decimal("0.0001"))
         raw = e - stop_param * D(round(atr, 6))
         label = "%s x ATR(%d) diario bajo la entrada" % (num(stop_param), atr_n)
@@ -935,11 +992,12 @@ def build_swing_plan(a, now_utc):
         detail = "%s x (1 - %s%%) = $%s" % (money(e), num(stop_param), num(raw))
     else:
         raw, label, detail = stop_param, "tu precio", ""
-    if c["stop"] != D(raw):
+    if not short and c["stop"] != D(raw):
         detail = (detail + ", redondeado hacia abajo" if detail else "$%s redondeado hacia abajo" % num(raw))
     t_label = r_label_es(target_param) if target_rule == "r" else "tu precio (%sR)" % ratio(c["reward_risk"])
     tdate = add_trading_days(day, tstop)
-    plan = {"created_by": "trader-exit", "mode": "swing", "symbol": info["symbol"], "side": "buy",
+    plan = {"created_by": "trader-exit", "mode": "swing", "symbol": info["symbol"], "side": info.get("side", "buy"),
+            "name": info.get("name"),
             "date": day.isoformat(), "setup": setup, "entry": float(e), "entry_basis": basis, "interval": "1d",
             "stop": float(c["stop"]), "stop_rule": stop_rule,
             "stop_param": float(stop_param) if stop_rule in ("atr", "pct") else None,
@@ -989,8 +1047,8 @@ def describe_swing(plan):
     tday = datetime.date.fromisoformat(plan["time_stop_date"])
     e = D(plan["entry"])
     pct = (D(plan["risk_per_share"]) / e * 100).quantize(CENT, rounding=ROUND_HALF_UP)
-    out = ["Plan de salida swing: %s largo, senal del %s %s (setup %s), velas diarias" % (
-        plan["symbol"], DIAS[day.weekday()], day.isoformat(), plan.get("setup") or "manual")]
+    out = ["Plan de salida swing: %s %s, senal del %s %s (setup %s), velas diarias" % (
+        plan["symbol"], "corto (SHORT)" if plan.get("side") == "sell" else "largo", DIAS[day.weekday()], day.isoformat(), plan.get("setup") or "manual")]
     basis = plan.get("entry_basis")
     out.append("  Entrada          %s%s" % (money(plan["entry"]), ("  " + basis) if basis else ""))
     out.append("  Stop             %s  %s%s" % (money(plan["stop"]), plan.get("stop_label") or "",
@@ -1102,8 +1160,9 @@ def main(argv=None):
     p.add_argument("--or-high", type=float)
     p.add_argument("--or-low", type=float)
     p.add_argument("--or-minutes", type=int, default=15)
-    p.add_argument("--setup", choices=["orb", "level", "breakout20", "pullback_ema20", "rsi2", "manual"],
-                   help="orb, level (intraday); breakout20, pullback_ema20, rsi2, manual (swing)")
+    p.add_argument("--setup", choices=["orb", "level", "breakout20", "pullback_ema20", "rsi2", "breakdown20",
+                                       "pullback_ema20_short", "rsi2_short", "manual"],
+                   help="orb, level (intraday); breakout20, pullback_ema20, rsi2, manual, and the short ones (swing)")
     p.add_argument("--date", help="session date YYYY-MM-DD (default: the entry's, or today)")
     p.add_argument("--time", help="entry time, e.g. 10:15 AM")
     p.add_argument("--entry-bar", type=int)

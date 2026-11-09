@@ -194,12 +194,14 @@ class Telegram(Tmp):
         code, text, err = run(tg, ["--dry-run", "--now", "2026-11-02 18:00"])
         self.assertEqual(code, 0, err)
         self.assertEqual(self.posts, [])
-        for must in ("Setup swing: WMT (breakout20)", "Entrada ~$123.51 | Stop $118.22 | Objetivo $134.09 (2R)",
-                     "Tamano sugerido: 9 acciones (~$1,111.59)", "Perdida maxima en el stop: $47.61",
-                     "objetivo primero 30.1 %, stop primero 32.0 %, sin resolver 37.9 %, expectativa +0.05R",
-                     "Cercano a una moneda al aire", "12 caso(s), pocos",
-                     "⚠ resultados dentro del horizonte (2026-11-06)", "No es asesoria financiera",
-                     "cierre del 2026-11-10", "Would send 1"):
+        for must in ("🟢 <b>LONG · WMT</b>", "Ruptura del máximo de 20 días · señal del 30-10-2026",
+                     "<code>Entrada  $123.51</code>", "<code>Stop     $118.22  (-4.3%)</code>",
+                     "<code>Objetivo $134.09  (+8.6%) 2R</code>", "<b>9 acciones</b> (~$1,111.59)",
+                     "pérdida si toca el stop <b>$47.61</b>",
+                     "Objetivo <b>30.1 %</b> · Stop <b>32.0 %</b> · Abierta al final <b>37.9 %</b>",
+                     "Expectativa <b>+0.05R</b> · Historial real: 12 casos (pocos)", "→ Cercano a una moneda al aire",
+                     "⚠ <b>resultados dentro del horizonte</b> (06-11-2026)", "No es asesoría financiera",
+                     "Cierre por tiempo: <b>10-11-2026</b>", "Would send 1"):
             self.assertIn(must, text)
         self.assertFalse(os.path.exists("trader/state/telegram.json"))
 
@@ -306,15 +308,17 @@ class Pipeline(Tmp):
         for step in ("== scanner", "== resultados", "== exit", "== time machine", "== budget", "== risk",
                      "== alertas", "== telegram"):
             self.assertIn(step, text)
-        self.assertIn("Pasan risk: 3.", text)
-        self.assertIn("Setup swing: WMT", text)
-        self.assertIn("Would send 3", text)
-        self.assertNotIn("Setup swing: AAPL", text)      # blocked by its estimated report
+        self.assertIn("Pasan risk: 4.", text)                # 2 long in Fintual, 2 short in Bitunix
+        self.assertIn("SHORT · AMZN", text)
+        self.assertIn("Swing 30-10-2026</b>: 4 setup(s) nuevos (2 long, 2 short)", text)
+        self.assertIn("LONG · WMT", text)
+        self.assertIn("Would send 4", text)
+        self.assertNotIn("LONG · AAPL", text)            # blocked by its estimated report
         self.assertFalse(os.path.exists("trader/orders.json"))
         with open("trader/state/pipeline.json") as fh:
             st = json.load(fh)
         self.assertIsNone(st.get("last_ok"))              # a dry run does not count as today's run
-        self.assertEqual(st["last_counts"]["passed"], 3)
+        self.assertEqual(st["last_counts"]["passed"], 4)
 
         self.posts = []
         saved = tg._post
@@ -335,14 +339,15 @@ class Pipeline(Tmp):
         try:
             code, text, err = self.go("--quiet")
             self.assertEqual(code, 0, err + text)
-            self.assertEqual(len(self.posts), 3)
+            self.assertEqual(len(self.posts), 5)          # the day's summary + 4 setups
+            self.assertTrue(all(p.get("parse_mode") == "HTML" for p in self.posts))
             self.assertNotIn("$", text)                   # --quiet: no sizes, no account in the log
             self.assertNotIn("WMT", text)
             code, text, _ = self.go("--quiet", now="2026-10-30 17:40")
             self.assertIn("Ya corrio hoy", text)
-            self.assertEqual(len(self.posts), 3)
+            self.assertEqual(len(self.posts), 5)
             code, text, _ = self.go("--quiet", "--force", now="2026-10-30 17:45")
-            self.assertEqual(len(self.posts), 3)          # forced again: same setups, nothing repeated
+            self.assertEqual(len(self.posts), 5)          # forced again: same setups, nothing repeated
         finally:
             pipe.load_tool = runner_load
             tg._post = saved
@@ -369,8 +374,9 @@ class Pipeline(Tmp):
         code, text, err = run(size, ["--now", "2026-11-02 09:00", "--json", "--timemachine", "none"])
         self.assertEqual(code, 0, err)
         s = json.loads(text)["sizing"]
-        self.assertEqual((s["account"], s["qty"], s["bound_by"]), (20000.0, 32, "max order"))   # $4,000 / 123.51
-        self.assertEqual([l["shares"] for l in s["limits"] if l["name"] == "max loss"], [37])   # 1 % = 200 / 5.29
+        self.assertEqual((s["account"], s["venue"], s["bound_by"]), (20000.0, "fintual", "max order"))
+        self.assertAlmostEqual(s["qty"], 32.386, places=3)        # $4,000 / 123.51, Fintual buys fractions
+        self.assertAlmostEqual([l["shares"] for l in s["limits"] if l["name"] == "max loss"][0], 37.807, places=3)
 
 
 # ---------------------------------------------------------------- safety and privacy

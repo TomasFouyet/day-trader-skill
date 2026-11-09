@@ -838,7 +838,8 @@ def swing_book(portfolio, prices):
             continue
         px = (prices or {}).get(sym) or _f(p.get("price")) or _f(p.get("entry"))
         value = n * px if px else (_f(p.get("cost")) or 0.0)
-        rows.append({"symbol": sym, "shares": n, "value": round(value, 2), "swing": bool(p.get("swing"))})
+        rows.append({"symbol": sym, "shares": n, "value": round(value, 2), "swing": bool(p.get("swing")),
+                     "venue": str(p["venue"]).lower() if p.get("venue") else None, "margin": _f(p.get("margin"))})
     tagged = [r for r in rows if r["swing"]]
     open_ = tagged if tagged else rows
     total = (cash or 0.0) + sum(r["value"] for r in rows) if cash is not None else None
@@ -853,56 +854,108 @@ def shares_frac(usd, per_share, step):
     return math.floor(usd / per_share / step + EPS) * step
 
 
-def size_swing(plan, cfg, budget=None, limit=None, portfolio=None, prices=None, today=None, tm=None):
-    """Pure: a swing plan + rules + the account -> the sizing (a dict). qty may be 0."""
-    c = dict(DEFAULTS)
-    c.update(cfg or {})
-    lim = swing_limits(c)
-    sym = str(plan.get("symbol") or "").strip().upper()
-    if not sym:
-        raise SizeError("el plan no tiene symbol (corre trader-exit --mode swing)")
-    if str(plan.get("side") or "buy").lower() != "buy":
-        raise SizeError("el modo swing dimensiona solo compras (largos)")
-    entry_plan, stop, target = _f(plan.get("entry")), _f(plan.get("stop")), _f(plan.get("target"))
-    for name, v in (("entry", entry_plan), ("stop", stop), ("target", target)):
-        if v is None or v <= 0:
-            raise SizeError("el plan necesita %s positivo (corre trader-exit --mode swing)" % name)
-    if sym in {str(b).upper() for b in (c.get("blocked") or [])}:
-        raise SizeError("%s esta en tu lista blocked" % sym)
-    prices = {str(k).upper(): float(v) for k, v in (prices or {}).items() if _f(v)}
-    acct, cash, held = swing_book(portfolio, prices)
-    account = float(budget) if budget is not None else (acct if acct else _f(c.get("budget")))
-    if not account or account <= 0:
-        raise SizeError("sin tamano de cuenta: pon \"budget\" en trader/config.json, --budget, o trader/portfolio.json")
-    buf_pct = float(c.get("cash_buffer_pct") or 0)
-    exposure = round(sum(r["value"] for r in held), 2)
-    cash_now = cash if cash is not None else account - exposure
-    buffer_usd = round(account * buf_pct / 100.0, 2)
-    available = max(round(cash_now - buffer_usd, 2), 0.0)
+VENUE_DEFAULTS = {"capital_pct": 100.0, "max_leverage": 1.0, "short": False, "max_margin_per_trade_pct": 25.0,
+                  "maintenance_margin_pct": 0.5, "fee_pct": 0.06, "liq_buffer": 1.5, "symbols": [],
+                  "qty_step": 0.001}
 
-    ref = round_cent(limit) if limit is not None else round_cent(entry_plan)
-    stop, target = round_cent(stop), round_cent(target)
-    if not stop < ref < target:
-        raise SizeError("hace falta stop < entrada < objetivo (stop %s, entrada %s, objetivo %s)"
-                        % (_price(stop), _price(ref), _price(target)))
-    risk = round(ref - stop, 2)
-    rr = round((target - ref) / risk, 2)
-    step = 0.0001 if c.get("fractional") else 1
-    risk_usd = round(account * lim["max_risk_per_trade_pct"] / 100.0, 2)
-    room = round(account * lim["max_exposure_pct"] / 100.0 - exposure, 2)
+
+def swing_venues(c):
+    """The venues from the config's swing.venues, checked. None = the single, unlevered manual account."""
+    sw = c.get("swing") if isinstance(c.get("swing"), dict) else {}
+    raw = sw.get("venues")
+    if not raw:
+        return None
+    if not isinstance(raw, dict):
+        raise SizeError("swing.venues tiene que ser un objeto {\"fintual\": {...}, \"bitunix\": {...}}")
+    out, total = {}, 0.0
+    for name, v in raw.items():
+        if not isinstance(v, dict):
+            raise SizeError("swing.venues.%s tiene que ser un objeto" % name)
+        d = dict(VENUE_DEFAULTS)
+        d.update(v)
+        for k in ("capital_pct", "max_leverage", "max_margin_per_trade_pct", "maintenance_margin_pct", "fee_pct",
+                  "liq_buffer", "qty_step"):
+            d[k] = _f(d[k])
+            if d[k] is None or d[k] < 0:
+                raise SizeError("swing.venues.%s.%s tiene que ser un numero >= 0" % (name, k))
+        if not 1 <= d["max_leverage"] <= 100:
+            raise SizeError("swing.venues.%s.max_leverage va de 1 a 100" % name)
+        if d["liq_buffer"] < 1:
+            raise SizeError("swing.venues.%s.liq_buffer tiene que ser al menos 1" % name)
+        d["short"] = bool(d["short"])
+        d["symbols"] = [str(x).upper() for x in (d.get("symbols") or [])]
+        total += d["capital_pct"]
+        out[str(name).lower()] = d
+    if total > 100.0 + EPS:
+        raise SizeError("la suma de swing.venues.*.capital_pct es %s%%: no puede pasar de 100" % _num(total))
+    return out
+
+
+def lev_sizing(name, v, side, ref, risk, risk_usd, capital, used_margin, sym):
+    """A leveraged venue (perpetual futures): the notional the max loss allows, the smallest leverage that
+    fits the margin cap, and a liquidation price that stays beyond the stop with a buffer."""
+    out = {"venue": name, "leveraged": True, "qty": 0, "refusal": None}
+    if side == "sell" and not v["short"]:
+        out["refusal"] = "%s no tiene short habilitado (swing.venues.%s.short)" % (name, name)
+        return out
+    if v["symbols"] and sym not in v["symbols"]:
+        out["refusal"] = "%s no esta en la lista de simbolos de %s" % (sym, name)
+        return out
+    stop_pct = risk / ref
+    mmr = v["maintenance_margin_pct"] / 100.0
+    l_safe = int(math.floor(1.0 / (stop_pct * v["liq_buffer"] + mmr) + EPS))
+    l_max = max(1, min(int(v["max_leverage"]), l_safe))
+    free = max(capital - used_margin, 0.0)
+    margin_cap = min(capital * v["max_margin_per_trade_pct"] / 100.0, free)
+    notional_risk = risk_usd / stop_pct
+    if margin_cap <= 0:
+        out["refusal"] = "sin margen libre en %s (capital %s, en uso %s)" % (name, money(capital), money(used_margin))
+        return out
+    need = notional_risk / margin_cap
+    if need <= 1 + EPS:
+        lev, notional, bound = 1, notional_risk, "max loss"
+    elif need <= l_max + EPS:
+        lev, notional, bound = int(math.ceil(need - EPS)), notional_risk, "max loss"
+    else:
+        lev, notional, bound = l_max, margin_cap * l_max, ("margin" if l_max == int(v["max_leverage"]) else "liquidation")
+    step = v["qty_step"] or 0.001
+    qty = math.floor(notional / ref / step + EPS) * step
+    qty = round(qty, 6)
+    if qty <= 0:
+        out["refusal"] = "ni una unidad cabe en %s" % name
+        return out
+    notional = round(qty * ref, 2)
+    margin = round(notional / lev, 2)
+    if side == "sell":
+        liq = ref * (1 + 1.0 / lev - mmr)
+    else:
+        liq = ref * (1 - 1.0 / lev + mmr)
+    fees = round(notional * v["fee_pct"] / 100.0 * 2, 2)
+    out.update(qty=qty, notional=notional, leverage=lev, max_leverage=int(v["max_leverage"]), safe_leverage=l_safe,
+               margin=margin, liquidation=round(max(liq, 0.0), 2), fees=fees, max_loss=round(qty * risk, 2),
+               bound_by=bound, capital=round(capital, 2), margin_pct_of_venue=round(100.0 * margin / capital, 1)
+               if capital else None, stop_pct=round(100 * stop_pct, 2))
+    return out
+
+
+def cash_sizing(name, c, lim, ref, risk, risk_usd, capital, exposure, cash_now, step):
+    """A cash venue (no leverage): the original swing limits on this venue's capital."""
+    buf_pct = float(c.get("cash_buffer_pct") or 0)
+    buffer_usd = round(capital * buf_pct / 100.0, 2)
+    available = max(round(cash_now - buffer_usd, 2), 0.0)
+    room = round(capital * lim["max_exposure_pct"] / 100.0 - exposure, 2)
     limits = [
         {"name": "max loss", "usd": risk_usd, "shares": shares_frac(risk_usd, risk, step),
-         "how": "%s%% de %s = %s / %s de riesgo por accion" % (_num(lim["max_risk_per_trade_pct"]), money(account),
-                                                               money(risk_usd), _price(risk))},
+         "how": "%s riesgo maximo / %s de riesgo por accion" % (money(risk_usd), _price(risk))},
         {"name": "exposure", "usd": max(room, 0), "shares": shares_frac(max(room, 0), ref, step),
          "how": "%s%% de %s menos %s ya invertido en swing = %s / %s" % (
-             _num(lim["max_exposure_pct"]), money(account), money(exposure), money(max(room, 0)), _price(ref))},
+             _num(lim["max_exposure_pct"]), money(capital), money(exposure), money(max(room, 0)), _price(ref))},
     ]
     cap_pct = _f(c.get("max_position_pct"))
     if cap_pct:
-        cap = round(account * cap_pct / 100.0, 2)
+        cap = round(capital * cap_pct / 100.0, 2)
         limits.append({"name": "position cap", "usd": cap, "shares": shares_frac(cap, ref, step),
-                       "how": "%s%% de %s = %s / %s" % (_num(cap_pct), money(account), money(cap), _price(ref))})
+                       "how": "%s%% de %s = %s / %s" % (_num(cap_pct), money(capital), money(cap), _price(ref))})
     mo = _f(c.get("max_order_usd"))
     if mo:
         limits.append({"name": "max order", "usd": mo, "shares": shares_frac(mo, ref, step),
@@ -916,7 +969,93 @@ def size_swing(plan, cfg, budget=None, limit=None, portfolio=None, prices=None, 
     for l in limits:
         l["binds"] = l["name"] == bound
     cost = round(qty * ref, 2)
-    max_loss = round(qty * risk, 2)
+    out = {"venue": name, "leveraged": False, "leverage": 1, "qty": qty, "cost": cost, "notional": cost,
+           "margin": cost, "max_loss": round(qty * risk, 2), "limits": limits, "bound_by": bound,
+           "capital": round(capital, 2), "exposure_before": exposure,
+           "margin_pct_of_venue": round(100.0 * cost / capital, 1) if capital else None, "refusal": None}
+    if qty <= 0:
+        out["refusal"] = "ni una accion cabe: limita %s (%s)" % (bound, [l["how"] for l in limits if l["binds"]][0])
+    elif cost < float(c.get("min_order_usd") or 0) - 0.005:
+        out["refusal"] = "%s es menos que tu orden minima %s" % (money(cost), money(c["min_order_usd"]))
+    return out
+
+
+def size_swing(plan, cfg, budget=None, limit=None, portfolio=None, prices=None, today=None, tm=None):
+    """Pure: a swing plan + rules + the account -> the sizing (a dict). qty may be 0.
+
+    Long or short. With swing.venues in the config each venue is sized on its share of the account
+    (capital_pct): a cash venue (max_leverage 1, e.g. Fintual) with the share limits, a leveraged one
+    (e.g. Bitunix perpetuals) with notional, leverage, margin and liquidation price. The max loss per
+    trade is always a percent of the WHOLE account: leverage changes the margin, never the risk."""
+    c = dict(DEFAULTS)
+    c.update(cfg or {})
+    lim = swing_limits(c)
+    venues = swing_venues(c)
+    sym = str(plan.get("symbol") or "").strip().upper()
+    if not sym:
+        raise SizeError("el plan no tiene symbol (corre trader-exit --mode swing)")
+    side = {"buy": "buy", "long": "buy", "sell": "sell", "short": "sell"}.get(str(plan.get("side") or "buy").lower())
+    if side is None:
+        raise SizeError("side es buy (long) o sell (short), no %r" % plan.get("side"))
+    if side == "sell" and not venues:
+        raise SizeError("un short necesita un venue apalancado con short habilitado en swing.venues (p. ej. bitunix)")
+    entry_plan, stop, target = _f(plan.get("entry")), _f(plan.get("stop")), _f(plan.get("target"))
+    for name, v in (("entry", entry_plan), ("stop", stop), ("target", target)):
+        if v is None or v <= 0:
+            raise SizeError("el plan necesita %s positivo (corre trader-exit --mode swing)" % name)
+    if sym in {str(b).upper() for b in (c.get("blocked") or [])}:
+        raise SizeError("%s esta en tu lista blocked" % sym)
+    prices = {str(k).upper(): float(v) for k, v in (prices or {}).items() if _f(v)}
+    acct, cash, held = swing_book(portfolio, prices)
+    account = float(budget) if budget is not None else (acct if acct else _f(c.get("budget")))
+    if not account or account <= 0:
+        raise SizeError("sin tamano de cuenta: pon \"budget\" en trader/config.json, --budget, o trader/portfolio.json")
+    ref = round_cent(limit) if limit is not None else round_cent(entry_plan)
+    stop, target = round_cent(stop), round_cent(target)
+    if side == "buy" and not stop < ref < target:
+        raise SizeError("un long necesita stop < entrada < objetivo (stop %s, entrada %s, objetivo %s)"
+                        % (_price(stop), _price(ref), _price(target)))
+    if side == "sell" and not target < ref < stop:
+        raise SizeError("un short necesita objetivo < entrada < stop (objetivo %s, entrada %s, stop %s)"
+                        % (_price(target), _price(ref), _price(stop)))
+    risk = round(abs(ref - stop), 2)
+    rr = round(abs(target - ref) / risk, 2)
+    risk_usd = round(account * lim["max_risk_per_trade_pct"] / 100.0, 2)
+    step = 0.0001 if c.get("fractional") else 1
+
+    sizings = {}
+    if not venues:
+        exposure = round(sum(r["value"] for r in held), 2)
+        cash_now = cash if cash is not None else account - exposure
+        sizings["manual"] = cash_sizing("manual", c, lim, ref, risk, risk_usd, account, exposure, cash_now, step)
+        primary = "manual"
+    else:
+        first_cash = next((n for n, v in venues.items() if v["max_leverage"] <= 1), None)
+        for name, v in venues.items():
+            capital = account * v["capital_pct"] / 100.0
+            mine = [r for r in held if (r.get("venue") or first_cash) == name]
+            if v["max_leverage"] <= 1:
+                exposure = round(sum(r["value"] for r in mine), 2)
+                if side == "sell":
+                    sizings[name] = {"venue": name, "leveraged": False, "qty": 0,
+                                     "refusal": "%s no permite short" % name}
+                    continue
+                vstep = step if name == "manual" else (0.0001 if v.get("fractional", c.get("fractional")) else 1)
+                sizings[name] = cash_sizing(name, c, lim, ref, risk, risk_usd, capital, exposure,
+                                            capital - exposure, vstep)
+            else:
+                used = sum(_f(r.get("margin")) or r["value"] for r in mine)
+                sizings[name] = lev_sizing(name, v, side, ref, risk, risk_usd, capital, used, sym)
+        order = ([n for n, v in venues.items() if v["max_leverage"] <= 1] +
+                 [n for n, v in venues.items() if v["max_leverage"] > 1])
+        ok = [n for n in order if not sizings[n]["refusal"] and sizings[n]["qty"]]
+        primary = ok[0] if ok else order[0] if side == "buy" else \
+            next((n for n in order if venues[n]["max_leverage"] > 1), order[0])
+    pv = sizings[primary]
+    for v in sizings.values():
+        if v.get("margin") is not None:
+            v["margin_pct_of_account"] = round(100.0 * v["margin"] / account, 1)
+            v["notional_pct_of_account"] = round(100.0 * (v.get("notional") or v["margin"]) / account, 1)
 
     refusal = None
     t = _date(today)
@@ -935,12 +1074,10 @@ def size_swing(plan, cfg, budget=None, limit=None, portfolio=None, prices=None, 
     elif er and er.get("blocked"):
         refusal = "⚠ %s (%s): BLOQUEADO por tu regla block_on_earnings" % (
             er.get("flag") or "resultados", er.get("next") or "fecha desconocida")
-    elif qty <= 0:
-        refusal = ("ni una accion cabe: limita %s (%s)" % (bound, [l["how"] for l in limits if l["binds"]][0]))
+    elif pv["refusal"]:
+        refusal = pv["refusal"]
     elif _f(c.get("min_reward_risk")) and rr < _f(c["min_reward_risk"]) - EPS:
         refusal = "recompensa:riesgo %.2f bajo tu minimo %s" % (rr, _num(c["min_reward_risk"]))
-    elif cost < float(c.get("min_order_usd") or 0) - 0.005:
-        refusal = "%s es menos que tu orden minima %s" % (money(cost), money(c["min_order_usd"]))
     tm_info = None
     if isinstance(tm, dict) and tm.get("mode") == "swing":
         tp = tm.get("plan") or {}
@@ -951,14 +1088,19 @@ def size_swing(plan, cfg, budget=None, limit=None, portfolio=None, prices=None, 
             tm_info.update(verdict=tm.get("verdict"), history_cases=h.get("triggered"),
                            history_hit_rate=h.get("hit_rate"), history_avg_R=h.get("avg_R"),
                            few_cases=h.get("few_cases"))
-    return {"mode": "swing", "symbol": sym, "setup": plan.get("setup"), "date": plan.get("date"),
-            "entry_plan": round_cent(entry_plan), "entry": ref, "order_type": "limit" if limit is not None else "market",
+    exposure_all = round(sum(r["value"] for r in held), 2)
+    return {"mode": "swing", "symbol": sym, "side": side, "name": plan.get("name"), "setup": plan.get("setup"),
+            "date": plan.get("date"), "entry_plan": round_cent(entry_plan), "entry": ref,
+            "order_type": "limit" if limit is not None else "market",
             "stop": stop, "target": target, "risk_per_share": risk, "reward_risk": rr,
             "time_stop_date": plan.get("time_stop_date"), "time_stop_days": plan.get("time_stop_days"),
-            "account": round(account, 2), "exposure_before": exposure, "open_positions": [r["symbol"] for r in held],
-            "limits_swing": lim, "limits": limits, "qty": qty, "bound_by": bound, "cost": cost,
-            "max_loss": max_loss, "fractional": step < 1, "earnings": er, "timemachine": tm_info,
-            "refusal": refusal}
+            "account": round(account, 2), "risk_usd": risk_usd, "exposure_before": exposure_all,
+            "open_positions": [r["symbol"] for r in held], "limits_swing": lim,
+            "limits": pv.get("limits") or [], "venue": primary, "venues": sizings,
+            "qty": pv["qty"], "bound_by": pv.get("bound_by"), "cost": pv.get("cost", pv.get("notional")),
+            "notional": pv.get("notional"), "leverage": pv.get("leverage", 1), "margin": pv.get("margin"),
+            "liquidation": pv.get("liquidation"), "max_loss": pv.get("max_loss", 0.0),
+            "fractional": step < 1, "earnings": er, "timemachine": tm_info, "refusal": refusal}
 
 
 def _date(x):
@@ -968,18 +1110,29 @@ def _date(x):
         return None
 
 
+def _venue_brief(v):
+    keys = ("venue", "leveraged", "qty", "cost", "notional", "leverage", "margin", "liquidation", "fees", "max_loss",
+            "bound_by", "capital", "margin_pct_of_venue", "margin_pct_of_account", "notional_pct_of_account",
+            "max_leverage", "safe_leverage", "refusal")
+    return {k: v.get(k) for k in keys if v.get(k) is not None}
+
+
 def swing_ticket(s):
-    """The manual ticket: what to buy by hand, where the stop and target go, when to get out."""
+    """The manual ticket: what to buy (or short) by hand, where the stop and target go, when to get out."""
     if s["refusal"] or not s["qty"]:
         return None
-    t = {"symbol": s["symbol"], "side": "buy", "qty": s["qty"], "type": s["order_type"],
+    word = "acciones" if not s["venues"][s["venue"]].get("leveraged") else "unidades"
+    t = {"symbol": s["symbol"], "name": s.get("name"), "side": s["side"], "qty": s["qty"], "type": s["order_type"],
          "entry": s["entry"], "stop": s["stop"], "target": s["target"], "risk_per_share": s["risk_per_share"],
          "reward_risk": s["reward_risk"], "max_loss": s["max_loss"], "cost": s["cost"], "setup": s["setup"],
          "signal_date": s["date"], "time_stop_date": s["time_stop_date"], "time_stop_days": s["time_stop_days"],
-         "manual": True, "earnings": s["earnings"], "timemachine": s["timemachine"],
-         "why": "%s %s: %s acciones, limita %s (%s x %s = %s en el stop)" % (
-             s["setup"] or "swing", s["symbol"], _qty(s["qty"]), s["bound_by"], _qty(s["qty"]),
-             _price(s["risk_per_share"]), money(s["max_loss"]))}
+         "manual": True, "venue": s["venue"], "leverage": s["leverage"], "margin": s["margin"],
+         "notional": s["notional"], "liquidation": s["liquidation"], "account": s["account"],
+         "risk_usd": s["risk_usd"], "venues": {k: _venue_brief(v) for k, v in s["venues"].items()},
+         "earnings": s["earnings"], "timemachine": s["timemachine"],
+         "why": "%s %s %s: %s %s en %s, limita %s (%s x %s = %s en el stop)" % (
+             "SHORT" if s["side"] == "sell" else "LONG", s["setup"] or "swing", s["symbol"], _qty(s["qty"]), word,
+             s["venue"], s["bound_by"], _qty(s["qty"]), _price(s["risk_per_share"]), money(s["max_loss"]))}
     if s["order_type"] == "limit":
         t["limit_price"] = s["entry"]
     return t
@@ -989,33 +1142,58 @@ def _qty(q):
     return ("%.4f" % q).rstrip("0").rstrip(".") if isinstance(q, float) else str(q)
 
 
+def venue_line(v):
+    if v.get("refusal"):
+        return "  %-8s no: %s" % (v["venue"], v["refusal"])
+    if not v.get("leveraged"):
+        return ("  %-8s 1x: %s acciones = %s (%s%% de su capital %s), perdida en el stop %s"
+                % (v["venue"], _qty(v["qty"]), money(v["cost"]), v.get("margin_pct_of_venue"), money(v["capital"]),
+                   money(v["max_loss"])))
+    return ("  %-8s %dx: %s unidades, nocional %s, margen %s (%s%% de su capital %s), liquidacion ~%s, "
+            "comisiones ~%s, perdida en el stop %s (limita %s)"
+            % (v["venue"], v["leverage"], _qty(v["qty"]), money(v["notional"]), money(v["margin"]),
+               v.get("margin_pct_of_venue"), money(v["capital"]), _price(v["liquidation"]), money(v["fees"]),
+               money(v["max_loss"]), v["bound_by"]))
+
+
 def swing_report(s, ticket):
-    out = ["%s compra swing (%s), senal del %s: entrada %s, stop %s, objetivo %s (R:R %.2f)."
-           % (s["symbol"], s["setup"] or "manual", s["date"], _price(s["entry"]), _price(s["stop"]),
+    word = "SHORT (venta en corto)" if s["side"] == "sell" else "LONG (compra)"
+    out = ["%s %s swing (%s), senal del %s: entrada %s, stop %s, objetivo %s (R:R %.2f)."
+           % (s["symbol"], word, s["setup"] or "manual", s["date"], _price(s["entry"]), _price(s["stop"]),
               _price(s["target"]), s["reward_risk"]),
-           "Cuenta %s; ya invertido en swing %s en %d posicion(es)%s." % (
-               money(s["account"]), money(s["exposure_before"]), len(s["open_positions"]),
-               (" (" + ", ".join(s["open_positions"]) + ")") if s["open_positions"] else ""),
-           "", "Limites (gana el menor):"]
-    for l in s["limits"]:
-        out.append("  %-13s %-70s %s%s" % (l["name"], l["how"], _qty(round(l["shares"], 4) if s["fractional"] else int(l["shares"])),
-                                          "  <- limita" if l["binds"] else ""))
+           "Cuenta %s; riesgo maximo por trade %s; ya invertido en swing %s en %d posicion(es)%s." % (
+               money(s["account"]), money(s["risk_usd"]), money(s["exposure_before"]), len(s["open_positions"]),
+               (" (" + ", ".join(s["open_positions"]) + ")") if s["open_positions"] else "")]
+    if s["limits"]:
+        out += ["", "Limites en %s (gana el menor):" % s["venue"]]
+        for l in s["limits"]:
+            out.append("  %-13s %-70s %s%s" % (l["name"], l["how"],
+                                              _qty(round(l["shares"], 4) if s["fractional"] else int(l["shares"])),
+                                              "  <- limita" if l["binds"] else ""))
+    if len(s["venues"]) > 1 or s["venue"] != "manual":
+        out += ["", "Por venue:"] + [venue_line(v) for v in s["venues"].values()]
     out.append("")
     if ticket is None:
         out.append("Sin ticket: " + s["refusal"] + ".")
         out.append("Educacion y herramientas, no asesoria financiera.")
         return "\n".join(out)
-    out.append("Tamano sugerido: %s acciones de %s = %s. Perdida maxima en el stop: %s."
-               % (_qty(s["qty"]), s["symbol"], money(s["cost"]), money(s["max_loss"])))
-    out.append("Stop de tiempo: si sigue abierta, vende al cierre del %s." % s["time_stop_date"])
+    v = s["venues"][s["venue"]]
+    if v.get("leveraged"):
+        out.append("Sugerido en %s: %s unidades a %dx, nocional %s, margen %s. Liquidacion ~%s. Perdida maxima en "
+                   "el stop: %s." % (s["venue"], _qty(s["qty"]), s["leverage"], money(s["notional"]), money(s["margin"]),
+                                     _price(s["liquidation"]), money(s["max_loss"])))
+    else:
+        out.append("Tamano sugerido en %s: %s acciones de %s = %s. Perdida maxima en el stop: %s."
+                   % (s["venue"], _qty(s["qty"]), s["symbol"], money(s["cost"]), money(s["max_loss"])))
+    out.append("Stop de tiempo: si sigue abierta, cierra al cierre del %s." % s["time_stop_date"])
     if s["timemachine"]:
         m = s["timemachine"]
         out.append("Time Machine: objetivo primero %.1f %%, stop primero %.1f %%, sin resolver %.1f %%, "
                    "expectativa %+.2fR." % (100 * m["p_target"], 100 * m["p_stop"], 100 * m["p_unresolved"],
                                             m["expectancy_R"]))
     if s["earnings"] and s["earnings"].get("flag"):
-        out.append("⚠ %s (%s): aviso." % (s["earnings"]["flag"], s["earnings"].get("next")))
-    out.append("Es un ticket para comprar A MANO: nada se coloca. Siguiente: trader-risk check.py --swing.")
+        out.append("\u26a0 %s (%s): aviso." % (s["earnings"]["flag"], s["earnings"].get("next")))
+    out.append("Es un ticket para operar A MANO: nada se coloca. Siguiente: trader-risk check.py --swing.")
     out.append("Educacion y herramientas, no asesoria financiera.")
     return "\n".join(out)
 
