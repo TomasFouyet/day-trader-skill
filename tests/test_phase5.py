@@ -287,10 +287,13 @@ class Pipeline(Tmp):
 
     def go(self, *args, now="2026-10-30 17:00"):
         return run(pipe, ["--now", now, "--offline-charts", SWDIR, "--offline-sec", SEC, "--skip-news",
-                          "--replays", "500"] + list(args))
+                          "--replays", "500", "--session", "evening"] + list(args))
 
     def test_the_clock_in_new_york(self):
         p = pipe.parse_now
+        mc = pipe.market_check
+        pipe.market_check = lambda now, session="evening": mc(now, session)
+        self.addCleanup(lambda: setattr(pipe, "market_check", mc))
         self.assertTrue(pipe.market_check(p("2026-10-30T20:40:00Z"))[0])    # EDT: 16:40 in New York
         self.assertFalse(pipe.market_check(p("2026-11-02T20:40:00Z"))[0])   # EST since Nov 1: 15:40
         self.assertTrue(pipe.market_check(p("2026-11-02T21:40:00Z"))[0])    # 16:40
@@ -310,7 +313,7 @@ class Pipeline(Tmp):
             self.assertIn(step, text)
         self.assertIn("Pasan risk: 4.", text)                # 2 long in Fintual, 2 short in Bitunix
         self.assertIn("SHORT · AMZN", text)
-        self.assertIn("Swing 30-10-2026</b>: 4 setup(s) nuevos (2 long, 2 short)", text)
+        self.assertIn("Swing 30-10-2026</b>: 4 setup(s) para operar (2 long, 2 short)", text)
         self.assertIn("LONG · WMT", text)
         self.assertIn("Would send 4", text)
         self.assertNotIn("LONG · AAPL", text)            # blocked by its estimated report
@@ -353,14 +356,17 @@ class Pipeline(Tmp):
             tg._post = saved
 
     def test_check_clock_and_refusals(self):
-        self.assertEqual(run(pipe, ["--check-clock", "--now", "2026-10-30 15:00"])[0], 1)
-        self.assertEqual(run(pipe, ["--check-clock", "--now", "2026-10-30 16:20"])[0], 0)
+        ev = ["--session", "evening"]
+        self.assertEqual(run(pipe, ["--check-clock", "--now", "2026-10-30 15:00"] + ev)[0], 1)
+        self.assertEqual(run(pipe, ["--check-clock", "--now", "2026-10-30 16:20"] + ev)[0], 0)
         self.assertEqual(run(pipe, ["--check-clock", "--now", "2026-10-31 12:00", "--force-time"])[0], 0)
-        code, _, err = run(pipe, ["--now", "2026-10-30 17:00"])
+        self.assertEqual(run(pipe, ["--check-clock", "--now", "2026-11-02 09:05"])[0], 0)      # morning (default)
+        self.assertEqual(run(pipe, ["--check-clock", "--now", "2026-11-02 10:05"])[0], 1)
+        code, _, err = run(pipe, ["--now", "2026-10-30 09:00"])
         self.assertEqual(code, 2)
         self.assertIn("config.json", err)
         self.config(mode="intraday")
-        code, _, err = run(pipe, ["--now", "2026-10-30 17:00"])
+        code, _, err = run(pipe, ["--now", "2026-10-30 09:00"])
         self.assertIn('"mode": "swing"', err)
 
     def test_budget_from_the_environment(self):
@@ -381,7 +387,7 @@ class Pipeline(Tmp):
 
 # ---------------------------------------------------------------- safety and privacy
 
-NEW_FILES = ["trader-alerts/notify_telegram.py", "trader-alerts/swing_pipeline.py", "trader-scanner/watchlist_top.py",
+NEW_FILES = ["trader-alerts/notify_telegram.py", "trader-alerts/swing_pipeline.py", "trader-alerts/premarket.py", "trader-scanner/watchlist_top.py",
              "trader-analyst/earnings.py", ".github/workflows/swing-daily.yml"]
 
 
@@ -401,7 +407,7 @@ class Safety(unittest.TestCase):
         self.assertNotIn("broker", pipe.TOOLS)
         self.assertEqual(sorted(f for f, _ in pipe.TOOLS.values()),
                          sorted(["trader-scanner", "trader-news", "trader-analyst", "trader-exit", "trader-timemachine",
-                                 "trader-budget", "trader-risk", "trader-alerts", "trader-alerts"]))
+                                 "trader-budget", "trader-risk", "trader-alerts", "trader-alerts", "trader-alerts"]))
 
     def test_gitignore_keeps_private_files_out(self):
         gi = self.read(".gitignore").split()
@@ -415,8 +421,12 @@ class Safety(unittest.TestCase):
         self.assertNotIn("upload-artifact", wf)          # public repo: artifacts are downloadable
         self.assertNotIn("git push", wf)
         self.assertNotIn("git commit", wf)
-        self.assertRegex(wf, r'cron: "40 20 \* \* 1-5"')
-        self.assertRegex(wf, r'cron: "40 21 \* \* 1-5"')
+        self.assertRegex(wf, r'cron: "50 12 \* \* 1-5"')      # 08:50 New York in daylight time
+        self.assertRegex(wf, r'cron: "50 13 \* \* 1-5"')      # 08:50 New York in standard time
+        p = pipe.parse_now
+        for utc, ok in (("2026-10-30T12:50:00Z", True), ("2026-10-30T13:50:00Z", True),
+                        ("2026-11-09T12:50:00Z", False), ("2026-11-09T13:50:00Z", True)):
+            self.assertEqual(pipe.market_check(p(utc))[0], ok, utc)
 
     def test_no_secrets_in_the_repo(self):
         rx = re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b")      # a real Telegram bot token

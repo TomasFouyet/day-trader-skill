@@ -164,7 +164,52 @@ def venue_line(v, primary):
                 v.get("margin_pct_of_account", "?"), v.get("margin_pct_of_venue"), _m(v["liquidation"]), ok, mark))
 
 
+PM_ICON = {"ok": "\u2705", "warn": "\u26a0", "invalid": "\u274c", "unknown": "\u2754"}
+
+
+def apply_premarket(t):
+    """-> (ticket as seen from the pre-market price, the premarket block or None). A valid pre-market
+    check moves the entry, the size, the max loss and the reward:risk; the stop and target stay."""
+    pm = t.get("premarket")
+    if not isinstance(pm, dict) or pm.get("status") not in ("ok", "warn") or pm.get("price") is None:
+        return t, pm
+    t2 = dict(t, entry=pm["price"], qty=pm.get("qty", t["qty"]), max_loss=pm.get("max_loss", t.get("max_loss")),
+              reward_risk=pm.get("reward_risk", t.get("reward_risk")))
+    t2["cost"] = round(float(t2["qty"]) * float(pm["price"]), 2)
+    venues = {}
+    for name, v in (t.get("venues") or {}).items():
+        nv = dict(v)
+        upd = (pm.get("venues") or {}).get(name)
+        if upd:
+            nv.update(upd)
+            if not v.get("leveraged"):
+                nv["cost"] = upd.get("notional", nv.get("cost"))
+                nv["margin"] = nv["cost"]
+            acct = float(t.get("account") or 0)
+            if acct and nv.get("margin") is not None:
+                nv["margin_pct_of_account"] = round(100.0 * float(nv["margin"]) / acct, 1)
+            cap = float(v.get("capital") or 0)
+            if cap and nv.get("margin") is not None:
+                nv["margin_pct_of_venue"] = round(100.0 * float(nv["margin"]) / cap, 1)
+        venues[name] = nv
+    t2["venues"] = venues
+    return t2, pm
+
+
+def premarket_line(pm, short):
+    if not pm:
+        return None
+    icon = PM_ICON.get(pm.get("status"), "")
+    if pm.get("price") is None:
+        return "\U0001F305 Pre-mercado: %s sin dato; vale el plan con el cierre de ayer" % icon
+    word = {"ok": "sigue válido", "warn": "válido, con gap", "invalid": "NO entrar"}.get(pm["status"], "")
+    return "\U0001F305 %s <b>%s</b> %s ET: <b>%s</b> (%+.1f%% vs cierre) %s %s" % (
+        "Pre-mercado" if pm.get("phase") == "pre" else "Precio", "", pm.get("at") or "", _m(pm["price"]),
+        float(pm.get("gap_pct") or 0), icon, word)
+
+
 def message(t, result):
+    t, pm = apply_premarket(t)
     short = str(t.get("side") or "buy") == "sell"
     sym = esc(t["symbol"])
     head = "%s <b>%s · %s</b>" % ("🔴" if short else "🟢", "SHORT" if short else "LONG", sym)
@@ -176,12 +221,18 @@ def message(t, result):
                                                          _d(t.get("signal_date"))),
              "",
              "📍 <b>Operación</b> (%s)" % ("vender en corto" if short else "comprar"),
-             "<code>Entrada  %s</code>" % _m(t["entry"]),
+             "<code>Entrada  %s</code>%s" % (_m(t["entry"]), (" pre-mercado (cierre %s)" % _m(pm["close"]))
+                                             if pm and pm.get("status") in ("ok", "warn") else ""),
              "<code>Stop     %s  (%s)</code>" % (_m(t["stop"]), _pct_move(t["entry"], t["stop"])),
              "<code>Objetivo %s  (%s) %sR</code>" % (_m(t["target"]), _pct_move(t["entry"], t["target"]), rr),
              "⏳ Cierre por tiempo: <b>%s</b> (%s días hábiles)" % (_d(t.get("time_stop_date")),
                                                                      t.get("time_stop_days") or "?"),
              ""]
+    pl = premarket_line(pm, short)
+    if pl:
+        lines[3:3] = [pl.replace("<b></b> ", ""), ""]
+        if pm.get("status") == "warn" and pm.get("note"):
+            lines.insert(4, "<i>%s</i>" % esc(pm["note"]))
     risk_usd = t.get("risk_usd") or t.get("max_loss")
     acct = t.get("account")
     lines.append("💰 <b>Tamaño</b> · riesgo máx. <b>%s</b>%s" % (
@@ -236,17 +287,26 @@ def message(t, result):
     return text if len(text) <= MAX_LEN else text[:MAX_LEN - 3] + "..."
 
 
-def summary(items, today):
-    """One short message ranking today's new setups by the Time Machine's expectancy."""
+def summary(items, today, invalid=()):
+    """One short message: today's setups ranked by the Time Machine's expectancy, with the pre-market
+    check of each, and the ones the pre-market price already ruled out."""
     longs = sum(1 for _, t, _ in items if t.get("side") != "sell")
-    lines = ["📊 <b>Swing %s</b>: %d setup(s) nuevos (%d long, %d short)" % (
+    lines = ["📊 <b>Swing %s</b>: %d setup(s) para operar (%d long, %d short)" % (
         _d(today), len(items), longs, len(items) - longs), ""]
     for n, (_, t, _) in enumerate(items, 1):
         m = t.get("timemachine") or {}
         exp = ("%+.2fR" % float(m["expectancy_R"])) if m.get("expectancy_R") is not None else "s/d"
-        lines.append("%d. %s <b>%s</b> %s · exp. %s · %s" % (
+        pm = t.get("premarket") or {}
+        gap = (" · pre %+.1f%% %s" % (float(pm["gap_pct"]), PM_ICON.get(pm.get("status"), ""))
+               if pm.get("gap_pct") is not None else (" · pre %s" % PM_ICON["unknown"] if pm else ""))
+        lines.append("%d. %s <b>%s</b> %s · exp. %s · %s%s" % (
             n, "🔴" if t.get("side") == "sell" else "🟢", esc(t["symbol"]),
-            "SHORT" if t.get("side") == "sell" else "LONG", exp, esc(t.get("setup") or "")))
+            "SHORT" if t.get("side") == "sell" else "LONG", exp, esc(t.get("setup") or ""), gap))
+    if invalid:
+        lines += ["", "❌ <b>Descartados en el pre-mercado</b>"]
+        for _, t, _ in invalid:
+            pm = t.get("premarket") or {}
+            lines.append("• <b>%s</b>: %s" % (esc(t["symbol"]), esc(pm.get("note") or "")))
     lines += ["", "<i>Ordenados por expectativa del Time Machine. El detalle de cada uno va abajo.</i>"]
     return "\n".join(lines)
 
@@ -383,9 +443,10 @@ def main(argv=None):
         if not a.dry_run and (todo or a.heartbeat):
             tok, chat = credentials()
         sent = 0
-        todo = rank(todo)
-        if len(todo) >= 2:
-            text = summary(todo, today)
+        invalid = [x for x in todo if (x[1].get("premarket") or {}).get("status") == "invalid"]
+        todo = rank([x for x in todo if x not in invalid])
+        if len(todo) >= 2 or invalid:
+            text = summary(todo, today, invalid)
             if a.dry_run:
                 if not a.quiet:
                     print(text + "\n")
@@ -401,7 +462,11 @@ def main(argv=None):
             state.setdefault("sent", {})[k] = {"at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "message_id": mid}
             write_json(a.state, prune(state, now))      # after each one: a crash never resends what went out
             sent += 1
-        if a.heartbeat and not todo:
+        for k, t, r in invalid:      # ruled out today: remember it, so it is not sent tomorrow either
+            if not a.dry_run:
+                state.setdefault("sent", {})[k] = {"at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "invalid": True}
+                write_json(a.state, prune(state, now))
+        if a.heartbeat and not todo and not invalid:
             text = "Sin setups swing nuevos que pasen risk hoy (%s)." % today
             if a.dry_run:
                 print(text)

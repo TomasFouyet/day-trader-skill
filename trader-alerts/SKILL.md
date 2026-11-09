@@ -97,6 +97,13 @@ python3 "${CLAUDE_SKILL_DIR}/swing_pipeline.py" --dry-run      # scanner -> earn
 - Neither one places an order or loads trader-broker: the tickets are for the
   user to buy by hand.
 
+The pipeline runs in the MORNING by default (8:15 to 9:59 New York, on the
+previous close) and adds `premarket.py`: each ticket's pre-market price (Yahoo
+1-minute bars with pre/post) marks it ok, warn (a gap over `gap_warn_pct`),
+invalid (beyond the stop or target, or reward:risk under the minimum: not sent,
+listed in the summary) or unknown, and a valid one is re-sized from that price,
+never up. `--session evening` keeps the after-the-close run.
+
 ## Quotes
 
 - `yahoo` (default): `query2.finance.yahoo.com/v8/finance/chart/<TICKER>`, an

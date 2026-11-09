@@ -15,12 +15,15 @@ The steps, each one the pack's own tool run in this process:
        time      trader-timemachine run -> trader/timemachine/SYM.json
        budget    trader-budget -> a manual ticket in trader/swing_orders.json
   5. risk        trader-risk check.py --swing -> trader/state/swing_risk.json
+  5b. premarket  (morning) premarket.py: the pre-market price of each ticket: ok, gap or invalid
   6. alerts      trader-alerts: stop, target and time-stop rules for each PASS -> trader/alerts.json
   7. notify      notify_telegram.py: one message per new PASS
 
-The clock: it runs only on an NYSE trading day, at or after 15 minutes past
-that day's close in New York (16:15, or 13:15 on a half day), and once a day
-(trader/state/pipeline.json). New York time is worked out here, daylight time
+The clock: it runs only on an NYSE trading day and once a day
+(trader/state/pipeline.json). By default in the MORNING, 8:15 to 9:59 New York,
+on the previous session's close, with a pre-market check of each ticket
+(premarket.py: gap, still valid, size from the pre-market price). With
+--session evening, at or after 15 minutes past the close instead. New York time is worked out here, daylight time
 included, so a scheduler in UTC can fire at two times and the right one runs.
 
 It never places an order and never imports trader-broker: the tickets are for
@@ -45,13 +48,15 @@ TOOLS = {"scan": ("trader-scanner", "scan"), "news": ("trader-news", "news"),
          "earnings": ("trader-analyst", "earnings"), "exit": ("trader-exit", "exit"),
          "tm": ("trader-timemachine", "timemachine"), "budget": ("trader-budget", "size"),
          "risk": ("trader-risk", "check"), "alerts": ("trader-alerts", "alerts"),
-         "notify": ("trader-alerts", "notify_telegram")}
+         "notify": ("trader-alerts", "notify_telegram"), "premarket": ("trader-alerts", "premarket")}
 NYSE_HOLIDAYS = {
     "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03",
     "2026-09-07", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26",
     "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24"}
 EARLY_CLOSE = {"2026-11-27", "2026-12-24", "2027-11-26"}
 AFTER_CLOSE_MIN = 15
+MORNING_FROM = 8 * 60 + 15      # the morning run: 8:15 to 9:59 New York, before and just after the open
+MORNING_TO = 10 * 60
 STATE = "trader/state/pipeline.json"
 
 
@@ -90,14 +95,20 @@ def parse_now(text):
     return (t - t.utcoffset()).replace(tzinfo=None)
 
 
-def market_check(now_utc):
-    """(ok, why): an NYSE trading day, at or after the close + 15 minutes, New York time."""
+def market_check(now_utc, session="morning"):
+    """(ok, why) in New York time, on an NYSE trading day. "morning": 8:15 to 9:59, before the open, on
+    yesterday's close. "evening": at or after the close + 15 minutes."""
     et = to_eastern(now_utc)
     d = et.date().isoformat()
     if et.weekday() >= 5:
         return False, "fin de semana en Nueva York (%s)" % d
     if d in NYSE_HOLIDAYS:
         return False, "feriado NYSE (%s)" % d
+    mins = et.hour * 60 + et.minute
+    if session == "morning":
+        if not MORNING_FROM <= mins < MORNING_TO:
+            return False, "en Nueva York son las %s: la corrida de la manana va de 08:15 a 09:59" % et.strftime("%H:%M")
+        return True, "Nueva York %s %s, antes de la apertura (senales del cierre anterior)" % (d, et.strftime("%H:%M"))
     close = 13 * 60 if d in EARLY_CLOSE else 16 * 60
     mins = et.hour * 60 + et.minute
     if mins < close + AFTER_CLOSE_MIN:
@@ -177,7 +188,7 @@ def pipeline(a):
     now = parse_now(a.now)
     et = to_eastern(now)
     today = et.date().isoformat()
-    ok, why = market_check(now)
+    ok, why = market_check(now, a.session)
     print("Reloj: " + why + ".")
     if not ok and not a.force_time:
         print("No es hora: no se corre nada (usa --force-time para forzar).")
@@ -248,6 +259,11 @@ def pipeline(a):
     passed = 0
     if tickets:
         r.run("risk", ["--swing", "--now", ny], "risk")
+        if a.session == "morning":
+            pa = ["--now", ny]
+            if a.offline_premarket:
+                pa += ["--offline", a.offline_premarket]
+            r.run("premarket", pa, "pre-mercado")
         rk = read_json("trader/state/swing_risk.json") or {}
         passed = rk.get("pass", 0)
         for res in rk.get("results") or []:
@@ -295,6 +311,9 @@ def main(argv=None):
     ap.add_argument("--quiet", action="store_true", help="CI: step names and counts only")
     ap.add_argument("--offline-charts", metavar="DIR", help="tests: daily chart files instead of Yahoo")
     ap.add_argument("--offline-sec", metavar="DIR", help="tests: SEC files instead of EDGAR")
+    ap.add_argument("--offline-premarket", metavar="DIR", help="tests: 1-minute charts with pre-market bars")
+    ap.add_argument("--session", choices=["morning", "evening"], default="morning",
+                    help="morning (default): 8:15 to 9:59 New York, with the pre-market check; evening: after the close")
     ap.add_argument("--now", help="pretend it is this time (New York, or ISO with Z)")
     a = ap.parse_args(argv)
     try:

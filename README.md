@@ -155,10 +155,22 @@ real XBRL facts. They reproduce every number in the example above.
 ## Modo swing (este fork, en español)
 
 Swing de 5 a 7 días en acciones de EE. UU. que compras **a mano** (Fintual u
-otra app). Cada día, después del cierre, el pipeline busca setups, descarta
+otra app). Cada día hábil **en la mañana, antes de la apertura** (≈08:50 en
+Nueva York), el pipeline busca setups en el cierre del día anterior, descarta
 los que tienen resultados trimestrales dentro del horizonte, fija stop,
 objetivo y stop de tiempo, simula 10.000 trayectorias, calcula el tamaño,
-revisa tus límites y te manda un aviso por Telegram.
+revisa tus límites, **mira el precio de pre-mercado** de cada uno y te manda
+los avisos por Telegram para operar en la apertura.
+
+Pre-mercado (`trader-alerts/premarket.py`): ✅ sigue válido, ⚠ válido pero
+con gap mayor a `gap_warn_pct` (3 %), ❌ el precio ya pasó el stop o el
+objetivo, o la recompensa:riesgo desde ese precio quedó bajo tu mínimo (esos
+no se envían: aparecen en el resumen como descartados), ❔ sin dato (vale el
+plan con el cierre). Si es válido, el aviso usa el precio de pre-mercado como
+entrada y achica el tamaño si hace falta para no pasar tu pérdida máxima
+(nunca lo agranda). Stop, objetivo y stop de tiempo no se mueven. Las
+probabilidades del Time Machine son las del plan con el cierre anterior. El
+pre-mercado de Yahoo es gratis, atrasado y con poco volumen.
 
 **Nada en este modo coloca órdenes.** Los tickets van a
 `trader/swing_orders.json`, un archivo que trader-broker nunca lee, y el
@@ -243,8 +255,9 @@ python3 trader-alerts/swing_pipeline.py --dry-run --force-time
 ```
 
 `--force-time` es solo para probar a cualquier hora: sin él, el pipeline corre
-únicamente en un día hábil NYSE, desde las 16:15 de Nueva York (13:15 en
-medio día) y una vez por día.
+únicamente en un día hábil NYSE, entre las 08:15 y las 09:59 de Nueva York, y
+una vez por día. `--session evening` lo corre en cambio después del cierre
+(desde las 16:15), sin chequeo de pre-mercado.
 
 ### 4. Telegram
 
@@ -276,11 +289,13 @@ mensajes sin enviar ni recordar nada.
 ### 5. GitHub Actions (automático)
 
 El workflow `.github/workflows/swing-daily.yml` corre el pipeline completo de
-lunes a viernes a las 20:40 y 21:40 UTC. GitHub no sabe de horario de verano,
+lunes a viernes a las 12:50 y 13:50 UTC. GitHub no sabe de horario de verano,
 así que el script mira la hora de Nueva York: en verano (EDT) corre el de las
-20:40 (16:40 en Nueva York) y el de las 21:40 se salta porque ya corrió; en
-invierno (EST) el de las 20:40 cae a las 15:40, antes del cierre, y corre el de
-las 21:40.
+12:50 (08:50 en Nueva York) y el de las 13:50 se salta porque ya corrió; en
+invierno (EST) el de las 12:50 cae a las 07:50, antes de la ventana, y corre el
+de las 13:50 (08:50 en Nueva York). En Chile llega entre las 09:50 y las 10:50
+según la época del año. GitHub puede atrasar un cron varios minutos; la
+ventana llega hasta las 09:59 de Nueva York.
 
 1. **Los workflows programados solo corren desde la rama por defecto.** Une
    `swing-mode` a `main` (o haz `swing-mode` la rama por defecto en
@@ -329,12 +344,13 @@ workflow aparecen pasos con `exit 1` en el scanner, o el pipeline termina con
    export TRADER_BUDGET="5000"
    ```
 
-2. Programa el pipeline varias veces por la tarde con `crontab -e` (macOS o
-   Linux). La hora es la de tu computador; el script revisa la de Nueva York y
-   corre una sola vez por día:
+2. Programa el pipeline varias veces en la mañana con `crontab -e` (macOS o
+   Linux). La hora es la de tu computador; el script revisa la de Nueva York
+   (corre entre las 08:15 y las 09:59) y una sola vez por día. En Chile, por
+   ejemplo, a las 9:20, 10:20 y 11:20 cubre el año completo:
 
    ```bash
-   40 17,18,19 * * 1-5 cd "$HOME/day-trader-skill" && . ./.env && python3 trader-alerts/swing_pipeline.py >> trader/state/cron.log 2>&1
+   20 9,10,11 * * 1-5 cd "$HOME/day-trader-skill" && . ./.env && python3 trader-alerts/swing_pipeline.py >> trader/state/cron.log 2>&1
    ```
 
    En Windows: Programador de tareas, una tarea diaria que ejecute

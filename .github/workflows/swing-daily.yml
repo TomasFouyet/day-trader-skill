@@ -5,18 +5,20 @@
 # viven en Secrets y en el cache de Actions (solo lo leen los workflows de este repo), nunca en un
 # commit ni en un artifact. El log corre con --quiet: pasos y conteos, sin simbolos ni montos.
 #
+# Corre en la MANANA, antes de la apertura: setups del cierre anterior + chequeo de pre-mercado.
 # GitHub cron va en UTC y no sabe de horario de verano. Corre a dos horas y el script decide en
-# hora de Nueva York: solo un dia habil NYSE, despues del cierre + 15 min, y una vez al dia.
-#   20:40 UTC = 16:40 Nueva York en verano (EDT) / 15:40 en invierno (EST: todavia no)
-#   21:40 UTC = 17:40 en verano (ya corrio: se salta)      / 16:40 en invierno
+# hora de Nueva York: solo un dia habil NYSE, entre 08:15 y 09:59, y una vez al dia.
+#   12:50 UTC = 08:50 Nueva York en verano (EDT)            / 07:50 en invierno (EST: todavia no)
+#   13:50 UTC = 09:50 en verano (ya corrio: se salta)       / 08:50 en invierno
+# GitHub puede atrasar un cron programado varios minutos: la ventana llega hasta las 09:59.
 # Los workflows programados solo corren desde la rama por defecto del repo.
 
 name: Swing diario
 
 on:
   schedule:
-    - cron: "40 20 * * 1-5"
-    - cron: "40 21 * * 1-5"
+    - cron: "50 12 * * 1-5"
+    - cron: "50 13 * * 1-5"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -24,7 +26,7 @@ on:
         type: boolean
         default: false
       force_time:
-        description: "Correr aunque no sea despues del cierre"
+        description: "Correr aunque no sea la hora (08:15 a 09:59 Nueva York)"
         type: boolean
         default: false
       test_message:

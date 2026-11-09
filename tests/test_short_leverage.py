@@ -202,7 +202,7 @@ class AlertsAndNews(unittest.TestCase):
         items = tg.rank([("a", t2, {}), ("b", t, {})])
         self.assertEqual(items[0][1]["symbol"], "WELL")           # the better expectancy first
         sm = tg.summary(items, "2026-11-04")
-        self.assertIn("2 setup(s) nuevos (1 long, 1 short)", sm)
+        self.assertIn("2 setup(s) para operar (1 long, 1 short)", sm)
         self.assertIn("1. 🟢 <b>WELL</b> LONG · exp. +0.14R", sm)
         self.assertIn("<b>Swing 04-11-2026</b>", sm)
         self.assertEqual(tg.esc("<b>&"), "&lt;b&gt;&amp;")
