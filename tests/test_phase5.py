@@ -438,7 +438,7 @@ class Safety(unittest.TestCase):
     def test_workflow_secrets_and_no_artifacts(self):
         wf = self.read(".github/workflows/swing-daily.yml")
         for s in ("secrets.SEC_USER_AGENT", "secrets.TELEGRAM_BOT_TOKEN", "secrets.TELEGRAM_CHAT_ID",
-                  "secrets.ALPACA_API_KEY_ID", "secrets.ALPACA_API_SECRET_KEY", "secrets.PAPER_TRADING",
+                  "secrets.ALPACA_API_KEY_ID", "secrets.ALPACA_API_SECRET_KEY", "vars.PAPER_TRADING",
                   "secrets.TRADER_BUDGET", "--quiet", "--check-clock", "actions/cache/save", "contents: read"):
             self.assertIn(s, wf)
         self.assertNotIn("upload-artifact", wf)          # public repo: artifacts are downloadable

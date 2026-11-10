@@ -10,7 +10,7 @@
 PAPER ONLY. Every request goes to https://paper-api.alpaca.markets, a simulated
 account: no real money. The host is fixed in this file and anything else is
 refused. It never loads trader-broker and never touches a live account. It
-places orders only when PAPER_TRADING=1 is in the environment, besides the
+places orders only when PAPER_TRADING is 1 (or true / si / yes / on) in the environment, besides the
 keys ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY.
 
 submit: each ticket that passed today's trader-risk check (trader/state/
@@ -361,6 +361,24 @@ def summary(state, equity=None):
     return "\n".join(lines)
 
 
+def counts(res):
+    """[(symbol, what)] -> '2 enviadas, 1 omitida' (no symbols: safe for public logs)."""
+    kinds = (("orden paper enviada", "enviada(s)"), ("dry-run", "simulada(s) (dry-run)"), ("omitido", "omitida(s)"),
+             ("rechazada", "rechazada(s)"), ("ya operado", "ya operada(s)"), ("entrada ejecutada", "entrada(s) ejecutada(s)"),
+             ("no ejecutada", "entrada(s) no ejecutada(s)"), ("objetivo", "cerrada(s) en el objetivo"),
+             ("el stop", "cerrada(s) en el stop"), ("stop de tiempo", "stop(s) de tiempo"), ("no se pudo", "error(es)"),
+             ("sin chequeo", "sin chequeo de risk de hoy"))
+    n = {}
+    for _, what in res:
+        label = next((lab for key, lab in kinds if key in what), "otro(s)")
+        n[label] = n.get(label, 0) + 1
+    return ", ".join("%d %s" % (v, k) for k, v in n.items())
+
+
+def paper_on():
+    return str(os.environ.get("PAPER_TRADING") or "").strip().lower() in ("1", "true", "si", "yes", "on")
+
+
 # ---------------------------------------------------------------- main
 
 def main(argv=None):
@@ -395,7 +413,7 @@ def main(argv=None):
                   "" if a.quiet else ", patrimonio $%s" % acc.get("equity")))
             return 0
         if a.cmd == "submit":
-            if not a.dry_run and os.environ.get("PAPER_TRADING") != "1":
+            if not a.dry_run and not paper_on():
                 print("PAPER_TRADING no es 1: no se envian ordenes paper (usa --dry-run para verlas).")
                 return 0
             res = submit(api, read_json(a.tickets, {}), read_json(a.risk, {}), state, today, a.dry_run, now)
@@ -420,7 +438,7 @@ def main(argv=None):
             state["last_%s" % a.cmd] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
             write_json(a.state, state)
         if a.quiet:
-            print("paper %s: %d accion(es)." % (a.cmd, len(res)))
+            print("paper %s: %s." % (a.cmd, counts(res) or "nada que hacer"))
         else:
             for sym, what in res:
                 print("%-6s %s" % (sym, what))

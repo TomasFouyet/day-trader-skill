@@ -156,6 +156,11 @@ class Runner(object):
                 print(err.getvalue().rstrip())
         else:
             print("== %s: exit %s" % (label or name, code))
+            if name == "paper":         # counts only, no symbols: safe for public logs
+                for ln in out.getvalue().splitlines()[-3:]:
+                    print("   " + ln)
+                if code and err.getvalue().strip():
+                    print("   " + err.getvalue().strip().splitlines()[-1][:200])
         return code, out.getvalue()
 
 
@@ -294,7 +299,7 @@ def pipeline(a):
             state.update(last_error=today)
             write_json(STATE, state)
             return code
-    paper = os.environ.get("PAPER_TRADING") == "1"
+    paper = str(os.environ.get("PAPER_TRADING") or "").strip().lower() in ("1", "true", "si", "yes", "on")
     if paper and not a.dry_run:
         q = ["--now", iso] + (["--quiet"] if a.quiet else [])
         r.run("paper", ["sync"] + q, "paper sync")

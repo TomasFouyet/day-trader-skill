@@ -444,7 +444,10 @@ tu computador, exporta las mismas dos variables en tu `.env`.
 
 ### 10. Paper trading en Alpaca (historial real, dinero simulado)
 
-Con el Secret `PAPER_TRADING` = `1` (además de las keys de Alpaca), cada
+Con la **Variable** de repositorio `PAPER_TRADING` = `true` (Settings >
+Secrets and variables > Actions > pestaña Variables; no hace falta que sea un
+Secret, y un Secret con valor `1` hace que GitHub tape todos los "1" del log)
+y las keys de Alpaca, cada
 mañana, después de enviar los avisos, el pipeline opera cada setup que pasó
 risk en tu cuenta **paper** de Alpaca (simulada, gratis, sin dinero real):
 

@@ -195,9 +195,9 @@ class Cli(Base):
         code, text, _ = self.run_("submit", "--now", "2026-11-10 08:55")
         self.assertIn("PAPER_TRADING no es 1", text)
         self.assertEqual(self.fake.calls, [])
-        os.environ["PAPER_TRADING"] = "1"
+        os.environ["PAPER_TRADING"] = "true"
         code, text, _ = self.run_("submit", "--now", "2026-11-10 08:55", "--quiet")
-        self.assertEqual((code, text.strip()), (0, "paper submit: 1 accion(es)."))
+        self.assertEqual((code, text.strip()), (0, "paper submit: 1 enviada(s)."))
         self.assertNotIn("WMT", text)
         with open("trader/state/paper.json") as fh:
             self.assertIn("WMT|2026-11-09|breakout20", json.load(fh)["trades"])
