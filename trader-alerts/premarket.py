@@ -86,8 +86,32 @@ def _get(url, timeout=20):
         return r.read().decode("utf-8", "replace")
 
 
+def _marketdata():
+    """trader-scanner/marketdata.py (Alpaca, when its keys are set), one shared instance per process."""
+    m = sys.modules.get("trader_marketdata")
+    if m is None:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "trader-scanner",
+                            "marketdata.py")
+        if not os.path.exists(path):
+            return None
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("trader_marketdata", path)
+        m = importlib.util.module_from_spec(spec)
+        sys.modules["trader_marketdata"] = m
+        spec.loader.exec_module(m)
+    return m
+
+
+def _alpaca(path_or_url):
+    md = _marketdata()
+    return md.yahoo_like(path_or_url) if md is not None and md.enabled() else None
+
+
 def fetch(sym):
     path = "/v8/finance/chart/%s?range=1d&interval=1m&includePrePost=true" % sym.upper().replace(".", "-")
+    alp = _alpaca(path)
+    if alp is not None:
+        return alp
     last = None
     for host in HOSTS:
         try:

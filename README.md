@@ -425,7 +425,22 @@ Para cada setup el aviso calcula los dos venues:
   Bitunix el instrumento equivalente (oro, plata, petróleo) puede tener otro
   ticker y otro precio. `scan.py swing --no-extras` los saca.
 
-### 9. Límites que quedan
+### 9. Precios desde Alpaca (opcional, recomendado)
+
+Con los Secrets `ALPACA_API_KEY_ID` y `ALPACA_API_SECRET_KEY` (de una cuenta
+gratis de Alpaca, basta la de paper trading) los precios salen de la **API de
+datos de Alpaca** (`data.alpaca.markets`) en vez de Yahoo: velas diarias del
+feed consolidado (gratis con 15 minutos de atraso, suficiente para una vela
+diaria) y minutos de pre-mercado del feed IEX (en tiempo real, pero con poco
+volumen a esa hora). Si Alpaca falla para una acción, esa consulta usa Yahoo.
+Sin las keys, todo sigue con Yahoo. El log del workflow dice al final cuántas
+consultas respondió cada uno.
+
+Solo se usa la API de **datos**. La de órdenes (`paper-api.alpaca.markets` o
+`api.alpaca.markets`) nunca se llama, y un test lo verifica. Para correrlo en
+tu computador, exporta las mismas dos variables en tu `.env`.
+
+### 10. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
   SEC (el calendario de Yahoo pide un token de sesión). Confírmalas en la web

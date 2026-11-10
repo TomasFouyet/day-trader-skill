@@ -345,8 +345,32 @@ def _sleep(seconds):
     time.sleep(seconds)
 
 
+def _marketdata():
+    """trader-scanner/marketdata.py (Alpaca, when its keys are set), one shared instance per process."""
+    m = sys.modules.get("trader_marketdata")
+    if m is None:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "trader-scanner",
+                            "marketdata.py")
+        if not os.path.exists(path):
+            return None
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("trader_marketdata", path)
+        m = importlib.util.module_from_spec(spec)
+        sys.modules["trader_marketdata"] = m
+        spec.loader.exec_module(m)
+    return m
+
+
+def _alpaca(path_or_url):
+    md = _marketdata()
+    return md.yahoo_like(path_or_url) if md is not None and md.enabled() else None
+
+
 def yahoo_get(path):
     """query2 first, query1 on 429 or 5xx; one retry after a pause on 429."""
+    alp = _alpaca(path)
+    if alp is not None:
+        return alp
     last = "no answer"
     for host in HOSTS:
         url = "https://%s.finance.yahoo.com%s" % (host, path)

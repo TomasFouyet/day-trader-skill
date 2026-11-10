@@ -389,7 +389,8 @@ class Pipeline(Tmp):
 
 # ---------------------------------------------------------------- safety and privacy
 
-NEW_FILES = ["trader-alerts/notify_telegram.py", "trader-alerts/swing_pipeline.py", "trader-alerts/premarket.py", "trader-scanner/watchlist_top.py",
+NEW_FILES = ["trader-alerts/notify_telegram.py", "trader-alerts/swing_pipeline.py", "trader-alerts/premarket.py",
+             "trader-scanner/marketdata.py", "trader-scanner/watchlist_top.py",
              "trader-analyst/earnings.py", ".github/workflows/swing-daily.yml"]
 
 
@@ -403,8 +404,12 @@ class Safety(unittest.TestCase):
             src = self.read(rel)
             code = "\n".join(ln for ln in src.splitlines() if not ln.strip().startswith("#"))
             code = re.sub(r'"""[\s\S]*?"""', "", code)
-            for bad in ("trader-broker", "ticket.py", "place_stock_order", "alpaca", "ibkr"):
+            for bad in ("trader-broker", "ticket.py", "place_stock_order", "paper-api", "api.alpaca.markets",
+                        "/v2/orders", "/v2/positions", "ibkr"):
                 self.assertNotIn(bad, code.lower(), (rel, bad))
+            # Alpaca only as a market-data source, never its trading API
+            for m in re.finditer(r"https?://([a-z0-9.\-]*alpaca[a-z0-9.\-]*)", code.lower()):
+                self.assertEqual(m.group(1), "data.alpaca.markets", rel)
             self.assertIsNone(re.search(r"(?<!swing_)orders\.json", code), rel)   # never the broker's orders file
         self.assertNotIn("broker", pipe.TOOLS)
         self.assertEqual(sorted(f for f, _ in pipe.TOOLS.values()),
@@ -418,6 +423,7 @@ class Safety(unittest.TestCase):
     def test_workflow_secrets_and_no_artifacts(self):
         wf = self.read(".github/workflows/swing-daily.yml")
         for s in ("secrets.SEC_USER_AGENT", "secrets.TELEGRAM_BOT_TOKEN", "secrets.TELEGRAM_CHAT_ID",
+                  "secrets.ALPACA_API_KEY_ID", "secrets.ALPACA_API_SECRET_KEY",
                   "secrets.TRADER_BUDGET", "--quiet", "--check-clock", "actions/cache/save", "contents: read"):
             self.assertIn(s, wf)
         self.assertNotIn("upload-artifact", wf)          # public repo: artifacts are downloadable

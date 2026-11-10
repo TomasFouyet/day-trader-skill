@@ -295,6 +295,13 @@ def pipeline(a):
                               "tickets": tickets, "passed": passed},
                  steps=r.log)
     write_json(STATE, state)
+    md = sys.modules.get("trader_marketdata")
+    if md is not None and md.enabled():
+        print("Precios: Alpaca respondio %d consultas; %d cayeron a Yahoo de respaldo%s." % (
+            md.STATS["alpaca"], md.STATS["fallback"],
+            (" (%s)" % ", ".join(md.STATS["errors"])) if md.STATS["errors"] else ""))
+    else:
+        print("Precios: Yahoo (sin keys de Alpaca).")
     print("Listo. Ninguna orden fue colocada: los tickets son para comprar a mano.")
     return 0
 

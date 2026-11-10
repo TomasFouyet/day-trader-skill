@@ -1,6 +1,7 @@
 # Swing diario: scanner -> resultados -> exit -> Time Machine -> budget -> risk -> alertas -> Telegram.
 #
 # Nunca coloca ordenes y nunca usa trader-broker: los tickets son para comprar a mano.
+# Precios: Alpaca (solo la API de datos, data.alpaca.markets) si estan sus Secrets; si no, Yahoo.
 # Privacidad (el repo es publico): el tamano de la cuenta, las posiciones, los tickets y el estado
 # viven en Secrets y en el cache de Actions (solo lo leen los workflows de este repo), nunca en un
 # commit ni en un artifact. El log corre con --quiet: pasos y conteos, sin simbolos ni montos.
@@ -116,6 +117,9 @@ jobs:
 
       - name: Generar la watchlist (250 por volumen en dolares) si falta
         if: ${{ steps.clock.outputs.go == 'true' }}
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
         run: |
           if [ -f trader/watchlist.txt ]; then
             echo "Watchlist desde el Secret TRADER_WATCHLIST."
@@ -138,6 +142,8 @@ jobs:
         if: ${{ steps.clock.outputs.go == 'true' }}
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
           TRADER_BUDGET: ${{ secrets.TRADER_BUDGET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
