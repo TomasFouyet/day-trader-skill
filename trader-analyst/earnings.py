@@ -111,6 +111,8 @@ def swing_config(path):
         raise EarningsError("swing.earnings_margin_days and swing.horizon_days must be whole numbers")
     if not 0 <= out["earnings_margin_days"] <= 30:
         raise EarningsError("swing.earnings_margin_days must be between 0 and 30")
+    ex = sw.get("extra_symbols") or []
+    out["no_earnings"] = [str(x).upper() for x in (ex if isinstance(ex, list) else str(ex).replace(",", " ").split())]
     return out
 
 
@@ -320,8 +322,15 @@ def annotate(items, sw, sec, manual, horizon=None, news=None, now_utc=None, defa
         signal = _date(it.get("date")) or default_date
         if not sym or signal is None:
             raise EarningsError("each item needs a symbol and a date (got %r)" % {k: it.get(k) for k in ("symbol", "date")})
-        dates, err = (None, None) if manual.get(sym) else sec.dates(sym)
-        res = assess(sym, signal, horizon_of(it, sw, horizon), sw, manual.get(sym), dates, err)
+        if it.get("extra") or sym in (sw.get("no_earnings") or []):
+            hz = horizon_of(it, sw, horizon)
+            res = {"symbol": sym, "signal_date": signal.isoformat(), "horizon_days": hz,
+                   "horizon_end": add_trading_days(signal, hz).isoformat(), "source": "n/a", "next": None,
+                   "window": None, "in_horizon": False, "blocked": False, "flag": None, "no_earnings": True,
+                   "warnings": []}
+        else:
+            dates, err = (None, None) if manual.get(sym) else sec.dates(sym)
+            res = assess(sym, signal, horizon_of(it, sw, horizon), sw, manual.get(sym), dates, err)
         if news is not None:
             res["news"] = news_items(news, sym, now_utc, it.get("name"))
             for n in res["news"]:

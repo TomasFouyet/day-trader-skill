@@ -1083,13 +1083,15 @@ def size_swing(plan, cfg, budget=None, limit=None, portfolio=None, prices=None, 
         tp = tm.get("plan") or {}
         if str(tp.get("symbol", "")).upper() == sym and tp.get("date") == plan.get("date"):
             m, h = tm.get("mc") or {}, tm.get("history") or {}
-            tm_info = {k: m.get(k) for k in ("p_target", "p_stop", "p_unresolved", "expectancy_R", "horizon_days",
+            tm_info = {k: m.get(k) for k in ("p_target", "p_stop", "p_unresolved", "expectancy_R", "p_win", "horizon_days",
                                               "paths", "seed")}
             tm_info.update(verdict=tm.get("verdict"), history_cases=h.get("triggered"),
                            history_hit_rate=h.get("hit_rate"), history_avg_R=h.get("avg_R"),
+                           history_win_rate=h.get("win_rate"),
                            few_cases=h.get("few_cases"))
     exposure_all = round(sum(r["value"] for r in held), 2)
-    return {"mode": "swing", "symbol": sym, "side": side, "name": plan.get("name"), "setup": plan.get("setup"),
+    return {"mode": "swing", "symbol": sym, "side": side, "name": plan.get("name"), "asset": plan.get("asset"),
+            "setup": plan.get("setup"),
             "date": plan.get("date"), "entry_plan": round_cent(entry_plan), "entry": ref,
             "order_type": "limit" if limit is not None else "market",
             "stop": stop, "target": target, "risk_per_share": risk, "reward_risk": rr,
@@ -1122,7 +1124,7 @@ def swing_ticket(s):
     if s["refusal"] or not s["qty"]:
         return None
     word = "acciones" if not s["venues"][s["venue"]].get("leveraged") else "unidades"
-    t = {"symbol": s["symbol"], "name": s.get("name"), "side": s["side"], "qty": s["qty"], "type": s["order_type"],
+    t = {"symbol": s["symbol"], "name": s.get("name"), "asset": s.get("asset"), "side": s["side"], "qty": s["qty"], "type": s["order_type"],
          "entry": s["entry"], "stop": s["stop"], "target": s["target"], "risk_per_share": s["risk_per_share"],
          "reward_risk": s["reward_risk"], "max_loss": s["max_loss"], "cost": s["cost"], "setup": s["setup"],
          "signal_date": s["date"], "time_stop_date": s["time_stop_date"], "time_stop_days": s["time_stop_days"],

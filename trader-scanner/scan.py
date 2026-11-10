@@ -871,6 +871,10 @@ SWING_PARAMS = {"breakout_days": 20, "ema_days": 20, "trend_days": 50, "ema_touc
                 "rsi_days": 2, "rsi_max": 10.0, "rsi_trend_days": 200}
 SWING_DEFAULTS = {"min_price": 5.0, "min_dollar_volume": 20000000.0}
 SWING_WATCHLIST = "trader/watchlist.txt"
+# "comodines": commodity ETFs scanned every day on top of the watchlist (swing.extra_symbols).
+# They trade like a stock, have no quarterly earnings and skip the dollar-volume floor.
+COMMODITIES = {"GLD": "Oro", "SLV": "Plata", "USO": "Petroleo WTI", "BNO": "Petroleo Brent",
+               "UNG": "Gas natural", "CPER": "Cobre", "IAU": "Oro", "PPLT": "Platino", "DBA": "Agricolas"}
 SWING_MIN_BARS = 60
 
 
@@ -1083,8 +1087,28 @@ def swing_candidate(sym, bars, setups, p, floors):
             "why": SWING_LABEL.get(hits[0], hits[0])}, "hit"
 
 
-def scan_swing(data, symbols, now_utc, setups, p, floors):
-    """Pure. data = {SYM: series with highs and lows}. -> (candidates, counts, last_date)."""
+def swing_extras(cfg):
+    """The "comodines" from the config's swing.extra_symbols: a list of tickers."""
+    sw = (cfg or {}).get("swing") or {}
+    ex = sw.get("extra_symbols") or []
+    if isinstance(ex, str):
+        ex = [x for x in re.split(r"[,\s]+", ex) if x]
+    if not isinstance(ex, list):
+        raise ScanError("swing.extra_symbols is a list of tickers, like [\"GLD\", \"SLV\", \"USO\"]")
+    out = []
+    for x in ex:
+        x = str(x).strip().upper()
+        if not TICKER.match(x):
+            raise ScanError("swing.extra_symbols: %r is not a plain ticker" % x)
+        if x not in out:
+            out.append(x)
+    return out
+
+
+def scan_swing(data, symbols, now_utc, setups, p, floors, extras=()):
+    """Pure. data = {SYM: series with highs and lows}. -> (candidates, counts, last_date).
+    Symbols in `extras` (the commodity "comodines") skip the dollar-volume floor."""
+    extras = set(extras)
     out, dates = [], {}
     counts = {"requested": len(symbols), "fetched": 0, "illiquid": 0, "short": 0, "no_ohlc": 0, "scanned": 0}
     for sym in symbols:
@@ -1096,10 +1120,14 @@ def scan_swing(data, symbols, now_utc, setups, p, floors):
         if bars is None:
             counts["no_ohlc"] += 1
             continue
-        cand, why = swing_candidate(sym, bars, setups, p, floors)
+        cand, why = swing_candidate(sym, bars, setups, p,
+                                    dict(floors, min_dollar_volume=0) if sym in extras else floors)
         if cand:
             meta = s.get("meta") or {}
             cand["name"] = " ".join(str(meta.get("longName") or meta.get("shortName") or "").split())
+            if sym in extras:
+                cand["extra"] = True
+                cand["asset"] = COMMODITIES.get(sym, "comodin")
         if why in ("short", "illiquid"):
             counts[why] += 1
             continue
@@ -1156,6 +1184,8 @@ def cmd_swing(a):
         data, failed = load_offline(a.offline)
         offline_syms = sorted(set(data) | set(failed))
     symbols = swing_symbols(a, offline_syms)
+    extras = [] if (a.symbols or a.no_extras) else swing_extras(cfg)
+    symbols = symbols + [x for x in extras if x not in symbols]
     source = "offline" if a.offline else "yahoo"
     if not a.offline:
         if len(symbols) <= a.max_confirm:
@@ -1180,13 +1210,14 @@ def cmd_swing(a):
                     ranked.append((-px * vol, sym))
             ranked.sort()
             pick = [s for _, s in ranked[:a.max_confirm]]
+            pick += [x for x in extras if x not in pick]          # the comodines always get their chart
             progress(a, "Stage 2: %d daily charts for the candidates..." % len(pick))
             data, f2 = fetch_charts(pick, a.pause, a)
             failed.update(f2)
             if len(ranked) > a.max_confirm:
                 progress(a, "  stopped at --max-confirm %d of %d candidates" % (a.max_confirm, len(ranked)))
     cands, counts, last = scan_swing(data, symbols if not staged else [s for s in symbols if s in data],
-                                     now, setups, p, floors)
+                                     now, setups, p, floors, extras)
     counts["requested"] = len(symbols)
     doc = {"created_by": "trader-scanner", "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "mode": "swing",
            "as_of": ("%s close" % last.isoformat()) if last else None, "universe": len(symbols),
@@ -1444,6 +1475,7 @@ def main(argv=None):
     common(p, 5.0, 0)
     p.set_defaults(out="trader/swing.json", min_price=None)
     p.add_argument("--setups", help="comma list: breakout20, pullback_ema20, rsi2 (default: config swing.setups, all)")
+    p.add_argument("--no-extras", action="store_true", help="leave out the comodines (swing.extra_symbols)")
     p.add_argument("--min-dollar-volume", type=float, help="20-day average close x volume (default 20,000,000)")
     p.add_argument("--max-confirm", type=int, default=MAX_CONFIRM,
                    help="daily charts to fetch: a list up to this size goes straight to v8 charts")

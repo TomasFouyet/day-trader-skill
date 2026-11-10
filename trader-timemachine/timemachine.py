@@ -997,6 +997,7 @@ def simulate_swing(rets, entry, stop, target, horizon, paths=10000, seed=19, blo
         "paths": paths, "seed": seed, "block_days": block, "horizon_days": horizon, "pool_days": n,
         "p_target": count["target"] / paths, "p_stop": count["stop"] / paths,
         "p_unresolved": count["open"] / paths, "expectancy_R": sum(rs) / paths,
+        "p_win": sum(1 for r in rs if r > 0) / paths,
         "r_at_target": round(r_target, 4), "p_gap_stop": gaps / paths,
         "R_p5": pct(srt, 0.05), "R_median": pct(srt, 0.5), "R_p95": pct(srt, 0.95),
         "median_days_to_target": statistics.median(days_to["target"]) if days_to["target"] else None,
@@ -1066,6 +1067,7 @@ def history_swing(bars, upto, setup, rule, params=None):
             "to": bars[upto]["date"] if bars else None, "triggered": n, "target": count["target"],
             "stop": count["stop"], "unresolved": count["open"],
             "hit_rate": (count["target"] / n) if n else None, "avg_R": (sum(rs) / n) if n else None,
+            "win_rate": (sum(1 for r in rs if r > 0) / n) if n else None,
             "few_cases": n < SWING_MIN_CASES, "trades": trades[-40:]}
 
 
@@ -1238,6 +1240,7 @@ def report_swing(doc):
         "  stop primero          %s" % pc(m["p_stop"]),
         "  sin resolver dia %-3d  %-8s se cierra al cierre del dia %d (stop de tiempo)" % (n, pc(m["p_unresolved"]), n),
         "  expectativa           %+.2fR" % m["expectancy_R"],
+        "  winrate               %-8s terminan en ganancia (objetivo, o arriba al cierre por tiempo)" % pc(m["p_win"]),
         "",
         "  R por trayectoria: mediana %+.2f, 90 %% entre %+.2f y %+.2f." % (m["R_median"], m["R_p5"], m["R_p95"]),
     ]
@@ -1256,9 +1259,11 @@ def report_swing(doc):
         lines.append("Historial: " + h["note"] + ".")
     if h["triggered"]:
         lines.append("Historial real: el setup %s (stop %s, objetivo %gR, %d dias) en las velas diarias de %s a %s "
-                     "se disparo %d veces: %d objetivo, %d stop, %d sin resolver. Acierto %.0f %%, expectativa %+.2fR."
+                     "se disparo %d veces: %d objetivo, %d stop, %d sin resolver. Acierto %.0f %%, winrate %.0f %%, "
+                     "expectativa %+.2fR."
                      % (setup_name(h["setup"]), stop_words, ru["target_r"], ru["horizon_days"], h["from"], h["to"],
-                        h["triggered"], h["target"], h["stop"], h["unresolved"], 100 * h["hit_rate"], h["avg_R"]))
+                        h["triggered"], h["target"], h["stop"], h["unresolved"], 100 * h["hit_rate"],
+                        100 * h["win_rate"], h["avg_R"]))
     else:
         lines.append("Historial real: el setup %s no se disparo nunca de %s a %s."
                      % (setup_name(h["setup"]), h["from"], h["to"]))

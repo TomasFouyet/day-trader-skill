@@ -864,7 +864,7 @@ def gather_swing(a):
     entry = a.entry if a.entry is not None else (doc.get("entry") if doc.get("entry") is not None else doc.get("price"))
     return {"symbol": sym, "entry": entry, "date": a.date or doc.get("date"), "setup": a.setup or doc.get("setup"),
             "source": a.from_path, "setup_params": doc.get("setup_params"), "earnings": doc.get("earnings"),
-            "side": side_of(doc.get("side") or a.side), "name": doc.get("name")}
+            "side": side_of(doc.get("side") or a.side), "name": doc.get("name"), "asset": doc.get("asset")}
 
 
 def side_of(x):
@@ -997,7 +997,7 @@ def build_swing_plan(a, now_utc):
     t_label = r_label_es(target_param) if target_rule == "r" else "tu precio (%sR)" % ratio(c["reward_risk"])
     tdate = add_trading_days(day, tstop)
     plan = {"created_by": "trader-exit", "mode": "swing", "symbol": info["symbol"], "side": info.get("side", "buy"),
-            "name": info.get("name"),
+            "name": info.get("name"), "asset": info.get("asset"),
             "date": day.isoformat(), "setup": setup, "entry": float(e), "entry_basis": basis, "interval": "1d",
             "stop": float(c["stop"]), "stop_rule": stop_rule,
             "stop_param": float(stop_param) if stop_rule in ("atr", "pct") else None,

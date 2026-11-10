@@ -48,7 +48,15 @@
         "symbols": []
       }
     },
-    "min_expectancy_R": 0.0
+    "min_expectancy_R": 0.0,
+    "extra_symbols": [
+      "GLD",
+      "SLV",
+      "USO",
+      "BNO",
+      "UNG",
+      "CPER"
+    ]
   },
   "budget": 5000,
   "cash_buffer_pct": 10,

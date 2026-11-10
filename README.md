@@ -409,7 +409,23 @@ Para cada setup el aviso calcula los dos venues:
   depende de las reglas de Bitunix. Revisa ambas en la plataforma.
 - Pon el stop en la plataforma apenas abras la posición.
 
-### 8. Límites que quedan
+### 8. Winrate y comodines (materias primas)
+
+- **Winrate estimado** en cada aviso: el % de las 10.000 trayectorias que
+  terminan en ganancia (tocan el objetivo, o siguen arriba del precio de
+  entrada al cierre por tiempo), y el % de los casos del historial real del
+  mismo setup que terminaron en ganancia. No es lo mismo que "objetivo
+  primero": muchas operaciones ganan algo sin llegar al objetivo.
+- **Comodines:** `swing.extra_symbols` agrega cada día, además de tu
+  watchlist, ETF de materias primas: GLD (oro), SLV (plata), USO (petróleo
+  WTI), BNO (petróleo Brent), UNG (gas natural), CPER (cobre). Se escanean con
+  los mismos setups (long y short), no pasan por el filtro de volumen, no
+  tienen resultados trimestrales y llevan 🛢 en el aviso. Son ETF: replican el
+  precio del futuro, con costos y diferencias (el roll de los contratos). En
+  Bitunix el instrumento equivalente (oro, plata, petróleo) puede tener otro
+  ticker y otro precio. `scan.py swing --no-extras` los saca.
+
+### 9. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
   SEC (el calendario de Yahoo pide un token de sesión). Confírmalas en la web

@@ -213,6 +213,9 @@ def message(t, result):
     short = str(t.get("side") or "buy") == "sell"
     sym = esc(t["symbol"])
     head = "%s <b>%s · %s</b>" % ("🔴" if short else "🟢", "SHORT" if short else "LONG", sym)
+    if t.get("asset"):
+        head = head.replace("<b>%s · " % ("SHORT" if short else "LONG"), "\U0001F6E2 <b>%s · " % ("SHORT" if short else "LONG"), 1)
+        head += " · <b>%s</b>" % esc(t["asset"])
     if t.get("name"):
         head += " · %s" % esc(t["name"])
     rr = ("%.2f" % float(t.get("reward_risk") or 0)).rstrip("0").rstrip(".")
@@ -255,6 +258,13 @@ def message(t, result):
         hist = ("Historial real: %d casos%s" % (m["history_cases"], " (pocos)" if m.get("few_cases") else "")
                 if m.get("history_cases") is not None else "")
         lines.append("Expectativa <b>%+.2fR</b>%s" % (float(m.get("expectancy_R") or 0), (" · " + hist) if hist else ""))
+        wins = []
+        if m.get("p_win") is not None:
+            wins.append("<b>%s</b> en la simulación" % _pc(m["p_win"]))
+        if m.get("history_win_rate") is not None and m.get("history_cases"):
+            wins.append("<b>%s</b> en el historial real" % _pc(m["history_win_rate"]))
+        if wins:
+            lines.append("\U0001F3AF Winrate estimado: %s" % " · ".join(wins))
         if m.get("verdict"):
             v = m["verdict"].split(":")[0]
             if float(m.get("p_unresolved") or 0) > 0.6:
@@ -266,6 +276,8 @@ def message(t, result):
     lines.append("")
     if er.get("flag"):
         lines.append("📅 ⚠ <b>%s</b> (%s)" % (esc(er["flag"]), esc(_d(er.get("next")) or "fecha desconocida")))
+    elif er.get("no_earnings"):
+        lines.append("\U0001F4C5 Sin resultados trimestrales (materia prima)")
     elif er.get("next"):
         lines.append("📅 Resultados: ~%s (%s) ✅ fuera del horizonte" % (
             _d(er["next"]), "confirmada" if er.get("known") else "estimada"))
@@ -296,6 +308,8 @@ def summary(items, today, invalid=()):
     for n, (_, t, _) in enumerate(items, 1):
         m = t.get("timemachine") or {}
         exp = ("%+.2fR" % float(m["expectancy_R"])) if m.get("expectancy_R") is not None else "s/d"
+        if m.get("p_win") is not None:
+            exp += " · win %.0f%%" % (100.0 * float(m["p_win"]))
         pm = t.get("premarket") or {}
         gap = (" · pre %+.1f%% %s" % (float(pm["gap_pct"]), PM_ICON.get(pm.get("status"), ""))
                if pm.get("gap_pct") is not None else (" · pre %s" % PM_ICON["unknown"] if pm else ""))
