@@ -115,8 +115,8 @@ class MorningRun(unittest.TestCase):
         with open("trader/swing_orders.json") as fh:
             tickets = json.load(fh)["tickets"]
         self.assertTrue(all(t["premarket"]["status"] == "unknown" for t in tickets))
-        code, text, _ = run(pipe, ["--now", "2026-11-02 11:00"])
-        self.assertIn("08:15 a 09:59", text)
+        code, text, _ = run(pipe, ["--now", "2026-11-02 12:30"])
+        self.assertIn("08:15 a 11:59", text)
 
 
 if __name__ == "__main__":

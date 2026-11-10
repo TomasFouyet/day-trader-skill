@@ -363,7 +363,8 @@ class Pipeline(Tmp):
         self.assertEqual(run(pipe, ["--check-clock", "--now", "2026-10-30 16:20"] + ev)[0], 0)
         self.assertEqual(run(pipe, ["--check-clock", "--now", "2026-10-31 12:00", "--force-time"])[0], 0)
         self.assertEqual(run(pipe, ["--check-clock", "--now", "2026-11-02 09:05"])[0], 0)      # morning (default)
-        self.assertEqual(run(pipe, ["--check-clock", "--now", "2026-11-02 10:05"])[0], 1)
+        self.assertEqual(run(pipe, ["--check-clock", "--now", "2026-11-02 11:30"])[0], 0)      # late, still sent
+        self.assertEqual(run(pipe, ["--check-clock", "--now", "2026-11-02 12:05"])[0], 1)
         code, _, err = run(pipe, ["--now", "2026-10-30 09:00"])
         self.assertEqual(code, 2)
         self.assertIn("config.json", err)
@@ -443,11 +444,12 @@ class Safety(unittest.TestCase):
         self.assertNotIn("upload-artifact", wf)          # public repo: artifacts are downloadable
         self.assertNotIn("git push", wf)
         self.assertNotIn("git commit", wf)
-        self.assertRegex(wf, r'cron: "50 12 \* \* 1-5"')      # 08:50 New York in daylight time
-        self.assertRegex(wf, r'cron: "50 13 \* \* 1-5"')      # 08:50 New York in standard time
+        for c in ("17 12", "47 12", "17 13", "47 13"):
+            self.assertIn('cron: "%s * * 1-5"' % c, wf)
         p = pipe.parse_now
-        for utc, ok in (("2026-10-30T12:50:00Z", True), ("2026-10-30T13:50:00Z", True),
-                        ("2026-11-09T12:50:00Z", False), ("2026-11-09T13:50:00Z", True)):
+        for utc, ok in (("2026-10-30T12:17:00Z", True), ("2026-10-30T13:47:00Z", True),
+                        ("2026-11-09T12:47:00Z", False), ("2026-11-09T13:17:00Z", True),
+                        ("2026-11-09T16:30:00Z", True), ("2026-11-09T17:05:00Z", False)):
             self.assertEqual(pipe.market_check(p(utc))[0], ok, utc)
 
     def test_no_secrets_in_the_repo(self):

@@ -20,7 +20,7 @@ The steps, each one the pack's own tool run in this process:
   7. notify      notify_telegram.py: one message per new PASS
 
 The clock: it runs only on an NYSE trading day and once a day
-(trader/state/pipeline.json). By default in the MORNING, 8:15 to 9:59 New York,
+(trader/state/pipeline.json). By default in the MORNING, 8:15 to 11:59 New York,
 on the previous session's close, with a pre-market check of each ticket
 (premarket.py: gap, still valid, size from the pre-market price). With
 --session evening, at or after 15 minutes past the close instead. New York time is worked out here, daylight time
@@ -59,8 +59,8 @@ NYSE_HOLIDAYS = {
     "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24"}
 EARLY_CLOSE = {"2026-11-27", "2026-12-24", "2027-11-26"}
 AFTER_CLOSE_MIN = 15
-MORNING_FROM = 8 * 60 + 15      # the morning run: 8:15 to 9:59 New York, before and just after the open
-MORNING_TO = 10 * 60
+MORNING_FROM = 8 * 60 + 15      # the morning run: from 8:15 New York, before the open
+MORNING_TO = 12 * 60       # GitHub can start a scheduled run hours late: still send until noon
 STATE = "trader/state/pipeline.json"
 
 
@@ -100,7 +100,7 @@ def parse_now(text):
 
 
 def market_check(now_utc, session="morning"):
-    """(ok, why) in New York time, on an NYSE trading day. "morning": 8:15 to 9:59, before the open, on
+    """(ok, why) in New York time, on an NYSE trading day. "morning": 8:15 to 11:59 (before the open, or late if GitHub starts it late), on
     yesterday's close. "evening": at or after the close + 15 minutes."""
     et = to_eastern(now_utc)
     d = et.date().isoformat()
@@ -111,7 +111,7 @@ def market_check(now_utc, session="morning"):
     mins = et.hour * 60 + et.minute
     if session == "morning":
         if not MORNING_FROM <= mins < MORNING_TO:
-            return False, "en Nueva York son las %s: la corrida de la manana va de 08:15 a 09:59" % et.strftime("%H:%M")
+            return False, "en Nueva York son las %s: la corrida de la manana va de 08:15 a 11:59" % et.strftime("%H:%M")
         return True, "Nueva York %s %s, antes de la apertura (senales del cierre anterior)" % (d, et.strftime("%H:%M"))
     close = 13 * 60 if d in EARLY_CLOSE else 16 * 60
     mins = et.hour * 60 + et.minute
@@ -344,7 +344,7 @@ def main(argv=None):
     ap.add_argument("--offline-sec", metavar="DIR", help="tests: SEC files instead of EDGAR")
     ap.add_argument("--offline-premarket", metavar="DIR", help="tests: 1-minute charts with pre-market bars")
     ap.add_argument("--session", choices=["morning", "evening"], default="morning",
-                    help="morning (default): 8:15 to 9:59 New York, with the pre-market check; evening: after the close")
+                    help="morning (default): 8:15 to 11:59 New York, with the pre-market check; evening: after the close")
     ap.add_argument("--now", help="pretend it is this time (New York, or ISO with Z)")
     a = ap.parse_args(argv)
     try:

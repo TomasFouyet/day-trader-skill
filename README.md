@@ -255,7 +255,7 @@ python3 trader-alerts/swing_pipeline.py --dry-run --force-time
 ```
 
 `--force-time` es solo para probar a cualquier hora: sin él, el pipeline corre
-únicamente en un día hábil NYSE, entre las 08:15 y las 09:59 de Nueva York, y
+únicamente en un día hábil NYSE, entre las 08:15 y las 11:59 de Nueva York, y
 una vez por día. `--session evening` lo corre en cambio después del cierre
 (desde las 16:15), sin chequeo de pre-mercado.
 
@@ -289,13 +289,15 @@ mensajes sin enviar ni recordar nada.
 ### 5. GitHub Actions (automático)
 
 El workflow `.github/workflows/swing-daily.yml` corre el pipeline completo de
-lunes a viernes a las 12:50 y 13:50 UTC. GitHub no sabe de horario de verano,
-así que el script mira la hora de Nueva York: en verano (EDT) corre el de las
-12:50 (08:50 en Nueva York) y el de las 13:50 se salta porque ya corrió; en
-invierno (EST) el de las 12:50 cae a las 07:50, antes de la ventana, y corre el
-de las 13:50 (08:50 en Nueva York). En Chile llega entre las 09:50 y las 10:50
-según la época del año. GitHub puede atrasar un cron varios minutos; la
-ventana llega hasta las 09:59 de Nueva York.
+lunes a viernes con cuatro disparos (12:17, 12:47, 13:17 y 13:47 UTC). GitHub no
+sabe de horario de verano y puede atrasar un disparo programado incluso horas,
+así que el script mira la hora de Nueva York: corre solo entre las 08:15 y las
+11:59 de Nueva York y una vez al día; el primer disparo que cae en la ventana
+envía y los demás se saltan. En verano (EDT) envía desde las 08:17 de Nueva
+York; en invierno (EST) desde las 08:17 también (los de las 12:xx UTC caen a las
+07:xx, antes de la ventana). En Chile llega normalmente entre las 09:20 y las
+10:50. Si GitHub lo atrasa hasta después de la apertura (09:30), el aviso usa
+el precio de la sesión en vez del pre-mercado.
 
 1. **Los workflows programados solo corren desde la rama por defecto.** Une
    `swing-mode` a `main` (o haz `swing-mode` la rama por defecto en
@@ -346,7 +348,7 @@ workflow aparecen pasos con `exit 1` en el scanner, o el pipeline termina con
 
 2. Programa el pipeline varias veces en la mañana con `crontab -e` (macOS o
    Linux). La hora es la de tu computador; el script revisa la de Nueva York
-   (corre entre las 08:15 y las 09:59) y una sola vez por día. En Chile, por
+   (corre entre las 08:15 y las 11:59) y una sola vez por día. En Chile, por
    ejemplo, a las 9:20, 10:20 y 11:20 cubre el año completo:
 
    ```bash
