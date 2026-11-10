@@ -26,8 +26,11 @@ on the previous session's close, with a pre-market check of each ticket
 --session evening, at or after 15 minutes past the close instead. New York time is worked out here, daylight time
 included, so a scheduler in UTC can fire at two times and the right one runs.
 
-It never places an order and never imports trader-broker: the tickets are for
-you to buy by hand. With --quiet (CI) it prints step names and counts only, no
+It never imports trader-broker and places no real order: the tickets are for
+you to buy by hand. With PAPER_TRADING=1 (and the Alpaca keys) it also sends
+each passed setup to an Alpaca PAPER account (simulated money, paper_trader.py,
+fixed to paper-api.alpaca.markets) to build a track record, and on Mondays a
+report of it to Telegram. With --quiet (CI) it prints step names and counts only, no
 symbols, sizes or account numbers, because public CI logs are public.
 """
 
@@ -48,7 +51,8 @@ TOOLS = {"scan": ("trader-scanner", "scan"), "news": ("trader-news", "news"),
          "earnings": ("trader-analyst", "earnings"), "exit": ("trader-exit", "exit"),
          "tm": ("trader-timemachine", "timemachine"), "budget": ("trader-budget", "size"),
          "risk": ("trader-risk", "check"), "alerts": ("trader-alerts", "alerts"),
-         "notify": ("trader-alerts", "notify_telegram"), "premarket": ("trader-alerts", "premarket")}
+         "notify": ("trader-alerts", "notify_telegram"), "premarket": ("trader-alerts", "premarket"),
+         "paper": ("trader-alerts", "paper_trader")}
 NYSE_HOLIDAYS = {
     "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03",
     "2026-09-07", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26",
@@ -290,6 +294,19 @@ def pipeline(a):
             state.update(last_error=today)
             write_json(STATE, state)
             return code
+    paper = os.environ.get("PAPER_TRADING") == "1"
+    if paper and not a.dry_run:
+        q = ["--now", iso] + (["--quiet"] if a.quiet else [])
+        r.run("paper", ["sync"] + q, "paper sync")
+        if os.path.exists("trader/state/swing_risk.json"):
+            r.run("paper", ["submit"] + q, "paper ordenes")
+        if et.weekday() == 0 or a.paper_report:
+            r.run("paper", ["report", "--telegram"] + q, "paper reporte")
+    elif paper or a.dry_run:
+        if os.environ.get("ALPACA_API_KEY_ID") and os.environ.get("ALPACA_API_SECRET_KEY"):
+            r.run("paper", ["account", "--quiet"], "paper cuenta (solo lectura)")
+        if os.path.exists("trader/state/swing_risk.json"):
+            r.run("paper", ["submit", "--dry-run", "--now", iso] + (["--quiet"] if a.quiet else []), "paper (dry-run)")
     state.update(last_run=iso, last_ok=today if not a.dry_run else state.get("last_ok"),
                  last_counts={"candidates": len(cands), "planned": planned, "earnings_blocked": blocked,
                               "tickets": tickets, "passed": passed},
@@ -302,7 +319,10 @@ def pipeline(a):
             (" (%s)" % ", ".join(md.STATS["errors"])) if md.STATS["errors"] else ""))
     else:
         print("Precios: Yahoo (sin keys de Alpaca).")
-    print("Listo. Ninguna orden fue colocada: los tickets son para comprar a mano.")
+    if paper and not a.dry_run:
+        print("Listo. Ordenes solo en la cuenta PAPER de Alpaca (simulada); nada real.")
+    else:
+        print("Listo. Ninguna orden fue colocada: los tickets son para comprar a mano.")
     return 0
 
 
@@ -315,6 +335,7 @@ def main(argv=None):
     ap.add_argument("--replays", type=int, default=10000, help="Time Machine paths per candidate")
     ap.add_argument("--heartbeat", action="store_true", help="send a short Telegram note when nothing passed")
     ap.add_argument("--skip-news", action="store_true")
+    ap.add_argument("--paper-report", action="store_true", help="send the paper-trading report today (default Mondays)")
     ap.add_argument("--resend", action="store_true", help="Telegram: send today's setups even if sent before")
     ap.add_argument("--check-clock", action="store_true",
                     help="only say whether it should run now: exit 0 yes, 1 no (for the workflow)")

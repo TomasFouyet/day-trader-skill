@@ -414,7 +414,21 @@ class Safety(unittest.TestCase):
         self.assertNotIn("broker", pipe.TOOLS)
         self.assertEqual(sorted(f for f, _ in pipe.TOOLS.values()),
                          sorted(["trader-scanner", "trader-news", "trader-analyst", "trader-exit", "trader-timemachine",
-                                 "trader-budget", "trader-risk", "trader-alerts", "trader-alerts", "trader-alerts"]))
+                                 "trader-budget", "trader-risk", "trader-alerts", "trader-alerts", "trader-alerts",
+                                 "trader-alerts"]))
+
+    def test_paper_trader_is_paper_only(self):
+        src = self.read("trader-alerts/paper_trader.py")
+        code = re.sub(r'"""[\s\S]*?"""', "", src)
+        hosts = set(re.findall(r"https?://([a-z0-9.\-]+)", code.lower()))
+        self.assertEqual(hosts, {"paper-api.alpaca.markets"})
+        for bad in ("trader-broker", "ticket.py", "api.alpaca.markets/"):
+            self.assertNotIn(bad, code.replace("paper-api.alpaca.markets", "").lower(), bad)
+        paper = load("trader-alerts", "paper_trader")
+        for url in ("https://api.alpaca.markets/v2/orders", "https://data.alpaca.markets/v2/orders",
+                    "https://paper-api.alpaca.markets.evil.com/v2/orders", "http://paper-api.alpaca.markets/v2/x"):
+            with self.assertRaises(paper.PaperError, msg=url):
+                paper._http("POST", url, {})
 
     def test_gitignore_keeps_private_files_out(self):
         gi = self.read(".gitignore").split()
@@ -423,7 +437,7 @@ class Safety(unittest.TestCase):
     def test_workflow_secrets_and_no_artifacts(self):
         wf = self.read(".github/workflows/swing-daily.yml")
         for s in ("secrets.SEC_USER_AGENT", "secrets.TELEGRAM_BOT_TOKEN", "secrets.TELEGRAM_CHAT_ID",
-                  "secrets.ALPACA_API_KEY_ID", "secrets.ALPACA_API_SECRET_KEY",
+                  "secrets.ALPACA_API_KEY_ID", "secrets.ALPACA_API_SECRET_KEY", "secrets.PAPER_TRADING",
                   "secrets.TRADER_BUDGET", "--quiet", "--check-clock", "actions/cache/save", "contents: read"):
             self.assertIn(s, wf)
         self.assertNotIn("upload-artifact", wf)          # public repo: artifacts are downloadable

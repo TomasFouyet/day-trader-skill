@@ -2,6 +2,8 @@
 #
 # Nunca coloca ordenes y nunca usa trader-broker: los tickets son para comprar a mano.
 # Precios: Alpaca (solo la API de datos, data.alpaca.markets) si estan sus Secrets; si no, Yahoo.
+# Paper trading: con el Secret PAPER_TRADING=1, cada setup que pasa risk se opera en la cuenta PAPER
+# de Alpaca (dinero simulado, paper-api.alpaca.markets, fijo en paper_trader.py). Nada real.
 # Privacidad (el repo es publico): el tamano de la cuenta, las posiciones, los tickets y el estado
 # viven en Secrets y en el cache de Actions (solo lo leen los workflows de este repo), nunca en un
 # commit ni en un artifact. El log corre con --quiet: pasos y conteos, sin simbolos ni montos.
@@ -144,6 +146,7 @@ jobs:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          PAPER_TRADING: ${{ secrets.PAPER_TRADING }}
           TRADER_BUDGET: ${{ secrets.TRADER_BUDGET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

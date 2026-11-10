@@ -440,7 +440,36 @@ Solo se usa la API de **datos**. La de órdenes (`paper-api.alpaca.markets` o
 `api.alpaca.markets`) nunca se llama, y un test lo verifica. Para correrlo en
 tu computador, exporta las mismas dos variables en tu `.env`.
 
-### 10. Límites que quedan
+### 10. Paper trading en Alpaca (historial real, dinero simulado)
+
+Con el Secret `PAPER_TRADING` = `1` (además de las keys de Alpaca), cada
+mañana, después de enviar los avisos, el pipeline opera cada setup que pasó
+risk en tu cuenta **paper** de Alpaca (simulada, gratis, sin dinero real):
+
+- **Una orden bracket por setup:** entrada a mercado en la apertura, objetivo
+  (límite) y stop ya puestos, válidas hasta cancelarlas. Usa el tamaño del
+  aviso (el de pre-mercado si lo hay) en **acciones enteras**: Alpaca no
+  acepta fracciones en un bracket, así que en acciones caras puede quedar en
+  0 y se omite. Los shorts son ventas en corto de la acción (no replican el
+  apalancamiento de Bitunix, pero el resultado en R es el mismo). Se omiten
+  los descartados en el pre-mercado.
+- **Cada mañana revisa** qué se ejecutó: entrada, objetivo o stop. Si pasa la
+  fecha del stop de tiempo y sigue abierta, cancela sus dos órdenes y la
+  cierra a mercado en la apertura siguiente (el Time Machine simula el cierre
+  de ese día: hay un pequeño desfase).
+- **Los lunes llega a Telegram el historial:** operaciones cerradas, winrate
+  real comparado con el estimado, R promedio real comparado con la
+  expectativa, total en R y patrimonio de la cuenta paper.
+
+Todo pasa por `trader-alerts/paper_trader.py`, que solo habla con
+`paper-api.alpaca.markets` (fijo en el código, cualquier otra dirección se
+rechaza, y un test lo verifica). Nunca usa trader-broker ni una cuenta real.
+Conviene dejar la cuenta paper con el mismo monto que `TRADER_BUDGET` (en el
+panel de Alpaca: reset de la cuenta paper). Ojo con la regla de day trading
+(PDT) bajo US$25.000: si una entrada y su stop se ejecutan el mismo día, cuenta
+como day trade.
+
+### 11. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
   SEC (el calendario de Yahoo pide un token de sesión). Confírmalas en la web
