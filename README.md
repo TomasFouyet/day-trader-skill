@@ -451,8 +451,10 @@ y las keys de Alpaca, cada
 mañana, después de enviar los avisos, el pipeline opera cada setup que pasó
 risk en tu cuenta **paper** de Alpaca (simulada, gratis, sin dinero real):
 
-- **Una orden bracket por setup:** entrada a mercado en la apertura, objetivo
-  (límite) y stop ya puestos, válidas hasta cancelarlas. Usa el tamaño del
+- **Una orden bracket por setup:** entrada **límite** al precio de "Entrada"
+  del aviso (el de pre-mercado si el chequeo lo movió), objetivo (límite) y
+  stop ya puestos, válidas hasta cancelarlas. Si el precio no llega al límite
+  durante el día, la entrada se cancela al cierre ("no entró"). Usa el tamaño del
   aviso (el de pre-mercado si lo hay) en **acciones enteras**: Alpaca no
   acepta fracciones en un bracket, así que en acciones caras puede quedar en
   0 y se omite. Los shorts son ventas en corto de la acción (no replican el
@@ -462,6 +464,11 @@ risk en tu cuenta **paper** de Alpaca (simulada, gratis, sin dinero real):
   fecha del stop de tiempo y sigue abierta, cancela sus dos órdenes y la
   cierra a mercado en la apertura siguiente (el Time Machine simula el cierre
   de ese día: hay un pequeño desfase).
+- **Cada día, después del cierre** (workflow "Resumen del dia (paper)",
+  16:17 a 18:47 de Nueva York), llega a Telegram el estado de tus operaciones:
+  las abiertas con su precio al cierre, % y R desde la entrada, P&L, distancia
+  al stop y al objetivo y días hasta la salida por tiempo; las que se cerraron
+  hoy (objetivo, stop o tiempo) con su R y P&L; y las que no entraron.
 - **Los lunes llega a Telegram el historial:** operaciones cerradas, winrate
   real comparado con el estimado, R promedio real comparado con la
   expectativa, total en R y patrimonio de la cuenta paper.

@@ -6,6 +6,7 @@
     python3 paper_trader.py submit --dry-run         # the orders it would place for today's setups
     python3 paper_trader.py submit                   # place them (needs PAPER_TRADING=1)
     python3 paper_trader.py report                   # the track record; --telegram sends it
+    python3 paper_trader.py daily --telegram         # after the close: open trades, closed today, not filled
 
 PAPER ONLY. Every request goes to https://paper-api.alpaca.markets, a simulated
 account: no real money. The host is fixed in this file and anything else is
@@ -15,8 +16,10 @@ keys ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY.
 
 submit: each ticket that passed today's trader-risk check (trader/state/
 swing_risk.json, same fingerprint) and is not "invalid" in the pre-market check
-becomes ONE bracket order: market entry at the open, a take-profit limit at the
-target and a stop at the stop, all good-till-cancelled. Whole shares only
+becomes ONE bracket order: a LIMIT entry at the ticket's entry (the pre-market
+price when the pre-market check moved it), a take-profit limit at the target
+and a stop at the stop, all good-till-cancelled. An entry that has not filled
+by the close of its day is cancelled by the next sync ("limite no alcanzado"). Whole shares only
 (Alpaca takes no fractions in a bracket): the ticket's size (the pre-market one
 when there is one) rounded down; under 1 share is skipped and logged. A short
 is a short sale of the stock (Alpaca allows it on easy-to-borrow names). Each
@@ -143,6 +146,9 @@ class Paper(object):
     def close_position(self, sym):
         return self.call("DELETE", "/v2/positions/%s" % urllib.parse.quote(sym))
 
+    def positions(self):
+        return self.call("GET", "/v2/positions")
+
 
 # ---------------------------------------------------------------- files
 
@@ -196,8 +202,9 @@ def planned(t):
     if whole < 1:
         return None, "menos de 1 accion entera (%s)" % qty
     short = str(t.get("side") or "buy") == "sell"
+    entry = pm.get("price") if pm.get("status") in ("ok", "warn") and pm.get("price") is not None else t["entry"]
     body = {"symbol": str(t["symbol"]).upper(), "qty": str(whole), "side": "sell" if short else "buy",
-            "type": "market", "time_in_force": "gtc", "order_class": "bracket",
+            "type": "limit", "limit_price": price_str(entry), "time_in_force": "gtc", "order_class": "bracket",
             "take_profit": {"limit_price": price_str(t["target"])},
             "stop_loss": {"stop_price": price_str(t["stop"])},
             "client_order_id": client_id(t)}
@@ -225,8 +232,8 @@ def submit(api, tickets_doc, risk_doc, state, today, dry_run=False, now=None):
             out.append((t["symbol"], "omitido: " + why))
             continue
         if dry_run:
-            out.append((t["symbol"], "orden paper (dry-run): %s %s %s, TP %s, SL %s" % (
-                body["side"], body["qty"], body["symbol"], body["take_profit"]["limit_price"],
+            out.append((t["symbol"], "orden paper (dry-run): %s %s %s limite %s, TP %s, SL %s" % (
+                body["side"], body["qty"], body["symbol"], body["limit_price"], body["take_profit"]["limit_price"],
                 body["stop_loss"]["stop_price"])))
             continue
         try:
@@ -238,7 +245,8 @@ def submit(api, tickets_doc, risk_doc, state, today, dry_run=False, now=None):
         m = t.get("timemachine") or {}
         trades[k] = {"symbol": t["symbol"], "side": body["side"], "qty": int(body["qty"]), "setup": t.get("setup"),
                      "signal_date": t.get("signal_date"), "time_stop_date": t.get("time_stop_date"),
-                     "plan_entry": t.get("entry"), "stop": float(t["stop"]), "target": float(t["target"]),
+                     "plan_entry": t.get("entry"), "limit_price": float(body["limit_price"]),
+                     "stop": float(t["stop"]), "target": float(t["target"]),
                      "risk_per_share": abs(float(t["entry"]) - float(t["stop"])),
                      "predicted": {"p_win": m.get("p_win"), "expectancy_R": m.get("expectancy_R"),
                                    "p_target": m.get("p_target"), "p_stop": m.get("p_stop")},
@@ -266,8 +274,18 @@ def realized_R(tr, exit_px):
     return round(move / risk, 3)
 
 
-def sync(api, state, today):
-    """Read fills back, close what passed its time stop. -> [(symbol, what)]."""
+def _et_day(stamp):
+    try:
+        utc = datetime.datetime.strptime(str(stamp)[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+    return to_eastern(utc).date().isoformat()
+
+
+def sync(api, state, today, after_close=False):
+    """Read fills back, cancel limit entries that did not fill on their day, close what passed its
+    time stop. after_close: today's session is over, so today's unfilled entries are cancelled too.
+    -> [(symbol, what)]."""
     out = []
     for k, tr in (state.get("trades") or {}).items():
         if tr.get("status") not in ("submitted", "open", "closing") or not tr.get("order_id"):
@@ -287,6 +305,14 @@ def sync(api, state, today):
                 out.append((tr["symbol"], "entrada no ejecutada (%s)" % st))
                 continue
             else:
+                day = _et_day(tr.get("submitted_at"))
+                if st in ("new", "accepted", "pending_new", "held") and day and (today > day or after_close):
+                    try:
+                        api.cancel(tr["order_id"])
+                        tr.update(status="not_filled", why="limite no alcanzado")
+                        out.append((tr["symbol"], "entrada no ejecutada (limite no alcanzado, cancelada)"))
+                    except PaperError as e:
+                        out.append((tr["symbol"], "no se pudo cancelar la entrada: %s" % e))
                 continue
         legs = o.get("legs") or []
         exit_leg = next((l for l in legs if l.get("status") == "filled"), None)
@@ -323,6 +349,138 @@ def sync(api, state, today):
             except PaperError as e:
                 out.append((tr["symbol"], "stop de tiempo: no se pudo cerrar (%s)" % e))
     return out
+
+
+# ---------------------------------------------------------------- end of day
+
+NYSE_HOLIDAYS = {
+    "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03",
+    "2026-09-07", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26",
+    "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06", "2027-11-25", "2027-12-24"}
+EVENING_FROM = 16 * 60 + 5
+EVENING_TO = 22 * 60
+
+
+def trading_day(d):
+    return d.weekday() < 5 and d.isoformat() not in NYSE_HOLIDAYS
+
+
+def sessions_left(today, until):
+    """Trading days after today up to and including `until` (the time-stop day)."""
+    try:
+        a, b = datetime.date.fromisoformat(today), datetime.date.fromisoformat(str(until)[:10])
+    except ValueError:
+        return None
+    n, d = 0, a
+    while d < b:
+        d += datetime.timedelta(days=1)
+        if trading_day(d):
+            n += 1
+    return n
+
+
+def evening_check(now_utc, state, force=False):
+    et = to_eastern(now_utc)
+    today = et.date().isoformat()
+    if force:
+        return True, today
+    if not trading_day(et.date()):
+        return False, "hoy no hubo sesion en Nueva York"
+    mins = et.hour * 60 + et.minute
+    if not EVENING_FROM <= mins < EVENING_TO:
+        return False, "en Nueva York son las %s: el resumen del dia va de 16:05 a 21:59" % et.strftime("%H:%M")
+    if state.get("last_daily") == today:
+        return False, "el resumen de hoy ya se envio"
+    return True, today
+
+
+def _m(x):
+    return "${:,.2f}".format(float(x))
+
+
+def _d(iso):
+    s = str(iso or "")
+    return "%s-%s" % (s[8:10], s[5:7]) if len(s) >= 10 else s
+
+
+def daily_text(state, positions, today, equity=None):
+    """The end-of-day message: open trades marked to the close, what closed and what did not fill today."""
+    trades = list((state.get("trades") or {}).values())
+    open_ = [t for t in trades if t.get("status") in ("open", "closing")]
+    closed = [t for t in trades if t.get("status") == "closed" and _et_day(t.get("exit_at")) == today]
+    unfilled = [t for t in trades if t.get("status") == "not_filled" and _et_day(t.get("submitted_at")) == today]
+    lines = ["\U0001F319 <b>Cierre %s-%s</b> \u00b7 tus operaciones (paper, Alpaca)" % (today[8:10], today[5:7]), ""]
+    total_pl = 0.0
+    if open_:
+        lines.append("<b>Abiertas (%d)</b>" % len(open_))
+        for t in sorted(open_, key=lambda x: x["symbol"]):
+            p = positions.get(t["symbol"]) or {}
+            short = t.get("side") == "sell"
+            cur = _f(p.get("current_price"))
+            entry = t.get("entry_fill") or t.get("limit_price") or t.get("plan_entry")
+            pl = _f(p.get("unrealized_pl"))
+            if pl is not None:
+                total_pl += pl
+            head = "%s <b>%s</b> %s \u00b7 %s acc \u00b7 entrada %s" % (
+                "\U0001F534" if short else "\U0001F7E2", t["symbol"], "SHORT" if short else "LONG", t.get("qty"),
+                _m(entry) if entry else "?")
+            if cur is not None and entry:
+                move = (cur / float(entry) - 1) * 100
+                r = ((entry - cur) if short else (cur - entry)) / (t.get("risk_per_share") or 1)
+                head += " \u2192 <b>%s</b> (%+.1f%%) \u00b7 <b>%+.2fR</b>" % (_m(cur), move, r)
+            if pl is not None:
+                head += " \u00b7 %s%s" % ("+" if pl >= 0 else "-", _m(abs(pl)))
+            lines.append(head)
+            detail = "   Stop %s \u00b7 Objetivo %s" % (_m(t["stop"]), _m(t["target"]))
+            if cur:
+                detail = "   Stop %s (a %.1f%%) \u00b7 Objetivo %s (a %.1f%%)" % (
+                    _m(t["stop"]), abs(t["stop"] / cur - 1) * 100, _m(t["target"]), abs(t["target"] / cur - 1) * 100)
+            left = sessions_left(today, t.get("time_stop_date"))
+            if t.get("time_stop_date"):
+                detail += " \u00b7 salida por tiempo %s%s" % (_d(t["time_stop_date"]),
+                                                             (" (%d días hábiles)" % left) if left is not None else "")
+            lines.append(detail)
+        lines.append("")
+    else:
+        lines += ["Sin operaciones abiertas.", ""]
+    if closed:
+        lines.append("<b>Cerradas hoy (%d)</b>" % len(closed))
+        for t in closed:
+            word = {"target": "\u2705 objetivo", "stop": "\u274c stop", "time": "\u23f3 por tiempo"}.get(t.get("outcome"), "")
+            pl = None
+            if t.get("exit_fill") is not None and t.get("entry_fill") is not None:
+                pl = (t["exit_fill"] - t["entry_fill"]) * t.get("qty", 0) * (-1 if t.get("side") == "sell" else 1)
+            lines.append("%s <b>%s</b> \u00b7 %s \u00b7 <b>%+.2fR</b>%s" % (
+                "\u2022", t["symbol"], word, t.get("R") or 0, (" \u00b7 %s%s" % ("+" if pl >= 0 else "-", _m(abs(pl))))
+                if pl is not None else ""))
+        lines.append("")
+    if unfilled:
+        lines.append("<b>No entraron hoy</b> (el precio no llegó al límite): %s" % ", ".join(t["symbol"] for t in unfilled))
+        lines.append("")
+    if open_:
+        lines.append("Resultado abierto: <b>%s%s</b>" % ("+" if total_pl >= 0 else "-", _m(abs(total_pl))))
+    if equity is not None:
+        lines.append("Patrimonio de la cuenta paper: <b>%s</b>" % _m(equity))
+    lines += ["", "<i>Cuenta simulada: sin dinero real. No es asesoría financiera.</i>"]
+    return "\n".join(lines)
+
+
+def daily(api, state, now_utc, force=False):
+    """-> (text or None, why). Syncs after the close, then builds the end-of-day message."""
+    ok, today = evening_check(now_utc, state, force)
+    if not ok:
+        return None, today
+    events = sync(api, state, today, after_close=True)
+    try:
+        positions = {str(p.get("symbol")).upper(): p for p in (api.positions() or [])}
+    except PaperError:
+        positions = {}
+    try:
+        equity = api.account().get("equity")
+    except PaperError:
+        equity = None
+    state["last_daily"] = today
+    return daily_text(state, positions, today, equity), events
 
 
 # ---------------------------------------------------------------- report
@@ -384,7 +542,7 @@ def paper_on():
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Paper trading of the swing setups on Alpaca (simulated account).")
     sub = ap.add_subparsers(dest="cmd")
-    for name in ("account", "sync", "submit", "report"):
+    for name in ("account", "sync", "submit", "report", "daily"):
         p = sub.add_parser(name)
         p.add_argument("--state", default=STATE)
         p.add_argument("--now")
@@ -393,8 +551,10 @@ def main(argv=None):
             p.add_argument("--tickets", default="trader/swing_orders.json")
             p.add_argument("--risk", default="trader/state/swing_risk.json")
             p.add_argument("--dry-run", action="store_true")
-        if name == "report":
+        if name in ("report", "daily"):
             p.add_argument("--telegram", action="store_true")
+        if name == "daily":
+            p.add_argument("--force", action="store_true", help="send it now, whatever the clock says")
     a = ap.parse_args(argv)
     if not a.cmd:
         ap.print_help()
@@ -411,6 +571,23 @@ def main(argv=None):
             acc = api.account()
             print("Cuenta paper de Alpaca: estado %s%s." % (acc.get("status"),
                   "" if a.quiet else ", patrimonio $%s" % acc.get("equity")))
+            return 0
+        if a.cmd == "daily":
+            if not paper_on():
+                print("PAPER_TRADING no esta activo: sin resumen del dia.")
+                return 0
+            text, events = daily(api, state, now, a.force)
+            if text is None:
+                print("Resumen del dia: no se envia (%s)." % events)
+                return 0
+            write_json(a.state, state)
+            if a.telegram:
+                n = _notify()
+                tok, chat = n.credentials()
+                n.send(tok, chat, text)
+                print("Resumen del dia enviado a Telegram (%s)." % (counts(events) or "sin cambios"))
+            else:
+                print(text if not a.quiet else "Resumen del dia listo (%s)." % (counts(events) or "sin cambios"))
             return 0
         if a.cmd == "submit":
             if not a.dry_run and not paper_on():

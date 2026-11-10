@@ -1,0 +1,75 @@
+# Resumen al cierre del dia: tus operaciones abiertas en la cuenta PAPER de Alpaca (simulada).
+#
+# Despues del cierre de Nueva York: lee las ejecuciones, cancela las entradas limite que no se
+# llenaron hoy, cierra lo que paso su stop de tiempo y manda a Telegram las abiertas (precio al
+# cierre, P&L, R, distancia al stop y al objetivo, dias hasta la salida), las cerradas hoy y las
+# que no entraron. Solo con la Variable PAPER_TRADING=true. Solo paper-api.alpaca.markets.
+#
+# Cuatro disparos (21:17, 21:47, 22:17 y 22:47 UTC = 16:17 a 17:47 en Nueva York en invierno,
+# 17:17 a 18:47 en verano), porque GitHub puede atrasarlos; el script envia una sola vez al dia,
+# entre las 16:05 y las 21:59 de Nueva York.
+
+name: Resumen del dia (paper)
+
+on:
+  schedule:
+    - cron: "17 21 * * 1-5"
+    - cron: "47 21 * * 1-5"
+    - cron: "17 22 * * 1-5"
+    - cron: "47 22 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Enviar el resumen ahora, sin mirar la hora"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: swing-daily
+  cancel-in-progress: false
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restaurar estado (cache privado)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            trader/state
+            trader/alerts.json
+          key: swing-state-${{ github.run_id }}
+          restore-keys: swing-state-
+
+      - name: Resumen del dia (solo cuenta paper, nada real)
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          PAPER_TRADING: ${{ vars.PAPER_TRADING || secrets.PAPER_TRADING }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force }}
+        run: |
+          mkdir -p trader/state
+          ARGS="--telegram --quiet"
+          if [ "$FORCE" = "true" ]; then ARGS="$ARGS --force"; fi
+          python3 trader-alerts/paper_trader.py daily $ARGS
+
+      - name: Guardar estado (cache privado)
+        if: ${{ always() }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            trader/state
+            trader/alerts.json
+          key: swing-state-${{ github.run_id }}

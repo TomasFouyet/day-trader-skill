@@ -76,8 +76,8 @@ class Submit(Base):
         res = paper.submit(self.api, {"tickets": [TICKET, SHORT]}, risk_doc([TICKET, SHORT]), state, "2026-11-10")
         self.assertEqual([r[1] for r in res], ["orden paper enviada"] * 2)
         bodies = [c[2] for c in self.fake.calls if c[0] == "POST"]
-        self.assertEqual(bodies[0], {"symbol": "WMT", "qty": "9", "side": "buy", "type": "market",
-                                     "time_in_force": "gtc", "order_class": "bracket",
+        self.assertEqual(bodies[0], {"symbol": "WMT", "qty": "9", "side": "buy", "type": "limit",
+                                     "limit_price": "123.51", "time_in_force": "gtc", "order_class": "bracket",
                                      "take_profit": {"limit_price": "134.09"}, "stop_loss": {"stop_price": "118.22"},
                                      "client_order_id": "swing-WMT-20261109-breakout20"})
         self.assertEqual((bodies[1]["side"], bodies[1]["qty"], bodies[1]["stop_loss"]["stop_price"]), ("sell", "4", "154.74"))
@@ -211,3 +211,66 @@ class Cli(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LimitAndDaily(Base):
+    def test_limit_at_the_pre_market_price_and_unfilled_entries_are_cancelled(self):
+        state = {}
+        t = dict(TICKET, premarket={"status": "ok", "price": 124.30, "qty": 8.1})
+        paper.submit(self.api, {"tickets": [t]}, risk_doc([t]), state, "2026-11-10",
+                     now=paper.parse_now("2026-11-10 09:00"))
+        body = [c[2] for c in self.fake.calls if c[0] == "POST"][0]
+        self.assertEqual((body["type"], body["limit_price"], body["qty"]), ("limit", "124.30", "8"))
+        self.assertEqual(paper.sync(self.api, state, "2026-11-10"), [])                    # still waiting, same day
+        out = paper.sync(self.api, state, "2026-11-10", after_close=True)
+        self.assertEqual(out, [("WMT", "entrada no ejecutada (limite no alcanzado, cancelada)")])
+        self.assertIn(("DELETE", "/v2/orders/o1", None), self.fake.calls)
+        self.assertEqual(state["trades"]["WMT|2026-11-09|breakout20"]["status"], "not_filled")
+
+    def test_evening_window(self):
+        p = paper.parse_now
+        self.assertEqual(paper.evening_check(p("2026-11-10 16:20"), {})[0], True)
+        self.assertEqual(paper.evening_check(p("2026-11-10 15:50"), {})[0], False)
+        self.assertEqual(paper.evening_check(p("2026-11-10 16:20"), {"last_daily": "2026-11-10"})[0], False)
+        self.assertEqual(paper.evening_check(p("2026-11-14 17:00"), {})[0], False)                # Saturday
+        self.assertEqual(paper.evening_check(p("2026-11-14 17:00"), {}, force=True)[0], True)
+        self.assertEqual(paper.sessions_left("2026-11-10", "2026-11-18"), 6)
+
+    def test_daily_message(self):
+        state = {}
+        paper.submit(self.api, {"tickets": [TICKET, SHORT]}, risk_doc([TICKET, SHORT]), state, "2026-11-10",
+                     now=paper.parse_now("2026-11-10 09:00"))
+        self.fake.orders["o1"].update(status="filled", filled_avg_price="123.40", filled_at="2026-11-10T14:31:00Z")
+        self.fake.orders["o2"].update(status="filled", filled_avg_price="142.60", filled_at="2026-11-10T14:31:00Z")
+        self.fake.orders["o2"]["legs"][0].update(status="filled", filled_avg_price="118.50",
+                                                 filled_at="2026-11-10T20:00:00Z")
+        positions = [{"symbol": "WMT", "current_price": "125.10", "unrealized_pl": "15.30"}]
+        saved = self.fake.__call__
+
+        def call(method, url, body=None):
+            if url.endswith("/v2/positions") and method == "GET":
+                return positions
+            return saved(method, url, body)
+        api = paper.Paper(call)
+        text, events = paper.daily(api, state, paper.parse_now("2026-11-10 16:30"))
+        self.assertEqual(dict(events), {"WMT": "entrada ejecutada", "USO": "cerrada en el objetivo"})
+        for must in ("🌙 <b>Cierre 10-11</b>", "<b>Abiertas (1)</b>",
+                     "🟢 <b>WMT</b> LONG · 9 acc · entrada $123.40 → <b>$125.10</b> (+1.4%) · <b>+0.32R</b> · +$15.30",
+                     "Stop $118.22 (a 5.5%) · Objetivo $134.09 (a 7.2%) · salida por tiempo 18-11 (6 días hábiles)",
+                     "<b>Cerradas hoy (1)</b>", "<b>USO</b> · ✅ objetivo · <b>+2.00R</b> · +$96.40",
+                     "Resultado abierto: <b>+$15.30</b>", "Patrimonio de la cuenta paper: <b>$5,012.34</b>"):
+            self.assertIn(must, text)
+        self.assertEqual(state["last_daily"], "2026-11-10")
+        self.assertEqual(paper.daily(api, state, paper.parse_now("2026-11-10 17:00"))[0], None)   # once a day
+
+
+class EveningWorkflow(unittest.TestCase):
+    def test_paper_daily_workflow(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, ".github", "workflows", "paper-daily.yml")) as fh:
+            wf = fh.read()
+        for must in ("paper_trader.py daily", "--quiet", "vars.PAPER_TRADING", "secrets.TELEGRAM_BOT_TOKEN",
+                     "contents: read", "actions/cache/save", 'cron: "17 21 * * 1-5"'):
+            self.assertIn(must, wf)
+        for bad in ("upload-artifact", "git push", "trader-broker", "api.alpaca.markets"):
+            self.assertNotIn(bad, wf)
