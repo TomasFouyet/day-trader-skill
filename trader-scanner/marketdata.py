@@ -152,7 +152,7 @@ def yahoo_like(path_or_url, now_utc=None, http=None):
                 return None
             bs = bars(_to_alpaca(ysym), *w, http=http)
             if not bs:
-                raise ValueError("no bars for %s" % ysym)
+                raise ValueError("sin velas %s %s" % (q.get("interval"), q.get("range")))
             STATS["alpaca"] += 1
             return json.dumps({"chart": {"result": [chart_result(ysym, bs, q.get("interval"), q.get("range"))],
                                          "error": None}})
@@ -174,6 +174,8 @@ def yahoo_like(path_or_url, now_utc=None, http=None):
     except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError) as e:
         STATS["fallback"] += 1
         if len(STATS["errors"]) < 5:
-            STATS["errors"].append(type(e).__name__ + (" %s" % getattr(e, "code", "")).rstrip())
+            why = str(e) if isinstance(e, ValueError) else type(e).__name__ + (" %s" % getattr(e, "code", "")).rstrip()
+            if why not in STATS["errors"]:
+                STATS["errors"].append(why)
         return None
     return None
