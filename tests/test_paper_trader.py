@@ -4,6 +4,7 @@ passed today's risk check, fills read back, time stops closed, the track record.
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -272,5 +273,6 @@ class EveningWorkflow(unittest.TestCase):
         for must in ("paper_trader.py daily", "--quiet", "vars.PAPER_TRADING", "secrets.TELEGRAM_BOT_TOKEN",
                      "contents: read", "actions/cache/save", 'cron: "17 21 * * 1-5"'):
             self.assertIn(must, wf)
-        for bad in ("upload-artifact", "git push", "trader-broker", "api.alpaca.markets"):
+        for bad in ("upload-artifact", "git push", "trader-broker"):
             self.assertNotIn(bad, wf)
+        self.assertIsNone(re.search(r"(?<!paper-)api\.alpaca\.markets", wf))      # never the live trading API
