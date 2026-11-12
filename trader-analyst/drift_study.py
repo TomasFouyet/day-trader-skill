@@ -268,6 +268,20 @@ def report(events, base):
                     100 * thr, len(s), 100 * _m([e["x60"] for e in s]), 100 * _m([e["x60"] for e in bs]),
                     _m([e["R60"] for e in s]) - _m([e["R60"] for e in bs])))
         lines.append("  %-10s %s" % (name, " | ".join(parts)))
+    lines.append("")
+    lines.append("Controles (si dan parecido, la ventaja no es de los resultados sino de volatilidad o supervivencia)")
+    rb60, rb20, xb = _m([e["R60"] for e in base]), _m([e["R20"] for e in base]), _m([e["x60"] for e in base])
+    controls = (("subida >= +12% con 8-K", events, lambda r: r >= .12),
+                ("caida  <= -12% con 8-K", events, lambda r: r <= -.12),
+                ("caida  <=  -8% con 8-K", events, lambda r: r <= -.08),
+                ("subida >= +12% sin 8-K", base, lambda r: r >= .12),
+                ("subida >=  +8% sin 8-K", base, lambda r: r >= .08))
+    for label, pool, cond in controls:
+        s = [e for e in pool if cond(e["r0"])]
+        if s:
+            lines.append("  %-24s n%5d SPY20 %+6.2f%% SPY60 %+6.2f%% (azar %+5.2f%%) R20 %+.3f R60 %+.3f ventaja R60 %+.3fR" % (
+                label, len(s), 100 * _m([e["x20"] for e in s]), 100 * _m([e["x60"] for e in s]), 100 * xb,
+                _m([e["R20"] for e in s]), _m([e["R60"] for e in s]), _m([e["R60"] for e in s]) - rb60))
     return lines
 
 

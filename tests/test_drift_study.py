@@ -61,6 +61,7 @@ class Drift(unittest.TestCase):
             self.assertIn("despues 16:00 1", text)
             self.assertIn("chequeo de hora, despues 16:00", text)
             self.assertIn("AZAR", text)
+            self.assertIn("Controles", text)
             self.assertIn("sesgo de supervivencia", text)
         finally:
             shutil.rmtree(d)
