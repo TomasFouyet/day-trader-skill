@@ -59,6 +59,7 @@ class Drift(unittest.TestCase):
             self.assertEqual(code, 0, err.getvalue() + text)
             self.assertIn("Eventos de resultados (8-K 2.02): 1 en 1 acciones", text)
             self.assertIn("despues 16:00 1", text)
+            self.assertIn("chequeo de hora, despues 16:00", text)
             self.assertIn("AZAR", text)
             self.assertIn("sesgo de supervivencia", text)
         finally:

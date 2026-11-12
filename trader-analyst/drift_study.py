@@ -156,6 +156,31 @@ def reaction_index(bars, date, hm):
     return None
 
 
+def hour_class(hm):
+    return "antes 09:30" if hm and hm < "09:30" else "despues 16:00" if hm and hm >= "16:00" else "en sesion/sin hora"
+
+
+def timing_check(bars, times, spy, acc):
+    """A clock check that needs no time zone: the mean absolute move over SPY on the filing date and
+    on the next session, per hour class. The reaction day is the one with the big move."""
+    pos = {b["date"]: k for k, b in enumerate(bars)}
+    for date, hm in times:
+        k = pos.get(date)
+        if k is None or k < 1 or k + 1 >= len(bars):
+            continue
+        moves = []
+        for j in (k, k + 1):
+            d, dp = bars[j]["date"], bars[j - 1]["date"]
+            if d not in spy or dp not in spy:
+                break
+            moves.append(abs(bars[j]["c"] / bars[j - 1]["c"] - spy[d] / spy[dp]))
+        if len(moves) == 2:
+            a = acc.setdefault(hour_class(hm), [0, 0.0, 0.0])
+            a[0] += 1
+            a[1] += moves[0]
+            a[2] += moves[1]
+
+
 def events_for(sym, bars, times, spy):
     if len(bars) < 80:
         return []
@@ -300,7 +325,7 @@ def main(argv=None):
     spy_bars = prices("SPY")
     spy = {b["date"]: b["c"] for b in spy_bars}
     events, base, missing = [], [], 0
-    hours = {}
+    hours, clock = {}, {}
     for n, sym in enumerate(syms):
         try:
             pages = subs(sym)
@@ -314,14 +339,17 @@ def main(argv=None):
             print("  %s: %s" % (sym, type(e).__name__), file=sys.stderr)
             continue
         for _, hm in times:
-            key = "antes 09:30" if hm and hm < "09:30" else "despues 16:00" if hm and hm >= "16:00" else "en sesion/sin hora"
-            hours[key] = hours.get(key, 0) + 1
+            hours[hour_class(hm)] = hours.get(hour_class(hm), 0) + 1
+        timing_check(bars, times, spy, clock)
         events += events_for(sym, bars, times, spy)
         base += baseline(sym, bars, spy, rng)
         if (n + 1) % 25 == 0:
             print("  %d/%d acciones, %d eventos" % (n + 1, len(syms), len(events)), file=sys.stderr)
     print("Acciones sin datos del SEC (ETF, extranjeras) o con error: %d de %d" % (missing, len(syms)))
     print("Hora de publicacion de los 8-K 2.02: %s" % ", ".join("%s %d" % kv for kv in sorted(hours.items())))
+    for key, (n_, d0, d1) in sorted(clock.items()):
+        print("  chequeo de hora, %s: movimiento medio vs SPY el dia del 8-K %.2f%%, al dia siguiente %.2f%% (n %d)" % (
+            key, 100 * d0 / n_, 100 * d1 / n_, n_))
     if not events or not base:
         print("Sin eventos: nada que medir.")
         return 1
