@@ -1,0 +1,33 @@
+# Investigacion (solo a mano): estudio de "momentum de resultados" con las fechas oficiales del SEC.
+# Imprime solo tablas agregadas (conteos y promedios). No toca ninguna cuenta ni coloca ordenes.
+
+name: Investigacion (resultados)
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Cuantas acciones de la watchlist de ejemplo (vacio = todas)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Estudio de momentum de resultados (SEC 8-K 2.02 + precios diarios desde 2005)
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          ARGS="--symbols trader-scanner/watchlist.example.txt"
+          if [ -n "$LIMIT" ]; then ARGS="$ARGS --limit $LIMIT"; fi
+          python3 trader-analyst/drift_study.py $ARGS
