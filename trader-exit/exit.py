@@ -695,7 +695,8 @@ SWING_DEFAULTS = {
     "max_exposure_pct": 60.0,       # all open swing positions together, % of the account
     "atr_days": 14,
 }
-SWING_SETUPS = ("breakout20", "pullback_ema20", "rsi2", "breakdown20", "pullback_ema20_short", "rsi2_short", "manual")
+SWING_SETUPS = ("earnings_gap", "breakout20", "pullback_ema20", "rsi2", "breakdown20", "pullback_ema20_short",
+                "rsi2_short", "manual")
 SHORT_SETUPS = ("breakdown20", "pullback_ema20_short", "rsi2_short")
 SWING_RANGE = "1y"
 SWING_NOTE = ("Un stop es un plan, no una garantia: en swing la accion duerme fuera del mercado y un gap "
@@ -888,7 +889,9 @@ def gather_swing(a):
     entry = a.entry if a.entry is not None else (doc.get("entry") if doc.get("entry") is not None else doc.get("price"))
     return {"symbol": sym, "entry": entry, "date": a.date or doc.get("date"), "setup": a.setup or doc.get("setup"),
             "source": a.from_path, "setup_params": doc.get("setup_params"), "earnings": doc.get("earnings"),
-            "side": side_of(doc.get("side") or a.side), "name": doc.get("name"), "asset": doc.get("asset")}
+            "side": side_of(doc.get("side") or a.side), "name": doc.get("name"), "asset": doc.get("asset"),
+            "exit": doc.get("exit") if isinstance(doc.get("exit"), dict) else None,
+            "reaction": {k: doc[k] for k in ("reaction_date", "reaction_pct", "volume_ratio", "vs") if k in doc} or None}
 
 
 def side_of(x):
@@ -944,16 +947,22 @@ def build_swing_plan(a, now_utc):
         raise PlanError("el setup %s es %s pero el plan es %s: usa --side %s" % (
             setup, "short" if setup in SHORT_SETUPS else "long", "short" if info.get("side") == "sell" else "long",
             "sell" if setup in SHORT_SETUPS else "buy"))
-    horizon = _int_in(a.horizon_days if a.horizon_days is not None else sw["horizon_days"], 1, 60, "--horizon-days")
+    own = info.get("exit") or {}   # a setup with its own exit (the scanner's SETUP_EXITS, e.g. earnings_gap)
+    horizon = _int_in(a.horizon_days if a.horizon_days is not None else own.get("horizon_days") or sw["horizon_days"],
+                      1, 60, "--horizon-days")
     if a.time_stop_days is not None:
         tstop = _int_in(a.time_stop_days, 1, 60, "--time-stop-days")
+    elif own.get("time_stop_days"):
+        tstop = _int_in(own["time_stop_days"], 1, 60, "time_stop_days del setup")
+    elif own.get("horizon_days"):
+        tstop = horizon
     else:
         tstop = sw["time_stop_days"] if sw["time_stop_days"] is not None else horizon
-    stop_text = a.stop or sw["stop"]
+    stop_text = a.stop or own.get("stop") or sw["stop"]
     stop_rule, stop_param = parse_stop(stop_text)
     if stop_rule not in ("atr", "pct", "price"):
         raise PlanError("en swing el stop es atr:K, pct:X o price:X (no hay rango de apertura), no %r" % stop_text)
-    target_rule, target_param = parse_target(a.target or sw["target"])
+    target_rule, target_param = parse_target(a.target or own.get("target") or sw["target"])
     day = None
     if info["date"]:
         try:
@@ -1039,6 +1048,10 @@ def build_swing_plan(a, now_utc):
         plan["atr_bars"] = atr_n
     if info.get("setup_params"):
         plan["setup_params"] = info["setup_params"]
+    if info.get("reaction"):
+        plan["reaction"] = info["reaction"]
+    if own:
+        plan["setup_exit"] = own
     er = info.get("earnings")
     if isinstance(er, dict) and er.get("signal_date") == plan["date"] and er.get("horizon_days") == tstop:
         plan["earnings"] = er
@@ -1185,7 +1198,7 @@ def main(argv=None):
     p.add_argument("--or-low", type=float)
     p.add_argument("--or-minutes", type=int, default=15)
     p.add_argument("--setup", choices=["orb", "level", "breakout20", "pullback_ema20", "rsi2", "breakdown20",
-                                       "pullback_ema20_short", "rsi2_short", "manual"],
+                                       "pullback_ema20_short", "rsi2_short", "manual", "earnings_gap"],
                    help="orb, level (intraday); breakout20, pullback_ema20, rsi2, manual, and the short ones (swing)")
     p.add_argument("--date", help="session date YYYY-MM-DD (default: the entry's, or today)")
     p.add_argument("--time", help="entry time, e.g. 10:15 AM")

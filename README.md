@@ -481,7 +481,46 @@ panel de Alpaca: reset de la cuenta paper). Ojo con la regla de day trading
 (PDT) bajo US$25.000: si una entrada y su stop se ejecutan el mismo día, cuenta
 como day trade.
 
-### 11. Límites que quedan
+### 11. Momentum de resultados (`earnings_gap`)
+
+El único setup con una ventaja medida en datos reales. Cuando una acción
+sube **≥ 12 % más que el S&P 500 en un día, con ≥ 3 veces su volumen
+promedio de 50 días**, y ese salto vino de un **reporte de resultados**
+(un 8-K ítem 2.02 en el SEC ese día o hasta 5 días antes), suele seguir
+ganándole al mercado durante semanas.
+
+- **Scanner**: busca el salto en la última vela o en la anterior (por si
+  GitHub se salta una corrida de la mañana).
+- **Resultados** (`earnings.py check`): confirma el 8-K en el SEC. Sin 8-K
+  queda bloqueado ("el salto no vino de un reporte").
+- **Salida propia**: 60 días hábiles, stop **3 × ATR**, objetivo lejano
+  (10R, casi nunca se toca: la salida real es el stop o el tiempo). El
+  stop de tiempo se recorta para salir **antes de los próximos
+  resultados**. Se cambia en la config:
+  `"swing": {"setup_exits": {"earnings_gap": {"horizon_days": 40, "stop": "atr:2.5"}}}`.
+- **Risk** lo juzga por el estudio (+0,27R), no por la Time Machine. La
+  simulación no tiene la deriva post-resultados, así que solo sirve para ver
+  el riesgo. Telegram lo dice así.
+- En paper, una sola operación viva por acción.
+
+El estudio está en `trader-analyst/drift_study.py` y se corre a mano en
+Actions ("Investigacion (resultados)", usa el secret `SEC_USER_AGENT`). Solo
+imprime tablas agregadas. Resultado de 2005 a 2026, con 17.024 reportes de
+232 acciones de la watchlist:
+
+| Grupo | R a 60 días | Ventaja vs. entrada al azar |
+|---|---|---|
+| Subida ≥ +12 % con 8-K | +0,60R | **+0,27R ± 0,08** |
+| Caída ≤ −12 % con 8-K (control) | +0,23R | −0,09R |
+| Subida ≥ +12 % sin 8-K (control) | +0,43R | +0,10R |
+
+Por época la ventaja fue 2005-09 ≈ 0, 2010-14 +0,17R, 2015-19 +0,50R,
+**2020-22 −0,22R** y 2023-26 +0,46R: hay años en que no funciona. Las
+acciones son las grandes de hoy (sesgo de supervivencia), así que los números
+absolutos están inflados. La comparación contra el azar en las mismas
+acciones es la cifra honesta. Para medirlo de verdad está el paper trading.
+
+### 12. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
   SEC (el calendario de Yahoo pide un token de sesión). Confírmalas en la web

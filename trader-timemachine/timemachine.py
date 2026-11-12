@@ -815,11 +815,12 @@ SWING_WINDOW = 252
 SWING_BLOCK = 5
 SWING_MIN_WINDOW = 60
 SWING_MIN_CASES = 30
-SWING_LONG_SETUPS = ("breakout20", "pullback_ema20", "rsi2")
+SWING_LONG_SETUPS = ("earnings_gap", "breakout20", "pullback_ema20", "rsi2")
 SWING_SHORT_SETUPS = ("breakdown20", "pullback_ema20_short", "rsi2_short")
 SWING_SETUPS = SWING_LONG_SETUPS + SWING_SHORT_SETUPS
 SWING_PARAMS = {"breakout_days": 20, "ema_days": 20, "trend_days": 50, "ema_touch_pct": 1.0,
-                "rsi_days": 2, "rsi_max": 10.0, "rsi_trend_days": 200}
+                "rsi_days": 2, "rsi_max": 10.0, "rsi_trend_days": 200,
+                "gap_min_pct": 12.0, "gap_volume_ratio": 3.0, "gap_max_age": 2}
 SWING_HOLIDAYS = {  # NYSE full closures, to know when today's daily bar is final
     "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03", "2026-05-25", "2026-06-19", "2026-07-03",
     "2026-09-07", "2026-11-26", "2026-12-25", "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26",
@@ -856,6 +857,7 @@ def parse_daily(result, now_utc):
     stamps = result.get("timestamp") or []
     q = ((result.get("indicators") or {}).get("quote") or [{}])[0] or {}
     cols = [q.get(k) or [] for k in ("open", "high", "low", "close")]
+    vols = q.get("volume") or []
     local = to_eastern(now_utc)
     today = local.date().isoformat()
     close_min = EARLY_MIN if today in NYSE_EARLY_CLOSE else CLOSE_MIN
@@ -872,7 +874,8 @@ def parse_daily(result, now_utc):
         o = c if o is None else o
         h = max(c, o) if h is None else h
         l = min(c, o) if l is None else l
-        by_date[d] = {"date": d, "o": float(o), "h": float(h), "l": float(l), "c": float(c)}
+        v = vols[i] if i < len(vols) else None
+        by_date[d] = {"date": d, "o": float(o), "h": float(h), "l": float(l), "c": float(c), "v": float(v or 0)}
     return meta, [by_date[d] for d in sorted(by_date)]
 
 
@@ -941,6 +944,14 @@ def indicators(bars, params=None):
 def setup_fires(setup, bars, i, ind):
     """Does the setup fire at the close of bar i?"""
     p, b = ind["p"], bars[i]
+    if setup == "earnings_gap":
+        # the scanner's rule on the stock's own return (the history has no SPY and no SEC check:
+        # it counts every such jump, with or without an earnings report behind it)
+        if i < 51 or not bars[i - 1]["c"]:
+            return False
+        avg = sum(x.get("v") or 0 for x in bars[i - 50:i]) / 50.0
+        return (avg > 0 and (b["c"] / bars[i - 1]["c"] - 1) * 100 >= p["gap_min_pct"]
+                and (b.get("v") or 0) / avg >= p["gap_volume_ratio"])
     if setup == "breakout20":
         n = p["breakout_days"]
         return i >= n and b["c"] > max(x["h"] for x in bars[i - n:i])

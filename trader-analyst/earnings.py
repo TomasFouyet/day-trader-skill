@@ -209,6 +209,54 @@ def assess(sym, signal, horizon, sw, manual=None, sec_dates=None, sec_error=None
     return out
 
 
+GAP_FLAG = "sin 8-K de resultados: el salto no vino de un reporte"
+GAP_MIN_DAYS = 10
+
+
+def assess_gap(sym, signal, reaction, horizon, sw, manual=None, sec_dates=None, sec_error=None):
+    """earnings_gap (momentum de resultados): the jump must come from an earnings report (an 8-K item
+    2.02, or a manual date, on the reaction day or up to 5 days before it), and the trade ends before
+    the NEXT report: the time stop is cut to the last session before its window."""
+    out = {"symbol": sym, "signal_date": signal.isoformat(), "horizon_days": horizon, "setup": "earnings_gap",
+           "reaction_date": reaction.isoformat(), "source": None, "next": None, "window": None, "in_horizon": False,
+           "blocked": False, "flag": None, "confirmed": None, "warnings": []}
+    dates = sorted(set(manual or []) | set(sec_dates or []))
+    out["source"] = "manual" if manual else ("sec" if sec_dates is not None else None)
+    near = [d for d in dates if reaction - datetime.timedelta(days=5) <= d <= reaction]
+    if not near:
+        out["blocked"] = True
+        out["flag"] = GAP_FLAG if (sec_dates is not None or manual) else "resultados: no se pudo confirmar (%s)" % (
+            sec_error or "sin datos del SEC")
+        out["horizon_end"] = add_trading_days(signal, horizon).isoformat()
+        return out
+    out["confirmed"] = "8-K 2.02 del %s" % near[-1].isoformat() if not manual else "fecha manual %s" % near[-1].isoformat()
+    est = estimate(dates, reaction + datetime.timedelta(days=1), sw["earnings_margin_days"])
+    cut = horizon
+    if est:
+        out["next"] = est["date"].isoformat()
+        out["window"] = [est["lo"].isoformat(), est["hi"].isoformat()]
+        out["known"] = est["known"]
+        out["basis"] = est["basis"]
+        n, d = 0, signal
+        while True:
+            nd = add_trading_days(d, 1)
+            if nd >= est["lo"]:
+                break
+            n, d = n + 1, nd
+        cut = min(horizon, n)
+        if not est["known"]:
+            out["warnings"].append("Proximos resultados estimados (%s): la salida por tiempo se corta antes." % est["basis"])
+    if cut < horizon:
+        out["warnings"].append("Stop de tiempo recortado de %d a %d sesiones para salir antes de los proximos "
+                               "resultados." % (horizon, cut))
+    out["horizon_days"] = cut
+    out["horizon_end"] = add_trading_days(signal, cut).isoformat()
+    if cut < GAP_MIN_DAYS:
+        out["blocked"] = True
+        out["flag"] = "proximos resultados en menos de %d sesiones" % GAP_MIN_DAYS
+    return out
+
+
 NAME_STOP = {"inc", "inc.", "corp", "corp.", "corporation", "company", "co", "co.", "the", "group", "holdings",
              "plc", "ltd", "sa", "s.a.", "class", "common", "stock", "incorporated", "limited", "&", "and"}
 
@@ -328,6 +376,13 @@ def annotate(items, sw, sec, manual, horizon=None, news=None, now_utc=None, defa
                    "horizon_end": add_trading_days(signal, hz).isoformat(), "source": "n/a", "next": None,
                    "window": None, "in_horizon": False, "blocked": False, "flag": None, "no_earnings": True,
                    "warnings": []}
+        elif it.get("setup") == "earnings_gap":
+            dates, err = sec.dates(sym)
+            reaction = _date(it.get("reaction_date")) or signal
+            res = assess_gap(sym, signal, reaction, horizon_of(it, sw, horizon), sw, manual.get(sym), dates, err)
+            it["time_stop_days"] = res["horizon_days"]
+            if isinstance(it.get("exit"), dict):
+                it["exit"]["time_stop_days"] = res["horizon_days"]
         else:
             dates, err = (None, None) if manual.get(sym) else sec.dates(sym)
             res = assess(sym, signal, horizon_of(it, sw, horizon), sw, manual.get(sym), dates, err)
@@ -350,6 +405,8 @@ def describe(res):
     head = "%-6s senal %s, %d dias hasta el %s: proximos resultados %s." % (
         res["symbol"], res["signal_date"], res["horizon_days"], res["horizon_end"], when)
     lines = [head]
+    if res.get("confirmed"):
+        lines.append("       ✓ salto del %s confirmado: %s" % (res["reaction_date"], res["confirmed"]))
     if res["flag"]:
         lines.append("       ⚠ %s%s" % (res["flag"], ": BLOQUEADO" if res["blocked"] else " (aviso, no bloquea)"))
     for w in res["warnings"]:

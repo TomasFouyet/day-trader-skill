@@ -34,7 +34,7 @@ def data():
 class Params(unittest.TestCase):
     def test_defaults_and_config(self):
         setups, p, floors = scan.swing_params({})
-        self.assertEqual(setups, ["breakout20", "pullback_ema20", "rsi2"])
+        self.assertEqual(setups, ["earnings_gap", "breakout20", "pullback_ema20", "rsi2"])
         self.assertEqual(p, tm.SWING_PARAMS)           # the same rules as the Time Machine's history
         self.assertEqual(floors, {"min_price": 5.0, "min_dollar_volume": 20000000.0})
         setups, p, floors = scan.swing_params({"swing": {"setups": "rsi2, breakout20",
@@ -67,7 +67,8 @@ class SameRulesAsTheTimeMachine(unittest.TestCase):
                         closes = [b["c"] for b in bars[:i + 1]]
                         self.assertTrue(scan.swing_prefilter(closes, [s], scan.SWING_PARAMS), (sym, i, s))
         for s, n in fired.items():
-            self.assertGreater(n, 5, s)     # every setup fires somewhere in a year of 15 charts
+            # every setup fires somewhere in a year of 15 charts (a +12% earnings jump is rare by design)
+            self.assertGreater(n, 0 if s == "earnings_gap" else 5, s)
 
 
 class Scan(unittest.TestCase):
@@ -159,6 +160,8 @@ class Cli(unittest.TestCase):
         def fake(url, timeout=20):
             calls.append(url)
             sym = url.split("/chart/")[1].split("?")[0]
+            if sym not in texts:
+                raise scan.ScanError("no fixture for %s" % sym)
             return texts[sym]
         saved, sleep = scan.http_get, scan.SLEEP
         scan.http_get, scan.SLEEP = fake, (lambda s: None)
@@ -168,7 +171,9 @@ class Cli(unittest.TestCase):
             scan.http_get, scan.SLEEP = saved, sleep
         self.assertEqual(code, 0, err)
         self.assertEqual(calls, ["https://query2.finance.yahoo.com/v8/finance/chart/AAPL?range=1y&interval=1d",
-                                 "https://query2.finance.yahoo.com/v8/finance/chart/WMT?range=1y&interval=1d"])
+                                 "https://query2.finance.yahoo.com/v8/finance/chart/WMT?range=1y&interval=1d",
+                                 # SPY: the benchmark of earnings_gap (missing here: the stock's own return)
+                                 "https://query2.finance.yahoo.com/v8/finance/chart/SPY?range=1y&interval=1d"])
         self.assertEqual([c["symbol"] for c in json.loads(text)["candidates"]], ["WMT", "AAPL"])
 
 

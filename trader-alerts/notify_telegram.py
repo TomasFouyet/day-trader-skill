@@ -127,11 +127,31 @@ def _pc(x):
     return "%.1f %%" % (100.0 * float(x))
 
 
-SETUP_ES = {"breakout20": "Ruptura del máximo de 20 días", "pullback_ema20": "Pullback a la EMA20 en tendencia alcista",
+SETUP_ES = {"earnings_gap": "Momentum de resultados (salto fuerte tras el reporte)", "breakout20": "Ruptura del máximo de 20 días", "pullback_ema20": "Pullback a la EMA20 en tendencia alcista",
             "rsi2": "RSI(2) sobrevendido en tendencia alcista", "breakdown20": "Quiebre del mínimo de 20 días",
             "pullback_ema20_short": "Rebote a la EMA20 en tendencia bajista",
             "rsi2_short": "RSI(2) sobrecomprado en tendencia bajista", "manual": "Setup manual"}
 VENUE_NAME = {"fintual": "Fintual", "bitunix": "Bitunix", "manual": "Tu app"}
+
+
+GAP_STUDY = ("Estudio 2005-2026 (17.024 reportes del SEC): +0,27R por operación sobre entradas al azar, "
+             "irregular por época (2020-22 perdió)")
+
+
+def gap_lines(t):
+    """earnings_gap: the jump and its SEC confirmation, and what the study found (an honest yardstick)."""
+    if t.get("setup") != "earnings_gap":
+        return []
+    rx, er = t.get("reaction") or {}, t.get("earnings") or {}
+    out = []
+    if rx.get("reaction_pct") is not None:
+        out.append("📈 Salto del %s: <b>%+.1f%%</b>%s con volumen <b>%sx</b> su promedio" % (
+            _d(rx.get("reaction_date")), float(rx["reaction_pct"]),
+            " sobre el S&amp;P 500" if rx.get("vs") == "SPY" else "", ("%.1f" % float(rx.get("volume_ratio") or 0))))
+    if er.get("confirmed"):
+        out.append("✅ Resultados confirmados: %s" % esc(er["confirmed"]))
+    out.append("<i>%s</i>" % esc(GAP_STUDY))
+    return out
 
 
 def esc(x):
@@ -227,7 +247,9 @@ def message(t, result):
              "<code>Entrada  %s</code>%s" % (_m(t["entry"]), (" pre-mercado (cierre %s)" % _m(pm["close"]))
                                              if pm and pm.get("status") in ("ok", "warn") else ""),
              "<code>Stop     %s  (%s)</code>" % (_m(t["stop"]), _pct_move(t["entry"], t["stop"])),
-             "<code>Objetivo %s  (%s) %sR</code>" % (_m(t["target"]), _pct_move(t["entry"], t["target"]), rr),
+             ("<code>Objetivo %s  (%s) %sR</code> <i>lejano: la salida real es el stop o el tiempo</i>"
+              if t.get("setup") == "earnings_gap" else "<code>Objetivo %s  (%s) %sR</code>") % (
+                 _m(t["target"]), _pct_move(t["entry"], t["target"]), rr),
              "⏳ Cierre por tiempo: <b>%s</b> (%s días hábiles)" % (_d(t.get("time_stop_date")),
                                                                      t.get("time_stop_days") or "?"),
              ""]
@@ -236,6 +258,9 @@ def message(t, result):
         lines[3:3] = [pl.replace("<b></b> ", ""), ""]
         if pm.get("status") == "warn" and pm.get("note"):
             lines.insert(4, "<i>%s</i>" % esc(pm["note"]))
+    gap = gap_lines(t)
+    if gap:
+        lines[2:2] = [""] + gap
     risk_usd = t.get("risk_usd") or t.get("max_loss")
     acct = t.get("account")
     lines.append("💰 <b>Tamaño</b> · riesgo máx. <b>%s</b>%s" % (
@@ -250,7 +275,12 @@ def message(t, result):
             _q(t["qty"]), _m(t.get("cost") or float(t["qty"]) * float(t["entry"])), _m(t.get("max_loss") or 0)))
     m = t.get("timemachine") or {}
     lines.append("")
-    if m.get("p_target") is not None:
+    if m.get("p_target") is not None and t.get("setup") == "earnings_gap":
+        lines.append("🎲 <b>Time Machine</b> (%s días): toca el stop <b>%s</b> · sigue abierta al final <b>%s</b>" % (
+            m.get("horizon_days") or t.get("time_stop_days"), _pc(m["p_stop"]), _pc(m["p_unresolved"])))
+        lines.append("<i>La simulación no trae la deriva post-resultados: mide el riesgo, no la ventaja. "
+                     "La ventaja es la del estudio.</i>")
+    elif m.get("p_target") is not None:
         lines.append("🎲 <b>Time Machine</b> (%s trayectorias, %s días)" % (
             "{:,}".format(int(m.get("paths") or 0)).replace(",", "."), m.get("horizon_days") or t.get("time_stop_days")))
         lines.append("Objetivo <b>%s</b> · Stop <b>%s</b> · Abierta al final <b>%s</b>" % (

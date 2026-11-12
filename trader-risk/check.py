@@ -795,6 +795,9 @@ def load_prices(pdoc):
 SWING_RISK = {"max_risk_per_trade_pct": 1.0, "max_positions": 5, "max_exposure_pct": 60.0,
               "block_on_earnings": True}
 SWING_STALE = 2
+# Setups measured on real history (trader-analyst/drift_study.py): R per trade over random entries in
+# the same stocks. The Time Machine's bootstrap has no such drift, so its expectancy cannot judge them.
+STUDY_EDGE_R = {"earnings_gap": 0.27}
 
 
 def swing_fingerprint(t):
@@ -972,7 +975,12 @@ def check_swing(tickets, cfg, portfolio=None, prices=None, today=None):
         if tmi.get("few_cases"):
             warns.append("el historial real del setup tiene menos de 30 casos")
         mexp = _f(raw.get("min_expectancy_R"))
-        if mexp is not None:
+        measured = STUDY_EDGE_R.get(t.get("setup"))
+        if mexp is not None and measured is not None:
+            # a setup with a measured edge: the study's number, not the drift-free simulation
+            if measured < mexp - 1e-9:
+                reasons.append("expectancy: el estudio da %+.2fR, bajo tu minimo %+.2fR" % (measured, mexp))
+        elif mexp is not None:
             if tmi.get("expectancy_R") is None:
                 reasons.append("expectancy: sin simulacion del Time Machine y swing.min_expectancy_R esta activo")
             elif float(tmi["expectancy_R"]) < mexp - 1e-9:

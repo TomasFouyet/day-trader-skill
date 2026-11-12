@@ -884,15 +884,31 @@ def money(x):
 # for liquidity and a close-only pre-filter, then the v8 chart of the most
 # traded candidates. Output: trader/swing.json (candidates, newest close).
 
-SWING_LONG_SETUPS = ("breakout20", "pullback_ema20", "rsi2")
+#   earnings_gap    "momentum de resultados": on the last (or the one before)
+#                   daily bar the stock beat SPY by >= 12 % on >= 3x its
+#                   50-day average volume. trader-analyst earnings.py then
+#                   keeps it only when an SEC 8-K item 2.02 (earnings) was
+#                   filed for that day. Its own exit: 60 trading days, stop
+#                   3 x ATR, a far 10R target (in practice the exit is the
+#                   stop or the time stop), cut before the next report. The
+#                   study (trader-analyst/drift_study.py, 17,024 SEC events
+#                   2005-2026) found +0.27R over random entries for this
+#                   rule, uneven by era.
+SWING_LONG_SETUPS = ("earnings_gap", "breakout20", "pullback_ema20", "rsi2")
 SWING_SHORT_SETUPS = ("breakdown20", "pullback_ema20_short", "rsi2_short")
 SWING_SETUPS = SWING_LONG_SETUPS + SWING_SHORT_SETUPS
-SWING_LABEL = {"breakout20": "ruptura del maximo de 20 dias", "pullback_ema20": "pullback a la EMA20 en tendencia alcista",
+SWING_LABEL = {"earnings_gap": "salto fuerte por resultados (momentum de resultados)",
+               "breakout20": "ruptura del maximo de 20 dias", "pullback_ema20": "pullback a la EMA20 en tendencia alcista",
                "rsi2": "RSI(2) sobrevendido en tendencia alcista",
                "breakdown20": "quiebre del minimo de 20 dias", "pullback_ema20_short": "rebote a la EMA20 en tendencia bajista",
                "rsi2_short": "RSI(2) sobrecomprado en tendencia bajista"}
 SWING_PARAMS = {"breakout_days": 20, "ema_days": 20, "trend_days": 50, "ema_touch_pct": 1.0,
-                "rsi_days": 2, "rsi_max": 10.0, "rsi_trend_days": 200}
+                "rsi_days": 2, "rsi_max": 10.0, "rsi_trend_days": 200,
+                "gap_min_pct": 12.0, "gap_volume_ratio": 3.0, "gap_max_age": 2}
+SWING_FLOAT_PARAMS = ("ema_touch_pct", "rsi_max", "gap_min_pct", "gap_volume_ratio")
+# Setups with their own exit (swing.setup_exits in the config overrides these keys).
+SETUP_EXITS = {"earnings_gap": {"horizon_days": 60, "time_stop_days": 60, "stop": "atr:3", "target": "10R"}}
+SWING_BENCH = "SPY"
 SWING_DEFAULTS = {"min_price": 5.0, "min_dollar_volume": 20000000.0}
 SWING_WATCHLIST = "trader/watchlist.txt"
 # "comodines": commodity ETFs scanned every day on top of the watchlist (swing.extra_symbols).
@@ -961,7 +977,7 @@ def swing_params(cfg):
         if k not in SWING_PARAMS:
             raise ScanError("swing.setup_params: unknown key %r (known: %s)" % (k, ", ".join(sorted(SWING_PARAMS))))
         try:
-            p[k] = float(v) if k in ("ema_touch_pct", "rsi_max") else int(v)
+            p[k] = float(v) if k in SWING_FLOAT_PARAMS else int(v)
         except (TypeError, ValueError):
             raise ScanError("swing.setup_params.%s must be a number" % k)
         if p[k] <= 0:
@@ -991,15 +1007,54 @@ def swing_params(cfg):
     return list(setups), p, floors
 
 
+def swing_exits(cfg):
+    """The setups with their own exit: SETUP_EXITS with the config's swing.setup_exits on top."""
+    sw = (cfg or {}).get("swing") or {}
+    exits = {k: dict(v) for k, v in SETUP_EXITS.items()}
+    raw = sw.get("setup_exits") or {}
+    if not isinstance(raw, dict):
+        raise ScanError("swing.setup_exits must be an object like {\"earnings_gap\": {\"horizon_days\": 60}}")
+    for name, ov in raw.items():
+        if name not in exits or not isinstance(ov, dict):
+            raise ScanError("swing.setup_exits: %r (known: %s; each one an object)" % (name, ", ".join(sorted(exits))))
+        for k, v in ov.items():
+            if k not in exits[name]:
+                raise ScanError("swing.setup_exits.%s: unknown key %r (known: %s)" % (name, k, ", ".join(sorted(exits[name]))))
+            exits[name][k] = v
+    return exits
+
+
 def swing_indicators(bars, p):
     closes = [b["c"] for b in bars]
     return {"ema": ema_series(closes, p["ema_days"]), "trend": sma_series(closes, p["trend_days"]),
             "rsi": rsi_series(closes, p["rsi_days"]), "rsi_trend": sma_series(closes, p["rsi_trend_days"])}
 
 
+def gap_reaction(bars, i, p, spy=None):
+    """earnings_gap at bar i: (return over SPY, volume ratio) when it fires, else None.
+    Without SPY's closes for the two dates the stock's own return is used."""
+    if i < 51:
+        return None
+    b, prev = bars[i], bars[i - 1]
+    if not prev["c"]:
+        return None
+    r = b["c"] / prev["c"] - 1
+    if spy and b["date"] in spy and prev["date"] in spy and spy[prev["date"]]:
+        r -= spy[b["date"]] / spy[prev["date"]] - 1
+    avg = sum(x.get("v") or 0 for x in bars[i - 50:i]) / 50.0
+    if avg <= 0:
+        return None
+    ratio = (b.get("v") or 0) / avg
+    if r * 100 >= p["gap_min_pct"] and ratio >= p["gap_volume_ratio"]:
+        return r, ratio
+    return None
+
+
 def swing_fires(setup, bars, i, ind, p):
     """trader-timemachine's setup_fires: does the setup fire at the close of bar i?"""
     b = bars[i]
+    if setup == "earnings_gap":
+        return gap_reaction(bars, i, p, ind.get("spy")) is not None
     if setup == "breakout20":
         n = p["breakout_days"]
         return i >= n and b["c"] > max(x["h"] for x in bars[i - n:i])
@@ -1055,6 +1110,10 @@ def swing_prefilter(closes, setups, p):
     parts that need highs and lows are left to stage 2)."""
     if len(closes) < 22:
         return False
+    if "earnings_gap" in setups:
+        for j in range(max(1, len(closes) - int(p["gap_max_age"])), len(closes)):
+            if closes[j - 1] and closes[j] / closes[j - 1] - 1 >= p["gap_min_pct"] / 100.0 - 0.05:
+                return True   # SPY and the volume need stage 2; 5 points of slack for SPY's day
     if "breakout20" in setups and closes[-1] > max(closes[-1 - p["breakout_days"]:-1]):
         return True   # a close above the highest high is above the highest close too
     if "pullback_ema20" in setups:
@@ -1082,8 +1141,8 @@ def swing_prefilter(closes, setups, p):
     return False
 
 
-def swing_candidate(sym, bars, setups, p, floors):
-    """(candidate or None, reason). Pure."""
+def swing_candidate(sym, bars, setups, p, floors, spy=None, exits=None):
+    """(candidate or None, reason). Pure. spy = {date: close} of the benchmark (earnings_gap)."""
     if len(bars) < SWING_MIN_BARS:
         return None, "short"
     last = bars[-1]
@@ -1091,8 +1150,12 @@ def swing_candidate(sym, bars, setups, p, floors):
     if last["c"] < floors["min_price"] or dv < floors["min_dollar_volume"]:
         return None, "illiquid"
     ind = swing_indicators(bars, p)
+    ind["spy"] = spy
     i = len(bars) - 1
     hits = [s for s in setups if swing_fires(s, bars, i, ind, p)]
+    if "earnings_gap" in setups and "earnings_gap" not in hits and any(
+            gap_reaction(bars, j, p, spy) for j in range(max(0, i - int(p["gap_max_age"]) + 1), i)):
+        hits.insert(0, "earnings_gap")   # a reaction a day back still counts (a missed morning run)
     if not hits:
         return None, "none"
     closes = [b["c"] for b in bars]
@@ -1102,13 +1165,25 @@ def swing_candidate(sym, bars, setups, p, floors):
         return None if x is None else round(x, 2)
     side = "sell" if hits[0] in SWING_SHORT_SETUPS else "buy"
     hits = [h for h in hits if (h in SWING_SHORT_SETUPS) == (side == "sell")]
-    return {"symbol": sym, "side": side, "direction": "SHORT" if side == "sell" else "LONG",
+    extra = {}
+    if hits[0] == "earnings_gap":
+        for j in range(i, max(0, len(bars) - int(p["gap_max_age"])) - 1, -1):
+            g = gap_reaction(bars, j, p, spy)
+            if g:
+                extra = {"reaction_date": bars[j]["date"].isoformat(), "reaction_pct": round(100 * g[0], 1),
+                         "volume_ratio": round(g[1], 1), "vs": SWING_BENCH if spy else "propio",
+                         "exit": dict((exits or SETUP_EXITS)["earnings_gap"])}
+                extra["time_stop_days"] = extra["exit"]["time_stop_days"]
+                break
+    cand = {"symbol": sym, "side": side, "direction": "SHORT" if side == "sell" else "LONG",
             "setup": hits[0], "setups": hits, "date": last["date"].isoformat(),
             "price": round(last["c"], 2), "atr14": r2(atr_last(bars, 14)), "ema20": r2(ind["ema"][i]),
             "sma50": r2(ind["trend"][i]), "sma200": r2(ind["rsi_trend"][i]), "rsi2": r2(ind["rsi"][i]),
             "high20": r2(max(b["h"] for b in bars[-1 - p["breakout_days"]:-1])),
             "dollar_volume_20d": int(dv), "daily_tags": daily_tags,
-            "why": SWING_LABEL.get(hits[0], hits[0])}, "hit"
+            "why": SWING_LABEL.get(hits[0], hits[0])}
+    cand.update(extra)
+    return cand, "hit"
 
 
 def swing_extras(cfg):
@@ -1129,11 +1204,15 @@ def swing_extras(cfg):
     return out
 
 
-def scan_swing(data, symbols, now_utc, setups, p, floors, extras=()):
+def scan_swing(data, symbols, now_utc, setups, p, floors, extras=(), exits=None):
     """Pure. data = {SYM: series with highs and lows}. -> (candidates, counts, last_date).
     Symbols in `extras` (the commodity "comodines") skip the dollar-volume floor."""
     extras = set(extras)
     out, dates = [], {}
+    spy = None
+    if "earnings_gap" in setups and data.get(SWING_BENCH):
+        sb = daily_bars(data[SWING_BENCH], now_utc) or []
+        spy = {b["date"]: b["c"] for b in sb} or None
     counts = {"requested": len(symbols), "fetched": 0, "illiquid": 0, "short": 0, "no_ohlc": 0, "scanned": 0}
     for sym in symbols:
         s = data.get(sym)
@@ -1144,8 +1223,13 @@ def scan_swing(data, symbols, now_utc, setups, p, floors, extras=()):
         if bars is None:
             counts["no_ohlc"] += 1
             continue
-        cand, why = swing_candidate(sym, bars, setups, p,
-                                    dict(floors, min_dollar_volume=0) if sym in extras else floors)
+        if sym in extras:   # the comodines have no earnings: no earnings_gap
+            cand, why = swing_candidate(sym, bars, [x for x in setups if x != "earnings_gap"] or setups, p,
+                                        dict(floors, min_dollar_volume=0))
+            if cand and cand["setup"] == "earnings_gap":
+                cand, why = None, "none"
+        else:
+            cand, why = swing_candidate(sym, bars, setups, p, floors, spy, exits)
         if cand:
             meta = s.get("meta") or {}
             cand["name"] = " ".join(str(meta.get("longName") or meta.get("shortName") or "").split())
@@ -1193,6 +1277,7 @@ def cmd_swing(a):
     now = parse_now(a.now)
     cfg = read_config(a.config)
     setups, p, floors = swing_params(cfg)
+    exits = swing_exits(cfg)
     if a.setups:
         setups = [s for s in re.split(r"[,\s]+", a.setups) if s]
         for s in setups:
@@ -1214,7 +1299,8 @@ def cmd_swing(a):
     if not a.offline:
         if len(symbols) <= a.max_confirm:
             progress(a, "Descargando %d graficos diarios (v8, 1 ano)..." % len(symbols))
-            data, failed = fetch_charts(symbols, a.pause, a)
+            bench = [SWING_BENCH] if "earnings_gap" in setups and SWING_BENCH not in symbols else []
+            data, failed = fetch_charts(symbols + bench, a.pause, a)
         else:
             staged = True
             progress(a, "Stage 1: daily closes for %s symbols..." % "{:,}".format(len(symbols)))
@@ -1235,13 +1321,15 @@ def cmd_swing(a):
             ranked.sort()
             pick = [s for _, s in ranked[:a.max_confirm]]
             pick += [x for x in extras if x not in pick]          # the comodines always get their chart
+            if "earnings_gap" in setups and SWING_BENCH not in pick:
+                pick.append(SWING_BENCH)                           # the benchmark for earnings_gap
             progress(a, "Stage 2: %d daily charts for the candidates..." % len(pick))
             data, f2 = fetch_charts(pick, a.pause, a)
             failed.update(f2)
             if len(ranked) > a.max_confirm:
                 progress(a, "  stopped at --max-confirm %d of %d candidates" % (a.max_confirm, len(ranked)))
     cands, counts, last = scan_swing(data, symbols if not staged else [s for s in symbols if s in data],
-                                     now, setups, p, floors, extras)
+                                     now, setups, p, floors, extras, exits)
     counts["requested"] = len(symbols)
     doc = {"created_by": "trader-scanner", "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "mode": "swing",
            "as_of": ("%s close" % last.isoformat()) if last else None, "universe": len(symbols),

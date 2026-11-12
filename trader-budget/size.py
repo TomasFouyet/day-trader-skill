@@ -1091,7 +1091,7 @@ def size_swing(plan, cfg, budget=None, limit=None, portfolio=None, prices=None, 
                            few_cases=h.get("few_cases"))
     exposure_all = round(sum(r["value"] for r in held), 2)
     return {"mode": "swing", "symbol": sym, "side": side, "name": plan.get("name"), "asset": plan.get("asset"),
-            "setup": plan.get("setup"),
+            "setup": plan.get("setup"), "reaction": plan.get("reaction"),
             "date": plan.get("date"), "entry_plan": round_cent(entry_plan), "entry": ref,
             "order_type": "limit" if limit is not None else "market",
             "stop": stop, "target": target, "risk_per_share": risk, "reward_risk": rr,
@@ -1131,7 +1131,7 @@ def swing_ticket(s):
          "manual": True, "venue": s["venue"], "leverage": s["leverage"], "margin": s["margin"],
          "notional": s["notional"], "liquidation": s["liquidation"], "account": s["account"],
          "risk_usd": s["risk_usd"], "venues": {k: _venue_brief(v) for k, v in s["venues"].items()},
-         "earnings": s["earnings"], "timemachine": s["timemachine"],
+         "earnings": s["earnings"], "timemachine": s["timemachine"], "reaction": s.get("reaction"),
          "why": "%s %s %s: %s %s en %s, limita %s (%s x %s = %s en el stop)" % (
              "SHORT" if s["side"] == "sell" else "LONG", s["setup"] or "swing", s["symbol"], _qty(s["qty"]), word,
              s["venue"], s["bound_by"], _qty(s["qty"]), _price(s["risk_per_share"]), money(s["max_loss"]))}

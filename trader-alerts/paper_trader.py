@@ -183,6 +183,9 @@ def price_str(x):
     return "%.2f" % x if x >= 1 else "%.4f" % x
 
 
+LIVE = ("submitted", "open", "closing")   # one trade a symbol at a time
+
+
 def key_of(t):
     return "%s|%s|%s" % (str(t.get("symbol") or "").upper(), t.get("signal_date"), t.get("setup") or "")
 
@@ -225,6 +228,10 @@ def submit(api, tickets_doc, risk_doc, state, today, dry_run=False, now=None):
         k = key_of(t)
         if k in trades:
             out.append((t["symbol"], "ya operado"))
+            continue
+        sym = str(t.get("symbol") or "").upper()
+        if any(str(v.get("symbol") or "").upper() == sym and v.get("status") in LIVE for v in trades.values()):
+            out.append((t["symbol"], "omitido: ya hay una operacion viva en %s" % sym))
             continue
         body, why = planned(t)
         if body is None:
