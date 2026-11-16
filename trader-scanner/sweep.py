@@ -3,15 +3,17 @@
 
 A replica of the TradingView scanner the user trades with ("Trading Scanner": liquidity swing
 length 8, internal structure length 3, max bars sweep->MSS 20, setup->entry 30, in trade 200,
-take profit 2R, min stop 0.2 x ATR). Its source is closed; the rules below were fitted to three
-of its charts (NOW, APP, SPCX, 30-minute bars to 2026-11-13) and reproduce its levels to the cent:
+take profit 2R, min stop 0.2 x ATR). Its source is closed; the rules below were fitted to its
+charts (NOW, APP, SPCX and its table of 20 stocks, 30-minute bars to 2026-11-13): they reproduce
+the three charts to the cent and 19 of the table's 20 rows (not META):
 
   1. Liquidity   the most recent confirmed swing high and swing low (a pivot with `swing_len`
                  bars on each side). Stops rest beyond them.
   2. Sweep       a bar that trades through the level and closes back inside: high above the swing
                  high and close below it (bearish, a short idea), or low under the swing low and
-                 close above it (bullish). While one sweep waits, later sweeps are ignored; price
-                 trading beyond the sweep bar's extreme cancels it (and that bar can sweep anew).
+                 close above it (bullish). The structure it will have to break must be internal
+                 (not the opposite swing itself). While one sweep waits, later sweeps are ignored;
+                 a CLOSE beyond the sweep bar's extreme cancels it. A level is swept once.
   3. MSS         the close breaks the internal structure against the sweep: under the last
                  confirmed internal swing low (pivot `internal_len`) as it stood on the sweep bar
                  (bearish), or over the internal swing high (bullish). At most `max_sweep_to_mss`
@@ -208,7 +210,7 @@ def run(bars, params=None, flat_eod=False):
             trend[i] = closes_sum / 200.0
     ph8 = pl8 = ph3 = pl3 = None
     st = {"stage": "scan"}
-    trades, sweeps = [], 0
+    trades, sweeps, used = [], 0, {}
 
     def reset():
         st.clear()
@@ -290,8 +292,8 @@ def run(bars, params=None, flat_eod=False):
                 continue
             stage = st["stage"]
 
-        if stage == "swept" and ((b["h"] > st["extreme"]) if st["dir"] < 0 else (b["l"] < st["extreme"])):
-            reset()                                                        # beyond the sweep: the idea is dead
+        if stage == "swept" and (b["c"] - st["extreme"]) * st["dir"] < 0:
+            reset()                                                        # closed beyond the sweep: the idea is dead
             stage = "scan"
 
         if stage == "swept":
@@ -308,10 +310,15 @@ def run(bars, params=None, flat_eod=False):
                 continue                                                   # one sweep at a time
 
         # scanning: a sweep of the latest swing high or low
-        up = ph8 is not None and b["h"] > ph8 and b["c"] < ph8 and pl3 is not None and pl3 < b["c"]
-        dn = pl8 is not None and b["l"] < pl8 and b["c"] > pl8 and ph3 is not None and ph3 > b["c"]
+        # the structure to break has to be internal: not the opposite swing itself
+        # and a level is swept once
+        up = (ph8 is not None and b["h"] > ph8 and b["c"] < ph8 and pl3 is not None and pl3 < b["c"]
+              and pl3 != pl8 and ph8 != used.get("h"))
+        dn = (pl8 is not None and b["l"] < pl8 and b["c"] > pl8 and ph3 is not None and ph3 > b["c"]
+              and ph3 != ph8 and pl8 != used.get("l"))
         if up != dn:
             sweeps += 1
+            used["h" if up else "l"] = ph8 if up else pl8
             st.clear()
             st.update(stage="swept", dir=-1 if up else 1, sweep_i=i, level=ph8 if up else pl8,
                       extreme=b["h"] if up else b["l"], mss_level=pl3 if up else ph3)

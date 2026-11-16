@@ -54,13 +54,29 @@ class TheThreeCharts(unittest.TestCase):
         self.assertAlmostEqual(s["level"], 137.75, places=2)
         self.assertAlmostEqual(s["mss_level"], 142.24, places=2)
 
+    def test_the_table_of_twenty(self):
+        """Rows of the indicator's own table at the close of 2026-11-13 (its "Bars" column)."""
+        m = sw.run(bars_of("MU"))["state"]          # wicks under the sweep bar's low did not cancel it
+        self.assertEqual((m["stage"], m["dir"], m["bars"], m["sweep_time"]), ("swept", 1, 11, "2026-11-13 10:00"))
+        p = sw.run(bars_of("PLTR"))["state"]
+        self.assertEqual((p["stage"], p["dir"], p["bars"]), ("swept", 1, 4))
+        # LITE: swept at 09:30, a close under that bar's low killed it, and the same level is not swept twice
+        self.assertEqual(sw.run(bars_of("LITE"))["state"]["stage"], "scan")
+        self.assertEqual(sw.run(bars_of("LITE", "2026-11-13 10:00"))["state"]["stage"], "swept")
+        # TSLA: the low it would have to break IS the swing low: not an internal structure, no sweep
+        self.assertEqual(sw.run(bars_of("TSLA"))["state"]["stage"], "scan")
+        for sym, liq in (("LITE", 2.8), ("TSLA", 1.3)):
+            self.assertEqual(sw.run(bars_of(sym))["state"]["liq_atr"], liq)       # its "liq x ATR" column
+
     def test_no_look_ahead(self):
-        bars = bars_of("NOW")
-        full = sw.run(bars)["trades"]
-        cut = sw.run(bars[:500])["trades"]
-        done = [t for t in full if t["exit_i"] < 500]
-        self.assertEqual(cut, done)                 # the past does not change when the future arrives
-        self.assertGreaterEqual(len(full), 2)
+        n = 0
+        for sym in ("NOW", "MU", "TSLA"):
+            bars = bars_of(sym)
+            full = sw.run(bars)["trades"]
+            cut = sw.run(bars[:500])["trades"]
+            self.assertEqual(cut, [t for t in full if t["exit_i"] < 500])   # the past does not change
+            n += len(full)
+        self.assertGreater(n, 3)
 
     def test_the_bar_in_progress_is_left_out(self):
         self.assertEqual(bars_of("NOW", "2026-11-13 15:40")[-1]["t"].strftime("%H:%M"), "15:00")
@@ -110,12 +126,15 @@ class Rules(unittest.TestCase):
         t = res["trades"][0]
         self.assertEqual((t["side"], t["outcome"], t["R"], t["entry_i"], t["exit_i"]), ("sell", "target", 2.0, 30, 31))
 
-    def test_beyond_the_sweep_extreme_cancels_it(self):
-        rows = base() + [(109.0, 110.7, 108.9, 109.5)]   # 27: over the sweep's 110.6, closes under 110: a new sweep
+    def test_a_close_beyond_the_sweep_cancels_it_and_a_level_is_swept_once(self):
+        rows = base() + [(109.0, 110.7, 108.9, 109.5)]   # 27: a wick over the sweep's 110.6: it still waits
         s = sw.run(mk(rows), self.P)["state"]
-        self.assertEqual((s["stage"], s["sweep_i"], s["extreme"]), ("swept", 27, 110.7))
-        rows = base() + [(109.0, 110.7, 108.9, 110.5)]   # 27: over it and closes above 110: nothing left
+        self.assertEqual((s["stage"], s["sweep_i"], s["extreme"]), ("swept", 26, 110.6))
+        rows = base() + [(109.0, 110.9, 108.9, 110.8)]   # 27: a close over it: the idea is dead
         self.assertEqual(sw.run(mk(rows), self.P)["state"]["stage"], "scan")
+        rows.append((110.8, 111.0, 109.0, 109.5))        # 28: through 110 and back again: that level was used
+        res = sw.run(mk(rows), self.P)
+        self.assertEqual((res["state"]["stage"], res["sweeps"]), ("scan", 1))
 
     def test_no_break_in_time_and_no_gap(self):
         rows = base() + [(109.0, 109.3, 108.7, 109.0)] * 21
@@ -147,12 +166,13 @@ class Rules(unittest.TestCase):
         self.assertGreater(s["stop"], 110.6)
 
     def test_flat_eod_holds_nothing_overnight(self):
-        bars = bars_of("NOW")
-        res = sw.run(bars, None, True)
-        self.assertTrue(res["trades"])
-        for t in res["trades"]:
+        trades = []
+        for sym in ("NOW", "MU", "TSLA", "PLTR", "LITE"):
+            trades += sw.run(bars_of(sym), None, True)["trades"]
+        self.assertTrue(trades)
+        for t in trades:
             self.assertEqual(t["entry_time"][:10], t["exit_time"][:10])
-        self.assertTrue(any(t["outcome"] == "eod" for t in res["trades"]))
+        self.assertTrue(any(t["outcome"] == "eod" for t in trades))
 
     def test_params_from_the_config(self):
         p = sw.sweep_params({"sweep": {"take_profit_r": 3, "swing_len": "10", "symbols": ["NVDA"]}})
