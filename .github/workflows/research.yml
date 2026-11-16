@@ -10,6 +10,10 @@ on:
         description: "Cuantas acciones de la watchlist de ejemplo (vacio = todas)"
         required: false
         default: ""
+      trial_var:
+        description: "Varianza del Sharpe diario entre las variantes probadas (Deflated Sharpe)"
+        required: false
+        default: "7.93e-05"
 
 permissions:
   contents: read
@@ -27,7 +31,9 @@ jobs:
         env:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           LIMIT: ${{ inputs.limit }}
+          TRIAL_VAR: ${{ inputs.trial_var }}
         run: |
           ARGS="--symbols trader-scanner/watchlist.example.txt"
           if [ -n "$LIMIT" ]; then ARGS="$ARGS --limit $LIMIT"; fi
+          if [ -n "$TRIAL_VAR" ]; then ARGS="$ARGS --trial-var $TRIAL_VAR"; fi
           python3 trader-analyst/drift_study.py $ARGS
