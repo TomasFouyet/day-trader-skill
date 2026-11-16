@@ -31,7 +31,8 @@ import urllib.request
 
 DATA_URL = "https://data.alpaca.markets"
 RANGES = {"1d": 1, "5d": 7, "1mo": 31, "60d": 62, "3mo": 93, "6mo": 186, "1y": 366, "2y": 731, "5y": 1827}
-FRAMES = {"1d": "1Day", "1m": "1Min", "5m": "5Min"}
+FRAMES = {"1d": "1Day", "1m": "1Min", "5m": "5Min", "15m": "15Min", "30m": "30Min", "1h": "1Hour"}
+DELAYED = ("15m", "30m", "1h")   # history charts: the consolidated tape (sip), which the free plan serves 15 minutes late
 STATS = {"alpaca": 0, "fallback": 0, "errors": []}
 UA = "day-trader-skill/2.0 (market data)"
 
@@ -74,6 +75,8 @@ def window(rng, interval, now_utc, prepost):
     if days is None or frame is None:
         return None
     if interval == "1d":
+        return frame, _iso(now_utc - datetime.timedelta(days=days)), _iso(now_utc - datetime.timedelta(minutes=16)), "sip"
+    if interval in DELAYED:
         return frame, _iso(now_utc - datetime.timedelta(days=days)), _iso(now_utc - datetime.timedelta(minutes=16)), "sip"
     start = now_utc - datetime.timedelta(days=days if days > 1 else 1)
     if days == 1:          # "today": from 04:00 New York, the start of the pre-market (08:00 UTC covers both offsets)

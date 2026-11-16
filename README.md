@@ -538,7 +538,58 @@ acciones son las grandes de hoy (sesgo de supervivencia), así que los números
 absolutos están inflados. La comparación contra el azar en las mismas
 acciones es la cifra honesta. Para medirlo de verdad está el paper trading.
 
-### 12. Límites que quedan
+### 12. Sweep scanner (velas de 30 minutos)
+
+`trader-scanner/sweep.py` replica el indicador de TradingView "Trading
+Scanner" (barrido de liquidez → MSS → entrada). El código del indicador es
+cerrado: las reglas se ajustaron contra tres de sus gráficos (NOW, APP y
+SPCX al 13-11-2026) y reproducen sus niveles al centavo. Los tests lo
+verifican con esas mismas velas.
+
+1. **Liquidez:** el último máximo y mínimo de swing confirmados (8 velas a
+   cada lado).
+2. **Barrido:** una vela pasa el nivel y cierra de vuelta adentro. Mientras
+   un barrido espera, los siguientes se ignoran; si el precio pasa el extremo
+   de la vela del barrido, se cancela.
+3. **MSS:** el cierre rompe el último swing interno (3 velas) contra el
+   barrido, en 20 velas como máximo.
+4. **Entrada:** límite en el borde cercano del hueco (FVG) que dejó la
+   ruptura, con 30 velas para llenarse.
+5. **Stop** en el extremo de la vela del barrido (mínimo 0,2 × ATR),
+   **objetivo** 2R, salida al cierre tras 200 velas.
+
+```bash
+python3 trader-scanner/sweep.py scan                 # la tabla, como la del indicador
+python3 trader-scanner/sweep.py backtest             # cada operación que las reglas tomaron
+python3 trader-scanner/sweep.py backtest --flat-eod  # variante day trading: nada pasa la noche
+```
+
+Las acciones salen de `trader-scanner/sweep_watchlist.txt` (20, en formato
+`BOLSA:TICKER` para pegar en el indicador), de `--symbols` o de
+`"sweep": {"symbols": [...]}` en la config, donde también se cambian los
+parámetros (`swing_len`, `internal_len`, `take_profit_r`, ...). La lista se
+eligió por liquidez (más de US$2.500 millones al día) y movimiento en 30
+minutos, no por resultado.
+
+Dos cosas son propias y no del indicador: qué pasa cuando la ruptura no deja
+hueco (espera 2 velas y descarta) y la nota de calidad (0 a 100).
+
+Backtest de 60 sesiones (21-08 al 13-11-2026), sin comisiones:
+
+| Universo | Operaciones | Ganadoras | Promedio |
+|---|---|---|---|
+| 110 acciones más líquidas | 333 | 32 % | −0,14R ± 0,09 |
+| Entradas al azar (mismo objetivo y tiempo) | 22.000 | 36 % | −0,10R |
+| Las 20 de la lista | 58 | 34 % | −0,05R ± 0,20 |
+| Las 20, cerrando al final del día | 16 | 31 % | −0,24R |
+
+En esta muestra las reglas no se distinguen del azar, y como day trading puro
+ninguna operación llegó al objetivo dentro del día. Son solo 60 sesiones
+(Yahoo no entrega más velas de 30 minutos): no es concluyente. El script no
+coloca órdenes ni avisa en tiempo real; para eso están las alertas del
+indicador en TradingView.
+
+### 13. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
   SEC (el calendario de Yahoo pide un token de sesión). Confírmalas en la web

@@ -1,0 +1,25 @@
+# Las 20 acciones para el sweep scanner (velas de 30 minutos). Criterio, medido el 2026-11-13 sobre 60
+# sesiones: mas de US$2.500 millones negociados al dia (spread chico, sin huecos) y, entre esas, las que
+# mas se mueven en 30 minutos (ATR de 30m sobre el precio). NO se eligieron por resultado del backtest.
+# Formato de TradingView (BOLSA:TICKER) para pegar en el indicador; sweep.py solo usa el ticker.
+# BOLSA:TICKER|nombre|volumen diario en dolares|ATR 30m %
+NASDAQ:NVDA|NVIDIA|24.9B|0.78
+NASDAQ:MU|Micron Technology|25.9B|1.30
+NASDAQ:SPCX|Space Exploration Technologies|14.7B|1.26
+NASDAQ:TSLA|Tesla|13.5B|0.88
+NASDAQ:META|Meta Platforms|13.6B|0.78
+NASDAQ:AMD|Advanced Micro Devices|11.2B|1.43
+NASDAQ:INTC|Intel|10.8B|1.55
+NASDAQ:AVGO|Broadcom|8.2B|0.89
+NASDAQ:MRVL|Marvell Technology|5.3B|1.87
+NASDAQ:PLTR|Palantir Technologies|5.1B|1.04
+NASDAQ:LITE|Lumentum|4.6B|2.02
+NYSE:TSM|Taiwan Semiconductor (ADR)|4.5B|0.82
+NYSE:ORCL|Oracle|4.4B|1.29
+NASDAQ:NBIS|Nebius Group|4.3B|2.18
+NYSE:DELL|Dell Technologies|3.8B|1.60
+NASDAQ:MRNA|Moderna|3.7B|2.21
+NASDAQ:STX|Seagate Technology|3.7B|1.66
+NYSE:BE|Bloom Energy|3.6B|2.05
+NASDAQ:WDC|Western Digital|3.4B|1.58
+NASDAQ:CRWV|CoreWeave|3.0B|2.30
