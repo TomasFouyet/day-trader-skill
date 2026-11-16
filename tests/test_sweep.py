@@ -122,8 +122,19 @@ class Rules(unittest.TestCase):
         self.assertEqual(sw.run(mk(rows), self.P)["state"]["stage"], "scan")       # 20 bars without an MSS
         rows = base() + [(109.0, 109.2, 107.5, 107.8), (107.8, 108.2, 103.5, 103.8), (103.8, 107.6, 103.6, 105.0),
                          (105.0, 105.5, 104.5, 105.0), (105.0, 105.5, 104.5, 105.0)]
-        res = sw.run(mk(rows), self.P)                                              # broke with overlapping bars
-        self.assertEqual((res["state"]["stage"], res["trades"]), ("scan", []))
+        s = sw.run(mk(rows[:-3]), self.P)["state"]          # broke with overlapping bars: no gap, so the
+        self.assertEqual((s["stage"], s["entry_kind"], s["fvg"]), ("setup", "retest", None))    # limit is the retest
+        self.assertEqual((s["entry"], s["stop"]), (104.0, 110.6))
+        self.assertAlmostEqual(s["target"], 104.0 - 2 * 6.6)
+        s = sw.run(mk(rows), self.P)["state"]               # bar 29 comes back to 104: filled
+        self.assertEqual((s["stage"], s["entry_i"], s["bars"]), ("open", 29, 2))
+
+    def test_a_gap_too_small_does_not_count(self):
+        rows = base() + [(109.0, 109.2, 106.8, 107.0), (106.5, 107.95, 103.0, 103.2)]    # the gap is 107.95 to 108.0
+        s = sw.run(mk(rows), self.P)["state"]
+        self.assertEqual((s["entry_kind"], s["entry"]), ("retest", 104.0))
+        s = sw.run(mk(rows), dict(self.P, min_fvg_atr=0))["state"]
+        self.assertEqual((s["entry_kind"], s["entry"]), ("fvg", 107.95))
 
     def test_stop_first_and_the_stop_floor(self):
         rows = base()
@@ -176,7 +187,7 @@ class Cli(unittest.TestCase):
         self.assertEqual(sum(doc["outcomes"].values()), doc["all"]["n"])
         code, text, err = cli(["backtest", "--offline", DIR, "--symbols", "NOW", "--now", NOW])
         self.assertIn("Al azar (sin senal)", text)
-        self.assertIn("muestra chica", text)
+        self.assertIn("Sin comisiones", text)
         code, text, err = cli(["scan", "--offline", DIR, "--symbols", "BTCUSDT", "--now", NOW, "--no-write"])
         self.assertEqual(code, 1)
         self.assertIn("las cripto no pasan por este script", err)
@@ -188,15 +199,62 @@ class Cli(unittest.TestCase):
 
         class A(object):
             symbols = watchlist = None
+        A.watchlist = sw.WATCHLIST
         got = sw.read_symbols(A(), {})
         self.assertEqual(got[:3], ["NVDA", "MU", "SPCX"])
         self.assertEqual(len(got), 20)
+        A.watchlist = None
+        self.assertGreater(len(sw.read_symbols(A(), {})), 200)      # by default: the 250 (the example list here)
+        self.assertEqual(sw.read_symbols(A(), {"sweep": {"symbols": ["nyse:orcl", "TSM"]}}), ["ORCL", "TSM"])
 
     def test_it_never_trades(self):
         with open(os.path.join(os.path.dirname(FIX), "..", "trader-scanner", "sweep.py")) as fh:
             src = fh.read()
         for bad in ("trader-broker", "alpaca.markets", "/v2/orders", "ticket.py"):
             self.assertNotIn(bad, src)
+
+
+class Timeframes(unittest.TestCase):
+    def hourly(self, day, n=7):
+        out = []
+        for k in range(n):
+            t = datetime.datetime.combine(day, datetime.time(9, 30)) + datetime.timedelta(hours=k)
+            out.append({"t": t, "day": day.isoformat(), "o": 100.0 + k, "h": 101.5 + k, "l": 99.0 + k, "c": 101.0 + k,
+                        "v": 10.0})
+        return out
+
+    def test_4h_bars_are_the_two_halves_of_the_session(self):
+        d1, d2 = datetime.date(2026, 11, 12), datetime.date(2026, 11, 13)
+        hourly = self.hourly(d1) + self.hourly(d2)
+        b = sw.bars_4h(hourly, sw.scan.parse_now("2026-11-13 16:05"))
+        self.assertEqual([x["t"].strftime("%d %H:%M") for x in b], ["12 09:30", "12 13:30", "13 09:30", "13 13:30"])
+        self.assertEqual((b[0]["o"], b[0]["h"], b[0]["l"], b[0]["c"], b[0]["v"]), (100.0, 104.5, 99.0, 104.0, 40.0))
+        self.assertEqual((b[1]["o"], b[1]["c"], b[1]["v"]), (104.0, 107.0, 30.0))
+        b = sw.bars_4h(hourly, sw.scan.parse_now("2026-11-13 14:00"))        # the afternoon half is still forming
+        self.assertEqual(len(b), 3)
+        b = sw.bars_4h(hourly, sw.scan.parse_now("2026-11-13 12:00"))
+        self.assertEqual(len(b), 2)
+
+    def test_the_last_hour_bar_ends_at_the_close(self):
+        series = {"t": [], "o": [], "h": [], "l": [], "c": [], "v": []}
+        for hh, mm in ((14, 30), (15, 30)):
+            t = sw.scan.eastern_to_utc(datetime.datetime(2026, 11, 13, hh, mm))
+            series["t"].append(int((t - datetime.datetime(1970, 1, 1)).total_seconds()))
+            for k in "ohlc":
+                series[k].append(100.0)
+            series["v"].append(1)
+        got = sw.session_bars(series, sw.scan.parse_now("2026-11-13 16:00"), 60)
+        self.assertEqual([x["t"].strftime("%H:%M") for x in got], ["14:30", "15:30"])   # 15:30-16:00 is complete
+        got = sw.session_bars(series, sw.scan.parse_now("2026-11-13 15:45"), 60)
+        self.assertEqual([x["t"].strftime("%H:%M") for x in got], ["14:30"])
+
+    def test_interval_flag_and_brief_table(self):
+        code, text, err = cli(["scan", "--offline", DIR, "--symbols", "NOW", "--now", NOW, "--no-write",
+                               "--interval", "2m"])
+        self.assertEqual(code, 1)
+        self.assertIn("--interval es uno de", err)
+        self.assertEqual(sw.RANGE["backtest"]["1h"], "730d")
+        self.assertEqual(sw.FETCH["4h"], "1h")
 
 
 class MarketData(unittest.TestCase):

@@ -30,7 +30,7 @@ import urllib.parse
 import urllib.request
 
 DATA_URL = "https://data.alpaca.markets"
-RANGES = {"1d": 1, "5d": 7, "1mo": 31, "60d": 62, "3mo": 93, "6mo": 186, "1y": 366, "2y": 731, "5y": 1827}
+RANGES = {"1d": 1, "5d": 7, "1mo": 31, "60d": 62, "730d": 729, "3mo": 93, "6mo": 186, "1y": 366, "2y": 731, "5y": 1827}
 FRAMES = {"1d": "1Day", "1m": "1Min", "5m": "5Min", "15m": "15Min", "30m": "30Min", "1h": "1Hour"}
 DELAYED = ("15m", "30m", "1h")   # history charts: the consolidated tape (sip), which the free plan serves 15 minutes late
 STATS = {"alpaca": 0, "fallback": 0, "errors": []}

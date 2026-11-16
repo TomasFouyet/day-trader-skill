@@ -18,25 +18,32 @@ of its charts (NOW, APP, SPCX, 30-minute bars to 2026-11-13) and reproduce its l
                  bars after the sweep.
   4. Entry       a limit at the near edge of the fair value gap (FVG) the break left behind: for a
                  short, the high of the third candle of the latest three-candle gap (low of the
-                 first above the high of the third) between the sweep and the break. It has
-                 `max_setup_to_entry` bars to fill. Price running to the target first does not
-                 cancel it (the indicator keeps it).
+                 first above the high of the third) between the sweep and the break. When the
+                 break left no gap (or one under `min_fvg_atr` x ATR), the limit goes at the broken
+                 structure level itself (the retest). It has `max_setup_to_entry` bars to fill.
+                 Price running to the target first does not cancel it (the indicator keeps it).
   5. Stop        the sweep bar's extreme, at least `min_stop_atr` x ATR(14) from the
                  entry. Target `take_profit_r` x the risk. Out at the close after
                  `max_bars_in_trade` bars. In a bar that touches both, the stop counts.
 
-Fitted, not known: where the entry goes when the break leaves no gap (here: wait up to 2 bars for
-one, else drop the idea) and the Quality score (here: a transparent 0-100 of our own: displacement,
-sweep depth, gap size, speed, risk size and trend, NOT the indicator's formula).
+Four of its crypto charts (TRX, TAO, UNI, QNT on 2026-11-16) agree with these rules on other
+data (Yahoo's prices, not Binance's): the retest entry comes from UNI and QNT. Fitted, not known:
+the smallest gap that counts (`min_fvg_atr`, 0.1) and the Quality score (here: a transparent 0-100
+of our own: displacement, sweep depth, gap size, speed, risk size and trend, NOT the indicator's).
+
+Timeframes: --interval 30m (the indicator's), 1h or 4h (4h = the session's two TradingView bars,
+09:30-13:30 and 13:30-16:00, built from 1-hour bars).
 
     python3 sweep.py scan                      # the table, like the indicator's
     python3 sweep.py scan --symbols NVDA,TSLA
+    python3 sweep.py scan --interval 1h --all
     python3 sweep.py backtest                  # every trade the rules took in the bars on hand
     python3 sweep.py backtest --flat-eod       # day-trading variant: nothing held overnight
 
-Symbols: --symbols, --watchlist FILE, config "sweep": {"symbols": [...]}, else
-trader-scanner/sweep_watchlist.txt. Bars: Yahoo's 30-minute chart (60 days), or Alpaca's when its
-keys are set. Regular session only, the bar in progress left out. Standard library only. It never
+Symbols: --symbols, --watchlist FILE, config "sweep": {"symbols": [...]}, else trader/watchlist.txt
+(your 250), else trader-scanner/watchlist.example.txt (250). trader-scanner/sweep_watchlist.txt is
+a short list of 20 for the indicator's 20 slots. Bars: Yahoo's chart (30m: 60 days, 1h: 730 days),
+or Alpaca's when its keys are set. Regular session only, the bar in progress left out. Standard library only. It never
 places an order: a scan is a list of charts that match a rule, not a list of stocks to buy.
 """
 
@@ -55,12 +62,17 @@ _spec.loader.exec_module(scan)
 
 DEFAULTS = {"swing_len": 8, "internal_len": 3, "max_sweep_to_mss": 20, "max_setup_to_entry": 30,
             "max_bars_in_trade": 200, "take_profit_r": 2.0, "min_stop_atr": 0.2, "atr_len": 14,
-            "min_quality": 0, "fvg_wait": 2, "interval": "30m", "range": "60d"}
+            "min_quality": 0, "min_fvg_atr": 0.1, "interval": "30m", "range": None}
 INTS = ("swing_len", "internal_len", "max_sweep_to_mss", "max_setup_to_entry", "max_bars_in_trade", "atr_len",
-        "min_quality", "fvg_wait")
-WATCHLIST = os.path.join(HERE, "sweep_watchlist.txt")
+        "min_quality")
+WATCHLIST = os.path.join(HERE, "sweep_watchlist.txt")       # the short list of 20
+WATCHLISTS = ("trader/watchlist.txt", os.path.join(HERE, "watchlist.example.txt"))
 OUT = "trader/sweep.json"
-BAR_MINUTES = {"30m": 30, "15m": 15, "1h": 60, "5m": 5}
+BAR_MINUTES = {"30m": 30, "15m": 15, "1h": 60, "5m": 5, "4h": 240}
+FETCH = {"4h": "1h"}                                         # 4-hour bars are built from 1-hour bars
+RANGE = {"scan": {"30m": "60d", "15m": "60d", "5m": "60d", "1h": "3mo", "4h": "1y"},
+         "backtest": {"30m": "60d", "15m": "60d", "5m": "60d", "1h": "730d", "4h": "730d"}}
+SPLIT_4H = datetime.time(13, 30)
 NOTE = "Un escaneo es una lista de graficos que cumplen una regla, no una lista de acciones para comprar."
 
 
@@ -86,12 +98,34 @@ def session_bars(series, now_utc, minutes=30):
             continue
         if t.minute % minutes and minutes < 60:
             continue                                   # an odd stamp: not a bar boundary
-        if t + datetime.timedelta(minutes=minutes) > now:
+        end = min(t + datetime.timedelta(minutes=minutes), datetime.datetime.combine(t.date(), s[1]))
+        if end > now:
             continue                                   # still forming
         o = c if o is None else o
         out[t] = {"t": t, "day": t.date().isoformat(), "o": float(o), "h": float(max(c, o) if h is None else h),
                   "l": float(min(c, o) if l is None else l), "c": float(c), "v": float(v or 0)}
     return [out[k] for k in sorted(out)]
+
+
+def bars_4h(hourly, now_utc):
+    """1-hour session bars -> TradingView's 4-hour bars of a US stock: 09:30-13:30 and 13:30-16:00.
+    A half still forming is left out."""
+    now = scan.to_eastern(now_utc)
+    groups = {}
+    for b in hourly:
+        key = (b["day"], b["t"].time() >= SPLIT_4H)
+        groups.setdefault(key, []).append(b)
+    out = []
+    for (day, late) in sorted(groups):
+        g = groups[(day, late)]
+        d = g[0]["t"].date()
+        close = scan.session(d)[1]
+        end = datetime.datetime.combine(d, close if late or close <= SPLIT_4H else SPLIT_4H)
+        if end > now:
+            continue
+        out.append({"t": g[0]["t"], "day": day, "o": g[0]["o"], "h": max(x["h"] for x in g),
+                    "l": min(x["l"] for x in g), "c": g[-1]["c"], "v": sum(x["v"] for x in g)})
+    return out
 
 
 def atr_series(bars, n=14):
@@ -124,7 +158,7 @@ def pivot_confirmed(bars, i, n, high):
     return v if all(x >= v for x in left) and all(x > v for x in right) else None
 
 
-def find_fvg(bars, lo, hi, direction):
+def find_fvg(bars, lo, hi, direction, min_size=0.0):
     """The latest fair value gap whose three candles lie in bars[lo..hi] and that price has not
     come back to since: (near edge, far edge, index of the third candle) or None.
     direction -1 (short): low of the first candle above the high of the third."""
@@ -132,11 +166,11 @@ def find_fvg(bars, lo, hi, direction):
         a, c = bars[k - 2], bars[k]
         if direction < 0 and a["l"] > c["h"]:
             near, far = c["h"], a["l"]
-            if all(bars[j]["h"] < near for j in range(k + 1, hi + 1)) and bars[hi]["c"] < near:
+            if far - near >= min_size and all(bars[j]["h"] < near for j in range(k + 1, hi + 1)) and bars[hi]["c"] < near:
                 return near, far, k
         if direction > 0 and a["h"] < c["l"]:
             near, far = c["l"], a["h"]
-            if all(bars[j]["l"] > near for j in range(k + 1, hi + 1)) and bars[hi]["c"] > near:
+            if near - far >= min_size and all(bars[j]["l"] > near for j in range(k + 1, hi + 1)) and bars[hi]["c"] > near:
                 return near, far, k
     return None
 
@@ -148,7 +182,7 @@ def quality(bars, atr, st, fvg, trend):
     d = st["dir"]
     body = max(abs(bars[k]["c"] - bars[k]["o"]) for k in range(st["sweep_i"] + 1, st["mss_i"] + 1))
     depth = abs(st["extreme"] - st["level"])
-    gap = abs(fvg[1] - fvg[0])
+    gap = abs(fvg[1] - fvg[0]) if fvg else 0.0
     speed = 1.0 - (st["mss_i"] - st["sweep_i"]) / float(max(1, st["max_wait"]))
     risk = abs(st["stop"] - st["entry"]) / a
     risk_ok = 1.0 if 0.5 <= risk <= 3.0 else (risk / 0.5 if risk < 0.5 else max(0.0, 1 - (risk - 3.0) / 3.0))
@@ -193,14 +227,15 @@ def run(bars, params=None, flat_eod=False):
 
     def make_setup(i, fvg):
         d = st["dir"]
-        entry = fvg[0]
+        entry = fvg[0] if fvg else st["mss_level"]          # the gap's near edge, else the retest
         ext = st["extreme"]
         floor = p["min_stop_atr"] * (atr[i] or 0.0)
         stop = max(ext, entry + floor) if d < 0 else min(ext, entry - floor)
         if (stop - entry) * d >= 0:                     # the gap sits beyond the sweep: no trade
             return False
         st.update(entry=entry, stop=stop, extreme=ext, target=entry + d * p["take_profit_r"] * abs(entry - stop),
-                  setup_i=i, max_wait=p["max_sweep_to_mss"], fvg=[fvg[0], fvg[1]])
+                  setup_i=i, max_wait=p["max_sweep_to_mss"], fvg=[fvg[0], fvg[1]] if fvg else None,
+                  entry_kind="fvg" if fvg else "retest")
         st["quality"] = quality(bars, atr[i], st, fvg, trend[i])
         if st["quality"] < p["min_quality"]:
             return False
@@ -255,19 +290,9 @@ def run(bars, params=None, flat_eod=False):
                 continue
             stage = st["stage"]
 
-        if stage in ("swept", "mss") and ((b["h"] > st["extreme"]) if st["dir"] < 0 else (b["l"] < st["extreme"])):
+        if stage == "swept" and ((b["h"] > st["extreme"]) if st["dir"] < 0 else (b["l"] < st["extreme"])):
             reset()                                                        # beyond the sweep: the idea is dead
             stage = "scan"
-
-        if stage == "mss":                                                 # broke, waiting for the gap
-            fvg = find_fvg(bars, st["sweep_i"], i, st["dir"])
-            if fvg and make_setup(i, fvg):
-                continue
-            if i - st["mss_i"] >= p["fvg_wait"]:
-                reset()
-            else:
-                continue
-            stage = st["stage"]
 
         if stage == "swept":
             d = st["dir"]
@@ -275,10 +300,9 @@ def run(bars, params=None, flat_eod=False):
                 reset()
             elif (b["c"] - st["mss_level"]) * d > 0:                       # the market structure shift
                 st["mss_i"] = i
-                fvg = find_fvg(bars, st["sweep_i"], i, d)
-                if fvg and make_setup(i, fvg):
-                    continue
-                st["stage"] = "mss"
+                fvg = find_fvg(bars, st["sweep_i"], i, d, p["min_fvg_atr"] * (atr[i] or 0.0))
+                if not make_setup(i, fvg):
+                    reset()
                 continue
             else:
                 continue                                                   # one sweep at a time
@@ -297,8 +321,8 @@ def run(bars, params=None, flat_eod=False):
     state["bars"] = None
     if st["stage"] == "swept":
         state["bars"] = last - st["sweep_i"]
-    elif st["stage"] in ("mss", "setup"):
-        state["bars"] = last - st.get("setup_i", st["mss_i"])
+    elif st["stage"] == "setup":
+        state["bars"] = last - st["setup_i"]
     elif st["stage"] == "open":
         risk = abs(st["stop"] - st["entry"])
         state["bars"] = last - st["entry_i"]
@@ -366,7 +390,7 @@ def sweep_params(cfg):
         if k not in DEFAULTS:
             raise SweepError("sweep: clave desconocida %r (conocidas: %s)" % (k, ", ".join(sorted(DEFAULTS))))
         try:
-            p[k] = v if k in ("interval", "range") else (int(v) if k in INTS else float(v))
+            p[k] = (None if v is None else str(v)) if k in ("interval", "range") else (int(v) if k in INTS else float(v))
         except (TypeError, ValueError):
             raise SweepError("sweep.%s tiene que ser un numero" % k)
     if p["interval"] not in BAR_MINUTES:
@@ -386,10 +410,11 @@ def read_symbols(a, cfg):
         syms = scan.symbols_from_file(a.watchlist)
     elif isinstance((cfg.get("sweep") or {}).get("symbols"), list):
         syms = [str(s) for s in cfg["sweep"]["symbols"]]
-    elif os.path.exists(WATCHLIST):
-        syms = scan.symbols_from_file(WATCHLIST)
     else:
-        raise SweepError("sin simbolos: usa --symbols, --watchlist o sweep.symbols en la config")
+        path = next((w for w in WATCHLISTS if os.path.exists(w)), None)
+        if path is None:
+            raise SweepError("sin simbolos: usa --symbols, --watchlist o sweep.symbols en la config")
+        syms = scan.symbols_from_file(path)
     out = []
     for s in syms:
         s = s.strip().upper().split(":")[-1]               # NASDAQ:NVDA -> NVDA
@@ -400,9 +425,15 @@ def read_symbols(a, cfg):
     return out
 
 
-def load(a, symbols, p, now):
+def load(a, symbols, p, now, cmd="scan"):
     """-> ({SYM: bars}, {SYM: why it failed})"""
     data, failed = {}, {}
+    if getattr(a, "interval", None):
+        if a.interval not in BAR_MINUTES:
+            raise SweepError("--interval es uno de %s" % ", ".join(sorted(BAR_MINUTES)))
+        p["interval"] = a.interval
+    fetch = FETCH.get(p["interval"], p["interval"])
+    rng = getattr(a, "range", None) or p["range"] or RANGE[cmd][p["interval"]]
     if a.offline:
         series, failed = scan.load_offline(a.offline)
     else:
@@ -411,12 +442,16 @@ def load(a, symbols, p, now):
             if k and a.pause:
                 scan.SLEEP(a.pause)
             try:
-                series[sym] = scan.parse_chart(scan.yahoo_get(scan.chart_path(sym, p["range"], p["interval"])), sym)
+                series[sym] = scan.parse_chart(scan.yahoo_get(scan.chart_path(sym, rng, fetch)), sym)
             except scan.ScanError as e:
                 failed[sym] = str(e)
+            if len(symbols) > 40 and (k + 1) % 50 == 0 and not a.json:
+                print("  %d de %d graficos..." % (k + 1, len(symbols)), file=sys.stderr)
     for sym in symbols:
         if sym in series:
-            bars = session_bars(series[sym], now, BAR_MINUTES[p["interval"]])
+            bars = session_bars(series[sym], now, BAR_MINUTES[fetch])
+            if p["interval"] == "4h":
+                bars = bars_4h(bars, now)
             if len(bars) < 60:
                 failed[sym] = "menos de 60 velas"
             else:
@@ -429,7 +464,7 @@ def load(a, symbols, p, now):
 # ---------------------------------------------------------------- scan
 
 ARROW = {1: "▲", -1: "▼"}
-ORDER = {"open": 0, "setup": 1, "mss": 2, "swept": 3, "scan": 4}
+ORDER = {"open": 0, "setup": 1, "swept": 2, "scan": 3}
 
 
 def _px(x):
@@ -441,7 +476,7 @@ def stage_label(s):
     if st == "scan":
         return "escaneando"
     arrow = ARROW[s["dir"]]
-    return {"swept": "%s BARRIDO · esperando MSS", "mss": "%s MSS · esperando FVG",
+    return {"swept": "%s BARRIDO · esperando MSS",
             "setup": "%s SETUP · esperando entrada", "open": "%s ABIERTA"}[st] % arrow
 
 
@@ -464,7 +499,7 @@ def cmd_scan(a):
     cfg = scan.read_config(a.config)
     p = sweep_params(cfg)
     symbols = read_symbols(a, cfg)
-    data, failed = load(a, symbols, p, now)
+    data, failed = load(a, symbols, p, now, "scan")
     rows = []
     for sym in symbols:
         if sym in data:
@@ -472,7 +507,7 @@ def cmd_scan(a):
             s = res["state"]
             s["symbol"] = sym
             rows.append(s)
-    rows.sort(key=lambda s: (ORDER[s["stage"]], -(s.get("quality") or 0), s["symbol"]))
+    rows.sort(key=lambda s: (ORDER[s["stage"]], s.get("to_entry_atr") or 0, -(s.get("quality") or 0), s["symbol"]))
     doc = {"created_by": "trader-scanner sweep", "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
            "interval": p["interval"], "params": {k: p[k] for k in DEFAULTS if k not in ("interval", "range")},
            "flat_eod": bool(a.flat_eod), "failed": failed, "note": NOTE,
@@ -485,11 +520,19 @@ def cmd_scan(a):
     n = {k: sum(1 for s in rows if s["stage"] == k) for k in ORDER}
     asof = max((s["as_of"] for s in rows), default="nada")
     print("SWEEP SCANNER (%s) · %d abiertas · %d setups · %d barridos · velas hasta %s NY" % (
-        p["interval"], n["open"], n["setup"], n["swept"] + n["mss"], asof))
+        p["interval"], n["open"], n["setup"], n["swept"], asof))
     print("%-6s %-30s %4s %4s %9s %9s / %-9s %s" % ("Accion", "Etapa", "Velas", "Cal.", "Entrada", "Stop", "Objetivo",
                                                    "A la entrada · R · liquidez"))
+    brief = len(rows) > 40 and not a.all
     for s in rows:
-        print(row(s["symbol"], s))
+        if not (brief and s["stage"] == "scan"):
+            print(row(s["symbol"], s))
+    if brief:
+        near = sorted((s for s in rows if s["stage"] == "scan" and s.get("liq_atr") is not None),
+                      key=lambda s: s["liq_atr"])[:10]
+        print("%d acciones mas sin nada (--all las lista). Las mas cerca de su liquidez: %s" % (
+            n["scan"], ", ".join("%s %s%s" % (s["symbol"], ARROW[1 if s["liq_side"] == "up" else -1], s["liq_atr"])
+                                 for s in near)))
     for sym, why in sorted(failed.items()):
         print("%-6s sin datos: %s" % (sym, why))
     print(NOTE + " Calidad (Cal.) es una nota propia, no la del indicador. Nada se coloca.")
@@ -520,7 +563,7 @@ def cmd_backtest(a):
     cfg = scan.read_config(a.config)
     p = sweep_params(cfg)
     symbols = read_symbols(a, cfg)
-    data, failed = load(a, symbols, p, now)
+    data, failed = load(a, symbols, p, now, "backtest")
     per, all_t, rnd = {}, [], []
     for sym in symbols:
         if sym not in data:
@@ -550,12 +593,20 @@ def cmd_backtest(a):
     print("  salidas: %d objetivo, %d stop, %d por tiempo%s" % (o["target"], o["stop"], o["time"],
                                                                (", %d al cierre del dia" % o["eod"]) if a.flat_eod else ""))
     print(_line("Al azar (sin senal)", doc["random"]))
+    years = sorted({t["entry_time"][:4] for t in all_t})
+    if len(years) > 1:
+        for y in years:
+            print(_line("  " + y, stats([t["R"] for t in all_t if t["entry_time"][:4] == y])))
     print()
-    for sym in sorted(per, key=lambda s: -(doc["by_symbol"][s]["total"])):
+    ranked = sorted(per, key=lambda s: -(doc["by_symbol"][s]["total"]))
+    if len(ranked) > 40:
+        print("Las 5 mejores y las 5 peores (de %d; el orden es en buena parte suerte):" % len(ranked))
+        ranked = ranked[:5] + ranked[-5:]
+    for sym in ranked:
         print(_line(sym, doc["by_symbol"][sym]))
     for sym, why in sorted(failed.items()):
         print("%-6s sin datos: %s" % (sym, why))
-    print("\nPocas semanas de velas: una muestra chica. Sin comisiones ni deslizamiento. Si una vela toca stop y "
+    print("\nSin comisiones ni deslizamiento. Si una vela toca stop y "
           "objetivo, cuenta el stop. No es una prediccion.")
     return 0
 
@@ -572,10 +623,13 @@ def main(argv=None):
         q.add_argument("--now", help="pretend it is this time (New York), e.g. '2026-11-13 16:05'")
         q.add_argument("--pause", type=float, default=0.3)
         q.add_argument("--flat-eod", action="store_true", help="day trading: nothing is held overnight")
+        q.add_argument("--interval", help="30m (default), 1h or 4h")
+        q.add_argument("--range", help="Yahoo range to fetch (default: 60d for 30m, 730d for a 1h/4h backtest)")
         q.add_argument("--json", action="store_true")
         if name == "scan":
             q.add_argument("--out", default=OUT)
             q.add_argument("--no-write", action="store_true")
+            q.add_argument("--all", action="store_true", help="list every symbol, also the ones with nothing going on")
         else:
             q.add_argument("--random", type=int, default=200, help="random baseline entries per symbol")
             q.add_argument("--seed", type=int, default=19)
