@@ -293,11 +293,14 @@ def portfolio_report(cal_dates, spy_bars, legs, n_trials, trial_var):
     for name, r, n in series:
         lines.append("  " + pf.report(name, r, n_trials, trial_var) + "  (%d ops)" % n)
     lines.append("  " + pf.report("SPY comprar y mantener", spy_r))
-    lines.append("Contra el azar en las mismas acciones (rendimiento diario de la cartera menos el de la cartera al "
-                 "azar: neutraliza el sesgo de supervivencia y el mercado):")
-    for k, j in ((0, 5), (2, 4), (3, 4)):
-        diff = [a - b for a, b in zip(series[k][1], series[j][1])]
-        lines.append("  " + pf.report("%s - azar" % series[k][0].split(" (")[0][:26], diff, n_trials, trial_var))
+    lines.append("Contra el azar en las mismas acciones (el Sharpe no depende de cuanto capital esta invertido; el "
+                 "azar trae el mismo sesgo de supervivencia): P(Sharpe real > Sharpe del azar)")
+    for k, j in ((0, 5), (1, 5), (2, 4), (3, 4)):
+        r, rr = series[k][1], series[j][1]
+        _, _, sk, ku = pf.moments(r)
+        p = pf.psr(pf.sharpe(r), len(r), sk, ku, pf.sharpe(rr))
+        lines.append("  %-44s Sharpe %5.2f vs azar %5.2f -> %5.1f%%" % (
+            series[k][0], pf.sharpe(r) * 252 ** .5, pf.sharpe(rr) * 252 ** .5, 100 * p))
     sysr = series[3][1]
     lines.append("Sistema actual por epoca (Sharpe / Sortino; SPY):")
     for name, a0, a1 in ERAS:

@@ -673,8 +673,13 @@ def counts(res):
              ("el stop", "cerrada(s) en el stop"), ("stop de tiempo", "stop(s) de tiempo"), ("no se pudo", "error(es)"),
              ("sin chequeo", "sin chequeo de risk de hoy"), ("reemplaz", "reemplazada(s)"))
     n = {}
+    why = (("ya hay una operacion viva", "omitida(s): ya abierta en esa accion"),
+           ("limite de", "omitida(s): limite de operaciones"),
+           ("menos de 1 accion", "omitida(s): menos de 1 accion entera"),
+           ("pre-mercado", "omitida(s): invalida en el pre-mercado"))
     for _, what in res:
-        label = next((lab for key, lab in kinds if key in what), "otro(s)")
+        label = next((lab for key, lab in why if key in what), None) or \
+            next((lab for key, lab in kinds if key in what), "otro(s)")
         n[label] = n.get(label, 0) + 1
     return ", ".join("%d %s" % (v, k) for k, v in n.items())
 
