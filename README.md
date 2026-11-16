@@ -542,16 +542,19 @@ acciones es la cifra honesta. Para medirlo de verdad está el paper trading.
 
 `trader-scanner/sweep.py` replica el indicador de TradingView "Trading
 Scanner" (barrido de liquidez → MSS → entrada). El código del indicador es
-cerrado: las reglas se ajustaron contra tres de sus gráficos de acciones
-(NOW, APP y SPCX al 13-11-2026), donde reproducen sus niveles al centavo, y
-se contrastaron con cuatro de cripto (TAO, UNI y QNT cuadran; TRX no se pudo
-comprobar por falta de datos de Binance).
+cerrado: las reglas se ajustaron contra sus gráficos de acciones al
+13-11-2026. Reproducen al centavo tres gráficos (NOW, APP y SPCX) y 19 de las
+20 filas de su tabla con la lista de 20 acciones (META no cuadra). En cripto
+solo se pudo contrastar con precios de Yahoo, no de Binance, y coincide en
+parte.
 
 1. **Liquidez:** el último máximo y mínimo de swing confirmados (8 velas a
    cada lado).
-2. **Barrido:** una vela pasa el nivel y cierra de vuelta adentro. Mientras
-   un barrido espera, los siguientes se ignoran; si el precio pasa el extremo
-   de la vela del barrido, se cancela.
+2. **Barrido:** una vela pasa el nivel y cierra de vuelta adentro. La
+   estructura que tendrá que romper debe ser interna (no el swing mayor del
+   otro lado). Mientras un barrido espera, los siguientes se ignoran; solo un
+   *cierre* más allá de la vela del barrido lo cancela. Cada nivel se barre
+   una sola vez.
 3. **MSS:** el cierre rompe el último swing interno (3 velas) contra el
    barrido, en 20 velas como máximo.
 4. **Entrada:** límite en el borde cercano del hueco (FVG) que dejó la
@@ -585,21 +588,23 @@ stop a 1,5 ATR, el mismo objetivo y el mismo límite de tiempo):
 
 | Velas | Período | Operaciones | Ganadoras | Promedio | Al azar |
 |---|---|---|---|---|---|
-| 30 min | 60 sesiones | 929 | 33 % | −0,10R ± 0,05 | −0,10R |
-| 1 hora | las mismas 60 | 440 | 34 % | −0,05R ± 0,07 | −0,06R |
-| 4 horas | las mismas 60 | 112 | 29 % | −0,15R ± 0,13 | −0,01R |
-| 1 hora | 2 años y 11 meses | 6.159 | 33 % | −0,08R ± 0,02 | −0,05R |
-| 4 horas | 2 años y 11 meses | 1.900 | 34 % | −0,04R ± 0,03 | −0,02R |
-| 30 min, sin pasar la noche | 60 sesiones | 557 | 45 % | −0,07R ± 0,02 | 0,00R |
-| 1 hora, sin pasar la noche | 2 años y 11 meses | 1.906 | 48 % | 0,00R ± 0,01 | 0,00R |
+| 30 min | 60 sesiones | 738 | 36 % | −0,02R ± 0,06 | −0,10R |
+| 1 hora | las mismas 60 | 342 | 33 % | −0,09R ± 0,08 | −0,06R |
+| 4 horas | las mismas 60 | 79 | 29 % | −0,16R ± 0,16 | −0,01R |
+| 1 hora | 2 años y 11 meses | 4.698 | 34 % | −0,06R ± 0,02 | −0,05R |
+| 4 horas | 2 años y 11 meses | 1.421 | 33 % | −0,07R ± 0,04 | −0,02R |
+| 30 min, sin pasar la noche | 60 sesiones | 398 | 44 % | −0,09R ± 0,03 | 0,00R |
+| 1 hora, sin pasar la noche | 2 años y 11 meses | 868 | 47 % | −0,01R ± 0,02 | 0,00R |
 
-Ningún timeframe se distingue del azar. Los largos salen algo positivos
-(+0,07R en 1 hora, +0,05R en 4 horas) y los cortos negativos (−0,22R y
-−0,14R), pero comprar al azar en el mismo período dio +0,03R y +0,10R: es el
-mercado subiendo, no la señal. La nota de calidad tampoco separa mejores de
-peores. Con objetivo a 2R hay que ganar más del 33 % de las veces, y las
-reglas ganan entre 33 % y 34 %. Cerrando al final del día casi nada llega al
-stop ni al objetivo. El script no coloca órdenes ni avisa en tiempo real.
+Ningún timeframe se distingue del azar. En 30 minutos queda algo por encima
+(+0,08R ± 0,06), pero con solo 60 sesiones esa diferencia cabe en el ruido, y
+en casi tres años de velas de 1 hora no aparece. Los largos salen algo
+positivos (+0,08R en 1 hora, +0,03R en 4 horas) y los cortos negativos
+(−0,20R y −0,16R), pero comprar al azar en el mismo período dio +0,03R y
++0,10R: es el mercado subiendo, no la señal. Con objetivo a 2R hay que ganar
+más del 33 % de las veces, y las reglas ganan entre 33 % y 36 %. Cerrando al
+final del día casi nada llega al stop ni al objetivo. El script no coloca
+órdenes ni avisa en tiempo real.
 
 ### 13. Límites que quedan
 
