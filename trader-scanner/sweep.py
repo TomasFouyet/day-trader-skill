@@ -223,6 +223,7 @@ def run(bars, params=None, flat_eod=False):
                        "mss_i": st["mss_i"], "setup_i": st["setup_i"], "entry_i": st["entry_i"], "exit_i": i,
                        "entry": st["entry"], "stop": st["stop"], "target": st["target"], "exit": px,
                        "R": round(r, 3), "outcome": outcome, "quality": st["quality"],
+                       "entry_kind": st["entry_kind"], "features": st["features"],
                        "entry_time": bars[st["entry_i"]]["t"].strftime("%Y-%m-%d %H:%M"),
                        "exit_time": bars[i]["t"].strftime("%Y-%m-%d %H:%M"), "bars": i - st["entry_i"]})
         reset()
@@ -239,6 +240,14 @@ def run(bars, params=None, flat_eod=False):
                   setup_i=i, max_wait=p["max_sweep_to_mss"], fvg=[fvg[0], fvg[1]] if fvg else None,
                   entry_kind="fvg" if fvg else "retest")
         st["quality"] = quality(bars, atr[i], st, fvg, trend[i])
+        a = atr[i] or 1e-9                               # what the setup looked like, for research
+        st["features"] = {
+            "risk_atr": round(abs(stop - entry) / a, 2), "depth_atr": round(abs(ext - st["level"]) / a, 2),
+            "gap_atr": round(abs(fvg[1] - fvg[0]) / a, 2) if fvg else 0.0, "delay": i - st["sweep_i"],
+            "body_atr": round(max(abs(bars[k]["c"] - bars[k]["o"]) for k in range(st["sweep_i"] + 1, i + 1)) / a, 2),
+            "with_trend": None if trend[i] is None else bool((bars[i]["c"] - trend[i]) * d > 0),
+            "to_entry_atr": round(abs(entry - bars[i]["c"]) / a, 2), "hour": bars[st["sweep_i"]]["t"].hour,
+            "atr_pct": round(100 * a / bars[i]["c"], 3)}
         if st["quality"] < p["min_quality"]:
             return False
         st["stage"] = "setup"
