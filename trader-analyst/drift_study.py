@@ -30,6 +30,19 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import importlib.util
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _module(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+pf = _module("trader_performance", os.path.join(_HERE, "performance.py"))
 
 SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBS = "https://data.sec.gov/submissions/%s"
@@ -221,6 +234,82 @@ def baseline(sym, bars, spy, rng):
     return out
 
 
+# ---------------------------------------------------------------- portfolio (Sharpe, Sortino, DSR)
+
+TECH = ("breakout20", "pullback_ema20", "rsi2")
+
+
+def portfolio_trades(sym, bars, events, cal, rng, tm):
+    """The system's trades of one stock as portfolio legs: earnings_gap (60 days, 3 ATR, reaction
+    >= +8 %), the technical long setups (15 days, 2 ATR, no target) and random entries for both."""
+    atr = atr_series(bars)
+    idx = {b["date"]: i for i, b in enumerate(bars)}
+    out = {"gap": [], "tech": [], "rnd15": [], "rnd60": []}
+
+    def leg(i, h, k):
+        path, cost = pf.walk_path(bars, i, h, k, atr[i])
+        return {"sym": sym, "start": cal[bars[i]["date"]], "path": path, "cost_R": cost}
+    for e in events:
+        i = idx.get(e["date"])
+        if e["r0"] >= 0.08 and i is not None and atr[i] and e["date"] in cal:
+            out["gap"].append(dict(leg(i, 60, 3.0), r0=e["r0"]))
+    if tm is not None and len(bars) > 260:
+        ind = tm.indicators(bars)
+        last = -99
+        for i in range(210, len(bars) - 1):
+            if i - last <= 5 or not atr[i] or bars[i]["date"] not in cal:
+                continue
+            if any(tm.setup_fires(x, bars, i, ind) for x in TECH):
+                last = i
+                out["tech"].append(leg(i, 15, 2.0))
+    for i in range(30 + rng.randrange(10), len(bars) - 1, 10):
+        if atr[i] and bars[i]["date"] in cal:
+            out["rnd15"].append(leg(i, 15, 2.0))
+            out["rnd60"].append(leg(i, 60, 3.0))
+    return out
+
+
+def portfolio_report(cal_dates, spy_bars, legs, n_trials, trial_var):
+    spy_c = {b["date"]: b["c"] for b in spy_bars}
+    spy_r = [spy_c[cal_dates[k]] / spy_c[cal_dates[k - 1]] - 1 for k in range(1, len(cal_dates))]
+    gap12 = [x for x in legs["gap"] if x["r0"] >= 0.12]
+    books = [("Momentum de resultados >=12% (60d, 3ATR)", gap12),
+             ("Momentum de resultados >=8% (60d, 3ATR)", legs["gap"]),
+             ("Tecnicos long (15d, 2ATR, sin objetivo)", legs["tech"]),
+             ("SISTEMA ACTUAL: resultados >=12% + tecnicos", gap12 + legs["tech"]),
+             ("Al azar (15d, 2ATR)", legs["rnd15"]),
+             ("Al azar (60d, 3ATR)", legs["rnd60"])]
+    series = []
+    for name, trades in books:
+        r, n = pf.portfolio(trades, cal_dates)
+        series.append((name, r, n))
+    if trial_var is None:
+        srs = [pf.sharpe(r) for _, r, _ in series[:4]]
+        m = sum(srs) / len(srs)
+        trial_var = sum((x - m) ** 2 for x in srs) / (len(srs) - 1)
+    lines = ["", "Cartera diaria: 1% de riesgo por operacion, maximo 6 abiertas, una por accion, costo 0,1% ida y vuelta;",
+             "Sharpe y Sortino anualizados sin tasa libre de riesgo; DSR con N=%d intentos (var. del Sharpe %.2e)" % (
+                 n_trials, trial_var)]
+    for name, r, n in series:
+        lines.append("  " + pf.report(name, r, n_trials, trial_var) + "  (%d ops)" % n)
+    lines.append("  " + pf.report("SPY comprar y mantener", spy_r))
+    lines.append("Contra el azar en las mismas acciones (rendimiento diario de la cartera menos el de la cartera al "
+                 "azar: neutraliza el sesgo de supervivencia y el mercado):")
+    for k, j in ((0, 5), (2, 4), (3, 4)):
+        diff = [a - b for a, b in zip(series[k][1], series[j][1])]
+        lines.append("  " + pf.report("%s - azar" % series[k][0].split(" (")[0][:26], diff, n_trials, trial_var))
+    sysr = series[3][1]
+    lines.append("Sistema actual por epoca (Sharpe / Sortino; SPY):")
+    for name, a0, a1 in ERAS:
+        ks = [k for k in range(1, len(cal_dates)) if a0 <= cal_dates[k][:4] < a1]
+        if ks:
+            sub, ss = [sysr[k - 1] for k in ks], [spy_r[k - 1] for k in ks]
+            lines.append("  %-10s %5.2f / %5.2f   SPY %5.2f / %5.2f" % (
+                name, pf.sharpe(sub) * 252 ** .5, pf.sortino(sub) * 252 ** .5,
+                pf.sharpe(ss) * 252 ** .5, pf.sortino(ss) * 252 ** .5))
+    return lines
+
+
 # ---------------------------------------------------------------- report
 
 def _m(xs):
@@ -302,6 +391,9 @@ def main(argv=None):
     ap.add_argument("--limit", type=int)
     ap.add_argument("--offline", metavar="DIR", help="DIR/sec/<SYM>.json (submissions) and DIR/prices/<SYM>.json")
     ap.add_argument("--user-agent", default=os.environ.get("SEC_USER_AGENT"))
+    ap.add_argument("--no-portfolio", action="store_true", help="skip the Sharpe / Sortino / DSR section")
+    ap.add_argument("--trials", type=int, default=350, help="strategy variants tried in the research (DSR)")
+    ap.add_argument("--trial-var", type=float, help="variance of the daily Sharpe across those variants")
     a = ap.parse_args(argv)
     syms = symbols_from(a.symbols)
     if a.limit:
@@ -338,6 +430,15 @@ def main(argv=None):
             return parse_prices(yahoo.get(YAHOO % (sym.replace(".", "-"), int(START.timestamp()), end)))
     spy_bars = prices("SPY")
     spy = {b["date"]: b["c"] for b in spy_bars}
+    cal = {b["date"]: k for k, b in enumerate(spy_bars)}
+    tm = None
+    if not a.no_portfolio:
+        try:
+            tm = _module("trader_tm_for_drift", os.path.join(os.path.dirname(_HERE), "trader-timemachine", "timemachine.py"))
+        except Exception:
+            tm = None
+    legs = {"gap": [], "tech": [], "rnd15": [], "rnd60": []}
+    prng = random.Random(23)
     events, base, missing = [], [], 0
     hours, clock = {}, {}
     for n, sym in enumerate(syms):
@@ -355,8 +456,12 @@ def main(argv=None):
         for _, hm in times:
             hours[hour_class(hm)] = hours.get(hour_class(hm), 0) + 1
         timing_check(bars, times, spy, clock)
-        events += events_for(sym, bars, times, spy)
+        ev = events_for(sym, bars, times, spy)
+        events += ev
         base += baseline(sym, bars, spy, rng)
+        if not a.no_portfolio:
+            for key, v in portfolio_trades(sym, bars, ev, cal, prng, tm).items():
+                legs[key] += v
         if (n + 1) % 25 == 0:
             print("  %d/%d acciones, %d eventos" % (n + 1, len(syms), len(events)), file=sys.stderr)
     print("Acciones sin datos del SEC (ETF, extranjeras) o con error: %d de %d" % (missing, len(syms)))
@@ -368,6 +473,8 @@ def main(argv=None):
         print("Sin eventos: nada que medir.")
         return 1
     print("\n".join(report(events, base)))
+    if not a.no_portfolio:
+        print("\n".join(portfolio_report([b["date"] for b in spy_bars], spy_bars, legs, a.trials, a.trial_var)))
     print("\nInvestigacion, no asesoria: promedios pasados, acciones de la lista de hoy (sesgo de supervivencia).")
     return 0
 
