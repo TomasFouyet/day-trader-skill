@@ -198,8 +198,8 @@ class Telegram(Tmp):
                      "<code>Entrada  $123.51</code>", "<code>Stop     $118.22  (-4.3%)</code>",
                      "<code>Objetivo $134.09  (+8.6%) 2R</code>", "<b>9 acciones</b> (~$1,111.59)",
                      "pérdida si toca el stop <b>$47.61</b>",
-                     "Objetivo <b>30.1 %</b> · Stop <b>32.0 %</b> · Abierta al final <b>37.9 %</b>",
-                     "Expectativa <b>+0.05R</b> · Historial real: 12 casos (pocos)", "→ Cercano a una moneda al aire",
+                     "Promedio <b>+0.17R</b> por operación · winrate <b>47%</b> · al azar +0.15R → <b>sin ventaja propia</b>",
+                     "toca el stop <b>32.0 %</b> · sigue abierta al final <b>37.9 %</b>",
                      "⚠ <b>resultados dentro del horizonte</b> (06-11-2026)", "No es asesoría financiera",
                      "Cierre por tiempo: <b>10-11-2026</b>", "Would send 1"):
             self.assertIn(must, text)
@@ -280,10 +280,11 @@ class Telegram(Tmp):
 # ---------------------------------------------------------------- pipeline
 
 class Pipeline(Tmp):
-    def config(self, **kw):
+    def config(self, swing=None, **kw):
         with open(os.path.join(ROOT, "trader-budget", "config.swing.example.json")) as fh:
             cfg = json.load(fh)
         cfg.update(kw)
+        cfg["swing"].update(swing or {})
         with open("trader/config.json", "w") as fh:
             json.dump(cfg, fh)
 
@@ -306,8 +307,19 @@ class Pipeline(Tmp):
         self.assertTrue(pipe.market_check(p("2026-11-27T18:20:00Z"))[0])    # half day: after 13:15
         self.assertFalse(pipe.market_check(p("2026-11-27T18:05:00Z"))[0])
 
-    def test_full_run_dry_then_once_a_day(self):
+    def test_the_example_config_runs_long_only_with_the_far_target(self):
         self.config()
+        code, text, err = self.go("--dry-run")
+        self.assertEqual(code, 0, err + text)
+        self.assertIn("Pasan risk: 2.", text)               # the rest: over 60 % of Fintual's capital
+        self.assertNotIn("SHORT ·", text)
+        self.assertIn("cierre por tiempo 2026-11-20", text)  # 15 trading days after Oct 30
+        self.assertIn("lejano: la salida real es el stop o el tiempo", text)
+        self.assertIn("sin ventaja propia", text)
+
+    def test_full_run_dry_then_once_a_day(self):
+        # the long/short flow with the earlier 7-day, 2R exit (sides and exits stay configurable)
+        self.config(swing={"sides": ["long", "short"], "horizon_days": 7, "time_stop_days": 7, "target": "2R"})
         code, text, err = self.go("--dry-run")
         self.assertEqual(code, 0, err + text)
         for step in ("== scanner", "== resultados", "== exit", "== time machine", "== budget", "== risk",

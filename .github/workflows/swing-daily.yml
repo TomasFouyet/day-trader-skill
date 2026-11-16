@@ -104,8 +104,10 @@ jobs:
           mkdir -p trader/state
           if [ -n "$TRADER_CONFIG_JSON" ]; then
             printf '%s' "$TRADER_CONFIG_JSON" > trader/config.json
+            echo "Config: secret TRADER_CONFIG_JSON (los cambios de la config de ejemplo no aplican)"
           else
             cp trader-budget/config.swing.example.json trader/config.json
+            echo "Config: trader-budget/config.swing.example.json"
           fi
           if [ -n "$TRADER_PORTFOLIO_JSON" ]; then printf '%s' "$TRADER_PORTFOLIO_JSON" > trader/portfolio.json; fi
           if [ -n "$TRADER_WATCHLIST" ]; then printf '%s\n' "$TRADER_WATCHLIST" > trader/watchlist.txt; fi

@@ -136,6 +136,16 @@ VENUE_NAME = {"fintual": "Fintual", "bitunix": "Bitunix", "manual": "Tu app"}
 
 GAP_STUDY = ("Estudio 2005-2026 (17.024 reportes del SEC): +0,27R por operación sobre entradas al azar, "
              "irregular por época (2020-22 perdió)")
+# What each long setup did on real history with the swing exit of config.swing.example.json (the same
+# table as trader-risk's STUDY_R): R per trade, winrate, random entries in the same stocks, sample.
+STUDY = {"earnings_gap": {"R": 0.60, "win": 0.52, "random": 0.33, "what": "2005-2026, 736 saltos con 8-K, 60 días"},
+         "technical": {"R": 0.17, "win": 0.47, "random": 0.15, "what": "2021-2026, ~20.000 señales, 15 días"}}
+
+
+def study_of(setup):
+    if setup == "earnings_gap":
+        return STUDY["earnings_gap"]
+    return STUDY["technical"] if setup in ("breakout20", "pullback_ema20", "rsi2") else None
 
 
 def gap_lines(t):
@@ -248,7 +258,7 @@ def message(t, result):
                                              if pm and pm.get("status") in ("ok", "warn") else ""),
              "<code>Stop     %s  (%s)</code>" % (_m(t["stop"]), _pct_move(t["entry"], t["stop"])),
              ("<code>Objetivo %s  (%s) %sR</code> <i>lejano: la salida real es el stop o el tiempo</i>"
-              if t.get("setup") == "earnings_gap" else "<code>Objetivo %s  (%s) %sR</code>") % (
+              if float(t.get("reward_risk") or 0) >= 5 else "<code>Objetivo %s  (%s) %sR</code>") % (
                  _m(t["target"]), _pct_move(t["entry"], t["target"]), rr),
              "⏳ Cierre por tiempo: <b>%s</b> (%s días hábiles)" % (_d(t.get("time_stop_date")),
                                                                      t.get("time_stop_days") or "?"),
@@ -275,11 +285,22 @@ def message(t, result):
             _q(t["qty"]), _m(t.get("cost") or float(t["qty"]) * float(t["entry"])), _m(t.get("max_loss") or 0)))
     m = t.get("timemachine") or {}
     lines.append("")
-    if m.get("p_target") is not None and t.get("setup") == "earnings_gap":
-        lines.append("🎲 <b>Time Machine</b> (%s días): toca el stop <b>%s</b> · sigue abierta al final <b>%s</b>" % (
-            m.get("horizon_days") or t.get("time_stop_days"), _pc(m["p_stop"]), _pc(m["p_unresolved"])))
-        lines.append("<i>La simulación no trae la deriva post-resultados: mide el riesgo, no la ventaja. "
-                     "La ventaja es la del estudio.</i>")
+    st = study_of(t.get("setup"))
+    if st:
+        edge = st["R"] - st["random"]
+        lines.append("\U0001F4CA <b>Historial</b> (%s)" % esc(st["what"]))
+        lines.append("Promedio <b>%+.2fR</b> por operación · winrate <b>%.0f%%</b> · al azar %+.2fR%s" % (
+            st["R"], 100 * st["win"], st["random"],
+            (" → ventaja <b>%+.2fR</b>" % edge) if edge >= 0.05 else " → <b>sin ventaja propia</b>"))
+        if m.get("history_win_rate") is not None and m.get("history_cases"):
+            lines.append("En %s: %d casos, winrate %s%s" % (esc(t.get("symbol")), m["history_cases"],
+                                                             _pc(m["history_win_rate"]),
+                                                             " (pocos)" if m.get("few_cases") else ""))
+        if m.get("p_stop") is not None:
+            lines.append("🎲 Time Machine (%s días): toca el stop <b>%s</b> · sigue abierta al final <b>%s</b>" % (
+                m.get("horizon_days") or t.get("time_stop_days"), _pc(m["p_stop"]), _pc(m["p_unresolved"])))
+            lines.append("<i>La simulación mide el riesgo, no la ventaja: sus probabilidades no predijeron "
+                         "resultados en el estudio.</i>")
     elif m.get("p_target") is not None:
         lines.append("🎲 <b>Time Machine</b> (%s trayectorias, %s días)" % (
             "{:,}".format(int(m.get("paths") or 0)).replace(",", "."), m.get("horizon_days") or t.get("time_stop_days")))

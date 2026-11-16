@@ -154,7 +154,7 @@ class RiskLeverage(unittest.TestCase):
             self.assertTrue(any(msg in x for x in r["reasons"]), (msg, r["reasons"]))
 
     def test_min_expectancy(self):
-        t = size.swing_ticket(size.size_swing(LONG, CFG, today=TODAY))
+        t = size.swing_ticket(size.size_swing(dict(LONG, setup="manual"), CFG, today=TODAY))
         cfg = dict(CFG, swing=dict(CFG["swing"], min_expectancy_R=0.0))
         r = risk.check_swing([t], cfg, today=TODAY)["results"][0]
         self.assertIn("sin simulacion", r["reasons"][0])
@@ -189,11 +189,14 @@ class AlertsAndNews(unittest.TestCase):
         t2 = size.swing_ticket(size.size_swing(SHORT, CFG, today=TODAY))
         t["timemachine"] = {"p_target": 0.02, "p_stop": 0.15, "p_unresolved": 0.83, "expectancy_R": 0.14,
                             "paths": 10000, "horizon_days": 7, "verdict": "Se inclina hacia el stop: x",
-                            "history_cases": 47}
+                            "history_cases": 47, "history_win_rate": 0.49}
         m = tg.message(t, {})
         for must in ("🟢 <b>LONG · WELL</b> · Welltower Inc.", "▸ Fintual 1x:", "▸ Bitunix <b>3x</b>",
-                     "liquidación ~$", "⭐", "→ Se inclina hacia el stop; la mayoría se decide al cierre por tiempo"):
+                     "liquidación ~$", "⭐", "En WELL: 47 casos", "sin ventaja propia"):
             self.assertIn(must, m)
+        self.assertNotIn("Se inclina hacia el stop", m)     # a studied setup: the history, not the verdict
+        m = tg.message(dict(t, setup="manual"), {})
+        self.assertIn("→ Se inclina hacia el stop; la mayoría se decide al cierre por tiempo", m)
         m2 = tg.message(t2, {})
         self.assertIn("🔴 <b>SHORT · SUPV</b>", m2)
         self.assertIn("(vender en corto)", m2)

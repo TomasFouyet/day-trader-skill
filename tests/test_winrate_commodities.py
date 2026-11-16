@@ -62,6 +62,9 @@ class Winrate(unittest.TestCase):
                              "p_win": 0.548, "paths": 10000, "horizon_days": 7, "history_cases": 9,
                              "history_win_rate": 0.556, "few_cases": True}}
         m = tg.message(t, {})
+        self.assertIn("En WMT: 9 casos, winrate 55.6 % (pocos)", m)          # a studied setup: real history
+        self.assertNotIn("en la simulación", m)
+        m = tg.message(dict(t, setup="manual"), {})
         self.assertIn("🎯 Winrate estimado: <b>54.8 %</b> en la simulación · <b>55.6 %</b> en el historial real", m)
         self.assertIn("win 55%", tg.summary([("k", t, {})], "2026-11-02"))
 
@@ -70,6 +73,7 @@ class Commodities(unittest.TestCase):
     def test_extras_skip_the_volume_floor_and_are_labelled(self):
         with open(EXAMPLE) as fh:
             cfg = json.load(fh)
+        cfg["swing"]["sides"] = ["long", "short"]              # the example is long only now
         extras = scan.swing_extras(cfg)
         self.assertEqual(extras, ["GLD", "SLV", "USO", "BNO", "UNG", "CPER"])
         setups, p, floors = scan.swing_params(cfg)

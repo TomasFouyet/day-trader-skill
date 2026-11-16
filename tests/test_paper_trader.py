@@ -158,12 +158,76 @@ class Report(Base):
             "a": {"symbol": "A", "status": "closed", "R": 2.0, "outcome": "target", "predicted": {"p_win": 0.6, "expectancy_R": 0.1}},
             "b": {"symbol": "B", "status": "closed", "R": -1.0, "outcome": "stop", "predicted": {"p_win": 0.5, "expectancy_R": 0.0}},
             "c": {"symbol": "C", "status": "open"}, "d": {"symbol": "D", "status": "skipped"}}}
-        text = paper.summary(state, "5012.34")
-        for must in ("Cerradas: <b>2</b> (1 objetivo, 1 stop, 0 por tiempo)", "Winrate real: <b>50%</b> · estimado 55%",
-                     "R promedio real: <b>+0.50R</b> · expectativa estimada +0.05R", "Total: <b>+1.0R</b>",
-                     "Abiertas o pendientes: <b>1</b> (C)", "Sin operar: 1", "$5,012.34", "muestra chica",
+        state["trades"]["a"].update(setup="earnings_gap", side="buy", entry_fill=100.0, exit_fill=110.0,
+                                    entry_at="2026-11-02T14:31:00Z", exit_at="2026-11-04T18:00:00Z")
+        state["trades"]["b"].update(setup="rsi2", side="buy", entry_fill=50.0, exit_fill=49.0,
+                                    entry_at="2026-11-03T14:31:00Z", exit_at="2026-11-04T15:00:00Z")
+        spy = {"2026-11-02": (600.0, 601.0), "2026-11-03": (606.0, 604.0), "2026-11-04": (610.0, 612.0)}
+        text = paper.summary(state, "5012.34", spy)
+        for must in ("Cerradas: <b>2</b> (1 objetivo, 1 stop, 0 por tiempo)", "Winrate real: <b>50%</b> · estudio 50%",
+                     "R promedio real: <b>+0.50R</b> · estudio +0.39R", "Total: <b>+1.0R</b>",
+                     # +10 % vs SPY 600 -> 612 (+2 %); -2 % vs SPY 606 -> 612 (+0.99 %)
+                     "operaciones <b>+4.00%</b> · SPY <b>+1.50%</b> · diferencia <b>+2.50 pts</b> · le ganó en 1 de 2",
+                     "Abiertas o pendientes: <b>1</b> de 6 (C)", "Sin operar: 1", "$5,012.34", "muestra chica",
                      "sin dinero real"):
             self.assertIn(must, text)
+        self.assertIn("sin precios de SPY", paper.summary(state, None, {}))
+        self.assertNotIn("S&amp;P", paper.summary(state, None, None))
+
+
+class Limit(Base):
+    def live(self, sym, setup, status="open", entry=100.0):
+        return {"symbol": sym, "side": "buy", "qty": 1, "setup": setup, "status": status, "order_id": "x" + sym,
+                "entry_fill": entry if status == "open" else None, "risk_per_share": 5.0,
+                "signal_date": "2026-11-09"}
+
+    def test_six_live_then_only_a_measured_edge_replaces_the_weakest(self):
+        state = {"trades": {}}
+        for i, sym in enumerate(("AA", "BB", "CC", "DD", "EE")):
+            state["trades"][sym] = self.live(sym, "breakout20")
+        state["trades"]["FF"] = self.live("FF", "earnings_gap")
+        self.fake.orders["xCC"] = {"id": "xCC", "status": "filled", "legs": [
+            {"id": "xCCtp", "type": "limit", "status": "held"}, {"id": "xCCsl", "type": "stop", "status": "held"}]}
+        prices = {"AA": 104, "BB": 101, "CC": 93, "DD": 99, "EE": 102, "FF": 80}   # CC: -1.4R, FF worse but earnings_gap
+        fake = self.fake
+
+        def positions():
+            return [{"symbol": k, "current_price": str(v)} for k, v in prices.items()]
+        self.api.positions = positions
+        tech = dict(TICKET, symbol="GG", setup="pullback_ema20", signal_date="2026-11-10")
+        res = paper.submit(self.api, {"tickets": [tech]}, risk_doc([tech]), state, "2026-11-10")
+        self.assertEqual(res, [("GG", "omitido: limite de 6 operaciones vivas")])
+        gap = dict(TICKET, symbol="HH", setup="earnings_gap", signal_date="2026-11-10", target=200.0)
+        res = paper.submit(self.api, {"tickets": [gap]}, risk_doc([gap]), state, "2026-11-10")
+        self.assertEqual(res, [("CC", "reemplazada por HH"), ("HH", "orden paper enviada")])
+        self.assertEqual((state["trades"]["CC"]["status"], state["trades"]["CC"]["close_reason"]), ("closing", "replaced"))
+        self.assertIn(("DELETE", "/v2/positions/CC", None), fake.calls)
+        self.assertIn(("DELETE", "/v2/orders/xCCtp", None), fake.calls)
+        # the close fills: recorded as replaced
+        cid = state["trades"]["CC"]["close_order_id"]
+        fake.orders[cid].update(status="filled", filled_avg_price="93.0", filled_at="2026-11-10T15:00:00Z")
+        fake.orders.setdefault("xAA", {"id": "xAA", "status": "filled", "legs": []})
+        for s_ in ("AA", "BB", "DD", "EE", "FF"):
+            fake.orders.setdefault("x" + s_, {"id": "x" + s_, "status": "filled", "legs": []})
+        fake.orders["o1"] = dict(fake.orders.get("o1") or {}, status="new")
+        paper.sync(self.api, state, "2026-11-10")
+        self.assertEqual((state["trades"]["CC"]["status"], state["trades"]["CC"]["outcome"], state["trades"]["CC"]["R"]),
+                         ("closed", "replaced", -1.4))
+
+    def test_the_worst_open_R_goes_before_an_unfilled_entry(self):
+        state = {"trades": {s: self.live(s, "rsi2") for s in ("AA", "BB", "CC", "DD", "EE")}}
+        state["trades"]["PP"] = self.live("PP", "rsi2", status="submitted")
+        state["trades"]["AA"]["entry_fill"] = 110.0      # AA open at -2R: but PP (not filled, 0R) ...
+        self.api.positions = lambda: [{"symbol": "AA", "current_price": "100"}]
+        self.fake.orders["xAA"] = {"id": "xAA", "status": "filled", "legs": []}
+        gap = dict(TICKET, symbol="HH", setup="earnings_gap", signal_date="2026-11-10", target=200.0)
+        res = paper.submit(self.api, {"tickets": [gap]}, risk_doc([gap]), state, "2026-11-10")
+        self.assertEqual(res[0], ("AA", "reemplazada por HH"))      # ... the worst open R goes first
+        os.environ["PAPER_MAX_POSITIONS"] = "8"
+        try:
+            self.assertEqual(paper.max_positions(), 8)
+        finally:
+            os.environ.pop("PAPER_MAX_POSITIONS")
 
 
 class Cli(Base):

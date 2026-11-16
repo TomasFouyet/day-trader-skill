@@ -74,7 +74,10 @@ class SwingConfig(unittest.TestCase):
         self.assertEqual(cfg["mode"], "swing")
         self.assertIs(cfg["paper"], True)
         sw = exitp.swing_config(cfg)
-        self.assertEqual((sw["horizon_days"], sw["time_stop_days"], sw["stop"], sw["target"]), (7, 7, "atr:2", "2R"))
+        # the study's best plain exit for the technical setups: 15 days, 2 ATR, a far target (no real target)
+        self.assertEqual((sw["horizon_days"], sw["time_stop_days"], sw["stop"], sw["target"]), (15, 15, "atr:2", "10R"))
+        self.assertEqual(cfg["swing"]["sides"], ["long"])   # the shorts lost every year of the study
+        self.assertEqual(sw["max_positions"], 6)
 
 
 class TradingDays(unittest.TestCase):

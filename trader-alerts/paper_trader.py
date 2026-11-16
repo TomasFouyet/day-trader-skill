@@ -184,6 +184,54 @@ def price_str(x):
 
 
 LIVE = ("submitted", "open", "closing")   # one trade a symbol at a time
+MAX_POSITIONS = 6     # live paper trades at once (PAPER_MAX_POSITIONS overrides)
+# Edge over random entries measured on real history (notify_telegram.STUDY): the only basis to say one
+# setup has better odds than another. The Time Machine's probabilities did not predict outcomes.
+EDGE_R = {"earnings_gap": 0.27}
+
+
+def max_positions():
+    try:
+        return max(1, int(os.environ.get("PAPER_MAX_POSITIONS") or MAX_POSITIONS))
+    except ValueError:
+        return MAX_POSITIONS
+
+
+def current_R(tr, positions):
+    """Open R of a live trade at the latest price (0 for an entry that has not filled)."""
+    p = positions.get(str(tr.get("symbol") or "").upper()) or {}
+    cur, entry, risk = _f(p.get("current_price")), tr.get("entry_fill"), tr.get("risk_per_share")
+    if tr.get("status") != "open" or cur is None or entry is None or not risk:
+        return 0.0
+    return ((cur - entry) if tr.get("side") != "sell" else (entry - cur)) / risk
+
+
+def weakest(trades, positions):
+    """The live trade with the least edge, then the worst open R: (key, trade) or (None, None)."""
+    live = [(k, v) for k, v in trades.items() if v.get("status") in ("submitted", "open")]
+    if not live:
+        return None, None
+    return min(live, key=lambda kv: (EDGE_R.get(kv[1].get("setup"), 0.0), current_R(kv[1], positions)))
+
+
+def retire(api, tr, why):
+    """Cancel an unfilled entry, or close an open trade at the market (its exit legs cancelled first)."""
+    if tr["status"] == "submitted":
+        api.cancel(tr["order_id"])
+        tr.update(status="not_filled", why=why)
+        return
+    try:
+        legs = (api.order(tr["order_id"]) or {}).get("legs") or []
+    except PaperError:
+        legs = []
+    for l in legs:
+        if l.get("status") in ("new", "accepted", "held", "pending_new", "partially_filled"):
+            try:
+                api.cancel(l["id"])
+            except PaperError:
+                pass
+    c = api.close_position(tr["symbol"])
+    tr.update(status="closing", close_order_id=c.get("id"), close_reason="replaced", why=why)
 
 
 def key_of(t):
@@ -222,6 +270,7 @@ def submit(api, tickets_doc, risk_doc, state, today, dry_run=False, now=None):
     passed = {r.get("fingerprint") for r in risk_doc.get("results") or [] if r.get("verdict") == "PASS"}
     trades = state.setdefault("trades", {})
     out = []
+    positions = None
     for t in (tickets_doc or {}).get("tickets") or []:
         if notify.swing_fingerprint(t) not in passed:
             continue
@@ -238,6 +287,27 @@ def submit(api, tickets_doc, risk_doc, state, today, dry_run=False, now=None):
             trades[k] = {"symbol": t["symbol"], "status": "skipped", "why": why, "signal_date": t.get("signal_date")}
             out.append((t["symbol"], "omitido: " + why))
             continue
+        if sum(1 for v in trades.values() if v.get("status") in LIVE) >= max_positions():
+            # full: replace the weakest live trade only when this setup has a measured edge it lacks
+            if positions is None:
+                try:
+                    positions = {str(p.get("symbol")).upper(): p for p in (api.positions() or [])} if api else {}
+                except PaperError:
+                    positions = {}
+            wk, w = weakest(trades, positions)
+            new_edge = EDGE_R.get(t.get("setup"), 0.0)
+            if w is None or new_edge <= EDGE_R.get(w.get("setup"), 0.0):
+                out.append((t["symbol"], "omitido: limite de %d operaciones vivas" % max_positions()))
+                continue
+            if dry_run:
+                out.append((w["symbol"], "reemplazo (dry-run) por %s" % t["symbol"]))
+            else:
+                try:
+                    retire(api, w, "reemplazada por %s (%s)" % (t["symbol"], t.get("setup")))
+                    out.append((w["symbol"], "reemplazada por %s" % t["symbol"]))
+                except PaperError as e:
+                    out.append((t["symbol"], "omitido: no se pudo liberar %s (%s)" % (w["symbol"], e)))
+                    continue
         if dry_run:
             out.append((t["symbol"], "orden paper (dry-run): %s %s %s limite %s, TP %s, SL %s" % (
                 body["side"], body["qty"], body["symbol"], body["limit_price"], body["take_profit"]["limit_price"],
@@ -330,9 +400,10 @@ def sync(api, state, today, after_close=False):
                 c = {}
             if c.get("status") == "filled":
                 px = _f(c.get("filled_avg_price"))
-                tr.update(status="closed", outcome="time", exit_fill=px, exit_at=c.get("filled_at"),
+                why = tr.get("close_reason") or "time"
+                tr.update(status="closed", outcome=why, exit_fill=px, exit_at=c.get("filled_at"),
                           R=realized_R(tr, px))
-                out.append((tr["symbol"], "cerrada por stop de tiempo"))
+                out.append((tr["symbol"], "cerrada por stop de tiempo" if why == "time" else "cerrada (reemplazada)"))
             continue
         if exit_leg:
             px = _f(exit_leg.get("filled_avg_price"))
@@ -453,7 +524,8 @@ def daily_text(state, positions, today, equity=None):
     if closed:
         lines.append("<b>Cerradas hoy (%d)</b>" % len(closed))
         for t in closed:
-            word = {"target": "\u2705 objetivo", "stop": "\u274c stop", "time": "\u23f3 por tiempo"}.get(t.get("outcome"), "")
+            word = {"target": "\u2705 objetivo", "stop": "\u274c stop", "time": "\u23f3 por tiempo",
+                    "replaced": "\U0001F501 reemplazada"}.get(t.get("outcome"), "")
             pl = None
             if t.get("exit_fill") is not None and t.get("entry_fill") is not None:
                 pl = (t["exit_fill"] - t["entry_fill"]) * t.get("qty", 0) * (-1 if t.get("side") == "sell" else 1)
@@ -492,7 +564,66 @@ def daily(api, state, now_utc, force=False):
 
 # ---------------------------------------------------------------- report
 
-def summary(state, equity=None):
+STUDY = {"earnings_gap": (0.60, 0.52), "breakout20": (0.17, 0.47), "pullback_ema20": (0.17, 0.47),
+         "rsi2": (0.17, 0.47)}    # (R per trade, winrate) on real history: notify_telegram.STUDY
+SPY_PATH = "/v8/finance/chart/SPY?range=1y&interval=1d"
+
+
+def spy_daily():
+    """SPY's daily bars {New York date: (open, close)} for the last year from Alpaca's market data
+    (trader-scanner/marketdata.py, the ALPACA_API_KEY_ID keys). {} without them: the report says so.
+    Market data only: this file never talks to any trading host but the paper one."""
+    text = None
+    md = sys.modules.get("trader_marketdata")
+    if md is None:
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "trader_marketdata", os.path.join(os.path.dirname(HERE), "trader-scanner", "marketdata.py"))
+            md = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(md)
+            sys.modules["trader_marketdata"] = md
+        except Exception:
+            md = None
+    try:
+        if md is not None and md.enabled():
+            text = md.yahoo_like(SPY_PATH)
+    except Exception:
+        text = None
+    if text is None:
+        return {}
+    return parse_spy(text)
+
+
+def parse_spy(text):
+    try:
+        r = json.loads(text)["chart"]["result"][0]
+        q = r["indicators"]["quote"][0]
+    except (ValueError, KeyError, TypeError, IndexError):
+        return {}
+    out = {}
+    for i, ts in enumerate(r.get("timestamp") or []):
+        o, c = q["open"][i], q["close"][i]
+        if ts is None or c is None:
+            continue
+        d = to_eastern(datetime.datetime.utcfromtimestamp(int(ts))).date().isoformat()
+        out[d] = (float(o if o is not None else c), float(c))
+    return out
+
+
+def vs_spy(closed, spy):
+    """[(trade %, SPY %)] over the same days: SPY from the entry day's open to the exit day's close."""
+    out = []
+    for t in closed:
+        d0, d1 = _et_day(t.get("entry_at")), _et_day(t.get("exit_at"))
+        e, x = t.get("entry_fill"), t.get("exit_fill")
+        if not (d0 and d1 and e and x) or d0 not in spy or d1 not in spy:
+            continue
+        move = (x / e - 1) * (-1 if t.get("side") == "sell" else 1)
+        out.append((100 * move, 100 * (spy[d1][1] / spy[d0][0] - 1)))
+    return out
+
+
+def summary(state, equity=None, spy=None):
     trades = list((state.get("trades") or {}).values())
     closed = [t for t in trades if t.get("status") == "closed" and t.get("R") is not None]
     open_ = [t for t in trades if t.get("status") in ("submitted", "open", "closing")]
@@ -500,26 +631,34 @@ def summary(state, equity=None):
     if closed:
         wins = [t for t in closed if t["R"] > 0]
         avg = sum(t["R"] for t in closed) / len(closed)
-        pw = [t["predicted"]["p_win"] for t in closed if (t.get("predicted") or {}).get("p_win") is not None]
-        pe = [t["predicted"]["expectancy_R"] for t in closed
-              if (t.get("predicted") or {}).get("expectancy_R") is not None]
-        by = {o: sum(1 for t in closed if t.get("outcome") == o) for o in ("target", "stop", "time")}
-        lines.append("Cerradas: <b>%d</b> (%d objetivo, %d stop, %d por tiempo)" % (
-            len(closed), by["target"], by["stop"], by["time"]))
+        st = [STUDY[t["setup"]] for t in closed if t.get("setup") in STUDY]
+        by = {o: sum(1 for t in closed if t.get("outcome") == o) for o in ("target", "stop", "time", "replaced")}
+        lines.append("Cerradas: <b>%d</b> (%d objetivo, %d stop, %d por tiempo%s)" % (
+            len(closed), by["target"], by["stop"], by["time"],
+            (", %d reemplazadas" % by["replaced"]) if by["replaced"] else ""))
         lines.append("Winrate real: <b>%.0f%%</b>%s" % (100.0 * len(wins) / len(closed),
-                     (" · estimado %.0f%%" % (100.0 * sum(pw) / len(pw))) if pw else ""))
-        lines.append("R promedio real: <b>%+.2fR</b>%s" % (avg, (" · expectativa estimada %+.2fR" % (sum(pe) / len(pe)))
-                                                          if pe else ""))
+                     (" · estudio %.0f%%" % (100.0 * sum(w for _, w in st) / len(st))) if st else ""))
+        lines.append("R promedio real: <b>%+.2fR</b>%s" % (avg, (" · estudio %+.2fR" % (sum(r for r, _ in st) / len(st)))
+                                                          if st else ""))
         lines.append("Total: <b>%+.1fR</b>" % sum(t["R"] for t in closed))
+        if spy is not None:
+            pairs = vs_spy(closed, spy)
+            if pairs:
+                mt, ms = sum(a for a, _ in pairs) / len(pairs), sum(b for _, b in pairs) / len(pairs)
+                beat = sum(1 for a, b in pairs if a > b)
+                lines.append("\U0001F4C8 Contra el S&amp;P 500 (mismos días): operaciones <b>%+.2f%%</b> · SPY <b>%+.2f%%</b> "
+                             "· diferencia <b>%+.2f pts</b> · le ganó en %d de %d" % (mt, ms, mt - ms, beat, len(pairs)))
+            else:
+                lines.append("\U0001F4C8 Contra el S&amp;P 500: sin precios de SPY para esas fechas.")
         if len(closed) < 30:
             lines.append("<i>Menos de 30 operaciones: todavía es una muestra chica.</i>")
     else:
         lines.append("Todavía no hay operaciones cerradas.")
-    lines.append("Abiertas o pendientes: <b>%d</b>%s" % (len(open_), (" (%s)" % ", ".join(t["symbol"] for t in open_))
-                                                          if open_ else ""))
+    lines.append("Abiertas o pendientes: <b>%d</b> de %d%s" % (len(open_), max_positions(),
+                                                               (" (%s)" % ", ".join(t["symbol"] for t in open_)) if open_ else ""))
     skipped = [t for t in trades if t.get("status") in ("skipped", "rejected", "not_filled")]
     if skipped:
-        lines.append("Sin operar: %d (menos de 1 acción, rechazadas o no ejecutadas)" % len(skipped))
+        lines.append("Sin operar: %d (menos de 1 acción, rechazadas, no ejecutadas o reemplazadas)" % len(skipped))
     if equity is not None:
         lines.append("Patrimonio de la cuenta paper: <b>$%s</b>" % "{:,.2f}".format(float(equity)))
     lines += ["", "<i>Simulado: sin dinero real. No es asesoría financiera.</i>"]
@@ -532,7 +671,7 @@ def counts(res):
              ("rechazada", "rechazada(s)"), ("ya operado", "ya operada(s)"), ("entrada ejecutada", "entrada(s) ejecutada(s)"),
              ("no ejecutada", "entrada(s) no ejecutada(s)"), ("objetivo", "cerrada(s) en el objetivo"),
              ("el stop", "cerrada(s) en el stop"), ("stop de tiempo", "stop(s) de tiempo"), ("no se pudo", "error(es)"),
-             ("sin chequeo", "sin chequeo de risk de hoy"))
+             ("sin chequeo", "sin chequeo de risk de hoy"), ("reemplaz", "reemplazada(s)"))
     n = {}
     for _, what in res:
         label = next((lab for key, lab in kinds if key in what), "otro(s)")
@@ -609,7 +748,7 @@ def main(argv=None):
                 equity = api.account().get("equity")
             except PaperError:
                 pass
-            text = summary(state, equity)
+            text = summary(state, equity, spy_daily())
             if a.telegram:
                 n = _notify()
                 tok, chat = n.credentials()

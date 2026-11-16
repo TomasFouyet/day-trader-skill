@@ -795,9 +795,12 @@ def load_prices(pdoc):
 SWING_RISK = {"max_risk_per_trade_pct": 1.0, "max_positions": 5, "max_exposure_pct": 60.0,
               "block_on_earnings": True}
 SWING_STALE = 2
-# Setups measured on real history (trader-analyst/drift_study.py): R per trade over random entries in
-# the same stocks. The Time Machine's bootstrap has no such drift, so its expectancy cannot judge them.
-STUDY_EDGE_R = {"earnings_gap": 0.27}
+# R per trade measured on real history, with the swing exit of trader-budget/config.swing.example.json:
+# earnings_gap from trader-analyst/drift_study.py (SEC 8-K dates 2005-2026, 60 days, 3 ATR), the
+# technical long setups from the 2021-2026 grid study (15 days, 2 ATR, no target; random entries gave
+# about the same). The Time Machine's bootstrap has no edge in it (rank correlation with outcomes
+# ~0.02), so these numbers judge swing.min_expectancy_R instead. Same table as notify_telegram.STUDY.
+STUDY_R = {"earnings_gap": 0.60, "breakout20": 0.17, "pullback_ema20": 0.17, "rsi2": 0.17}
 
 
 def swing_fingerprint(t):
@@ -975,7 +978,7 @@ def check_swing(tickets, cfg, portfolio=None, prices=None, today=None):
         if tmi.get("few_cases"):
             warns.append("el historial real del setup tiene menos de 30 casos")
         mexp = _f(raw.get("min_expectancy_R"))
-        measured = STUDY_EDGE_R.get(t.get("setup"))
+        measured = STUDY_R.get(t.get("setup"))
         if mexp is not None and measured is not None:
             # a setup with a measured edge: the study's number, not the drift-free simulation
             if measured < mexp - 1e-9:

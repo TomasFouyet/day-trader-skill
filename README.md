@@ -154,7 +154,7 @@ real XBRL facts. They reproduce every number in the example above.
 
 ## Modo swing (este fork, en español)
 
-Swing de 5 a 7 días en acciones de EE. UU. que compras **a mano** (Fintual u
+Swing de 15 días (y 60 en el momentum de resultados) en acciones de EE. UU. que compras **a mano** (Fintual u
 otra app). Cada día hábil **en la mañana, antes de la apertura** (≈08:50 en
 Nueva York), el pipeline busca setups en el cierre del día anterior, descarta
 los que tienen resultados trimestrales dentro del horizonte, fija stop,
@@ -197,8 +197,9 @@ es una predicción.
    cp trader-budget/config.swing.example.json trader/config.json
    ```
 
-   En `trader/config.json` revisa el bloque `"swing"`: `horizon_days` (7),
-   `stop` (`atr:2`), `target` (`2R`), `time_stop_days`,
+   En `trader/config.json` revisa el bloque `"swing"`: `horizon_days` (15),
+   `stop` (`atr:2`), `target` (`10R`: lejano, casi nunca se toca; la salida
+   real es el stop o el tiempo, lo mejor del estudio), `time_stop_days` (15),
    `max_risk_per_trade_pct` (1 % de la cuenta por trade), `max_positions`,
    `max_exposure_pct`, los setups y `block_on_earnings`. El tamaño de la cuenta
    puede ir en `"budget"` o, mejor, en la variable `TRADER_BUDGET`. Si tienes
@@ -368,8 +369,10 @@ Dominios que usa: `query1.finance.yahoo.com`, `query2.finance.yahoo.com`,
 
 ### 7. Long o short, Fintual y Bitunix (apalancamiento)
 
-El scanner busca setups en las dos direcciones (`"sides": ["long", "short"]`
-en el bloque `"swing"`). Los short son las mismas tres reglas, al revés:
+**Los short vienen apagados** (`"sides": ["long"]`): en el estudio de 5 años
+perdieron todos los años (−0,08 a −0,13R por operación). Para volver a
+probarlos: `"sides": ["long", "short"]` en el bloque `"swing"`. Los short son
+las mismas tres reglas, al revés:
 quiebre del mínimo de 20 días, rebote a la EMA20 en tendencia bajista y RSI(2)
 sobrecomprado bajo la media de 200 días. Cada aviso dice arriba
 **🟢 LONG** o **🔴 SHORT**.
@@ -413,11 +416,16 @@ Para cada setup el aviso calcula los dos venues:
 
 ### 8. Winrate y comodines (materias primas)
 
-- **Winrate estimado** en cada aviso: el % de las 10.000 trayectorias que
-  terminan en ganancia (tocan el objetivo, o siguen arriba del precio de
-  entrada al cierre por tiempo), y el % de los casos del historial real del
-  mismo setup que terminaron en ganancia. No es lo mismo que "objetivo
-  primero": muchas operaciones ganan algo sin llegar al objetivo.
+- **Historial en cada aviso** (en vez del winrate simulado): lo que hizo el
+  setup en datos reales con la salida de la config de ejemplo. Setups
+  técnicos: +0,17R por operación y winrate de 47 %, lo mismo que entrar al
+  azar (+0,15R), así que **sin ventaja propia**. Momentum de resultados:
+  +0,60R, winrate de 52 % y ventaja de +0,27R. También muestra los casos
+  de esa acción. La Time Machine queda solo para el riesgo (stop o abierta
+  al final): en el estudio predijo 63 % de ganadoras y fueron 52 %, y sus
+  probabilidades no ordenaron mejor las operaciones (correlación de rangos
+  ≈ 0,02). Risk usa esas mismas cifras del estudio para
+  `min_expectancy_R`.
 - **Comodines:** `swing.extra_symbols` agrega cada día, además de tu
   watchlist, ETF de materias primas: GLD (oro), SLV (plata), USO (petróleo
   WTI), BNO (petróleo Brent), UNG (gas natural), CPER (cobre). Se escanean con
@@ -470,8 +478,18 @@ risk en tu cuenta **paper** de Alpaca (simulada, gratis, sin dinero real):
   al stop y al objetivo y días hasta la salida por tiempo; las que se cerraron
   hoy (objetivo, stop o tiempo) con su R y P&L; y las que no entraron.
 - **Los lunes llega a Telegram el historial:** operaciones cerradas, winrate
-  real comparado con el estimado, R promedio real comparado con la
-  expectativa, total en R y patrimonio de la cuenta paper.
+  y R promedio reales comparados con el estudio, total en R, **contra el
+  S&P 500** (lo que hizo cada operación y lo que hizo el SPY en los mismos
+  días, desde la apertura del día de entrada hasta el cierre del de salida:
+  promedio, diferencia y en cuántas le ganó) y patrimonio de la cuenta paper.
+  Los precios del SPY salen de Alpaca.
+- **Máximo 6 operaciones vivas** (`PAPER_MAX_POSITIONS` lo cambia), y una por
+  acción. Con 6, una señal nueva solo entra si su setup tiene una ventaja
+  medida que la más débil no tiene (hoy, el momentum de resultados frente a
+  un setup técnico). La más débil es la de menor ventaja y, entre esas, la de
+  peor R abierto. Se cierra a mercado y queda como "reemplazada". Las
+  probabilidades de la Time Machine no se usan para esto porque no
+  predijeron resultados.
 
 Todo pasa por `trader-alerts/paper_trader.py`, que solo habla con
 `paper-api.alpaca.markets` (fijo en el código, cualquier otra dirección se

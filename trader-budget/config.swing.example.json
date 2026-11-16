@@ -1,12 +1,12 @@
 {
   "mode": "swing",
   "swing": {
-    "horizon_days": 7,
+    "horizon_days": 15,
     "stop": "atr:2",
-    "target": "2R",
-    "time_stop_days": 7,
+    "target": "10R",
+    "time_stop_days": 15,
     "max_risk_per_trade_pct": 1.0,
-    "max_positions": 5,
+    "max_positions": 6,
     "max_exposure_pct": 60,
     "atr_days": 14,
     "timemachine_window_days": 252,
@@ -26,8 +26,7 @@
     "block_on_unknown_earnings": false,
     "earnings_margin_days": 5,
     "sides": [
-      "long",
-      "short"
+      "long"
     ],
     "venues": {
       "fintual": {

@@ -221,10 +221,12 @@ class RiskAndMessage(unittest.TestCase):
         t = self.ticket()
         r = risk.check_swing([t], CFG, today="2026-11-04")["results"][0]
         self.assertEqual(r["verdict"], "PASS", r["reasons"])
-        cfg = dict(CFG, swing=dict(CFG["swing"], min_expectancy_R=0.3))
+        cfg = dict(CFG, swing=dict(CFG["swing"], min_expectancy_R=0.7))
         r = risk.check_swing([t], cfg, today="2026-11-04")["results"][0]
-        self.assertIn("el estudio da +0.27R", r["reasons"][0])
-        other = dict(t, setup="breakout20")
+        self.assertIn("el estudio da +0.60R", r["reasons"][0])
+        tech = dict(t, setup="breakout20")
+        self.assertEqual(risk.check_swing([tech], CFG, today="2026-11-04")["results"][0]["verdict"], "PASS")
+        other = dict(t, setup="manual")
         r = risk.check_swing([other], CFG, today="2026-11-04")["results"][0]
         self.assertIn("el Time Machine da -0.07R", r["reasons"][0])
 
@@ -237,6 +239,7 @@ class RiskAndMessage(unittest.TestCase):
         self.assertIn("8-K 2.02 del 2026-11-02", text)
         self.assertIn("lejano: la salida real es el stop o el tiempo", text)
         self.assertIn("mide el riesgo, no la ventaja", text)
+        self.assertIn("Promedio <b>+0.60R</b> por operación · winrate <b>52%</b> · al azar +0.33R → ventaja <b>+0.27R</b>", text)
         self.assertNotIn("Claramente hacia el stop", text)
         self.assertNotIn("Winrate estimado", text)
 
