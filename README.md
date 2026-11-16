@@ -606,6 +606,17 @@ más del 33 % de las veces, y las reglas ganan entre 33 % y 36 %. Cerrando al
 final del día casi nada llega al stop ni al objetivo. El script no coloca
 órdenes ni avisa en tiempo real.
 
+En cripto (el uso original del indicador) se midió aparte con velas exactas
+de Binance de 30 minutos: 11 monedas, noviembre de 2023 a noviembre de 2026,
+2.456 operaciones. La réplica coincide ahí con 12 de 14 filas de dos capturas
+del indicador (QNT al centavo). Resultado: +0,01R ± 0,03 por operación antes
+de comisiones. Frente a entradas al azar en la misma dirección queda entre
++0,03R y +0,05R arriba, menos que la comisión de ida y vuelta (≈0,06R con un
+stop mediano de 1,7 % del precio). Ningún corte por tipo de entrada, tamaño
+del barrido, hora o tendencia se sostiene en las dos mitades del período. Lo
+que no se pudo probar es el filtro de calidad "Q" del indicador, cuya fórmula
+no se conoce.
+
 ### 13. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del

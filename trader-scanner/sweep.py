@@ -315,7 +315,7 @@ def run(bars, params=None, flat_eod=False):
                 if not make_setup(i, fvg):
                     reset()
                 continue
-            else:
+            elif not p.get("replace_new_level"):
                 continue                                                   # one sweep at a time
 
         # scanning: a sweep of the latest swing high or low
