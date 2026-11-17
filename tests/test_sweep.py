@@ -68,6 +68,23 @@ class TheThreeCharts(unittest.TestCase):
         for sym, liq in (("LITE", 2.8), ("TSLA", 1.3)):
             self.assertEqual(sw.run(bars_of(sym))["state"]["liq_atr"], liq)       # its "liq x ATR" column
 
+    def test_the_table_of_monday_16(self):
+        """The indicator's table at the close of Mon 2026-11-16 (bars and the liq column)."""
+        series, _ = sw.scan.load_offline(os.path.join(FIX, "trader-scanner", "sweep16"))
+        now = sw.scan.parse_now("2026-11-17 08:50")
+
+        def state(sym):
+            return sw.run(sw.session_bars(series[sym], now))["state"]
+        # swept lows whose internal high to break IS the swing high: allowed, it is older than the low
+        for sym, bars in (("MU", 0), ("PLTR", 0), ("AMD", 1), ("TSLA", 2), ("WDC", 10)):
+            s = state(sym)
+            self.assertEqual((s["stage"], s["dir"], s["bars"]), ("swept", 1, bars), sym)
+        # liq: the nearest unswept level on its own side of the price (a swept low is not shown)
+        for sym, side, atr in (("NVDA", "up", 4.0), ("DELL", "up", 12.0)):
+            s = state(sym)
+            self.assertEqual((s["stage"], s["liq_side"]), ("scan", side), sym)
+            self.assertAlmostEqual(s["liq_atr"], atr, delta=0.4)
+
     def test_no_look_ahead(self):
         n = 0
         for sym in ("NOW", "MU", "TSLA"):

@@ -549,12 +549,12 @@ acciones con la misma salida.
 | Prueba | Momentum de resultados (60d, 3 ATR, ≥ +12 %) | Setups técnicos (15d, 2 ATR) |
 |---|---|---|
 | Sensibilidad: configuraciones con ventaja sobre el azar | 213 de 216, y crece con el umbral y el plazo | 12 de 100, todas entre −0,02R y +0,003R |
-| Sensibilidad de los parámetros del setup | — | todas las variantes entre −0,006R y +0,004R |
+| Sensibilidad de los parámetros del setup | no aplica | todas las variantes entre −0,006R y +0,004R |
 | Walk-forward 2010-2026, configuración en uso | +0,62R por operación, ventaja +0,30R | ventaja −0,005R |
 | Walk-forward eligiendo cada año con los 5 anteriores | ventaja +0,77R (casi siempre elige 60d, 2 ATR, umbral 15-20 %) | ventaja +0,006R |
 | Bootstrap por meses: ventaja (95 %) | +0,25R [+0,08 a +0,42], P(≤ 0) = 0,3 % | 0,00R [−0,016 a +0,016], P(≤ 0) = 50 % |
 | Bootstrap: años negativos | 10 % | 16 % |
-| Bootstrap: caída máxima (R sumados) | mediana 20R, peor 5 % 32R | — |
+| Bootstrap: caída máxima (R sumados) | mediana 20R, peor 5 % 32R | no aplica |
 
 El momentum de resultados pasa las tres pruebas. Los setups técnicos no
 tienen ventaja propia con ninguna salida ni con ningún parámetro: lo que ganan

@@ -11,9 +11,12 @@ the three charts to the cent and 19 of the table's 20 rows (not META):
                  bars on each side). Stops rest beyond them.
   2. Sweep       a bar that trades through the level and closes back inside: high above the swing
                  high and close below it (bearish, a short idea), or low under the swing low and
-                 close above it (bullish). The structure it will have to break must be internal
-                 (not the opposite swing itself). While one sweep waits, later sweeps are ignored;
-                 a CLOSE beyond the sweep bar's extreme cancels it. A level is swept once.
+                 close above it (bullish). A level is swept once (a new swing level is live
+                 again). The internal structure the sweep will have to break may be the opposite
+                 major swing itself only when that swing is older than the swept level. While a
+                 sweep waits, later sweeps are ignored and a CLOSE beyond its bar's extreme cancels
+                 it. The "liq" column: the distance to the nearest unswept level on its own side
+                 of the price (a swing high above it, a swing low below it).
   3. MSS         the close breaks the internal structure against the sweep: under the last
                  confirmed internal swing low (pivot `internal_len`) as it stood on the sweep bar
                  (bearish), or over the internal swing high (bullish). At most `max_sweep_to_mss`
@@ -210,7 +213,7 @@ def run(bars, params=None, flat_eod=False):
             trend[i] = closes_sum / 200.0
     ph8 = pl8 = ph3 = pl3 = None
     st = {"stage": "scan"}
-    trades, sweeps, used = [], 0, {}
+    trades, sweeps, live, at = [], 0, {"h": False, "l": False}, {}
 
     def reset():
         st.clear()
@@ -258,13 +261,18 @@ def run(bars, params=None, flat_eod=False):
             v = pivot_confirmed(bars, i, n, high)
             if v is not None:
                 if n == n8 and high:
-                    ph8 = v
+                    ph8, live["h"], at["h8"] = v, True, i - n  # a new swing level: live liquidity
                 elif n == n8:
-                    pl8 = v
+                    pl8, live["l"], at["l8"] = v, True, i - n
                 elif high:
                     ph3 = v
                 else:
                     pl3 = v
+        if p.get("kill_on_close"):                             # research switch: a close beyond breaks it
+            if ph8 is not None and b["c"] > ph8:
+                live["h"] = False
+            if pl8 is not None and b["c"] < pl8:
+                live["l"] = False
         last_of_day = i + 1 == len(bars) or bars[i + 1]["day"] != b["day"]
         stage = st["stage"]
 
@@ -318,16 +326,22 @@ def run(bars, params=None, flat_eod=False):
             elif not p.get("replace_new_level"):
                 continue                                                   # one sweep at a time
 
-        # scanning: a sweep of the latest swing high or low
-        # the structure to break has to be internal: not the opposite swing itself
-        # and a level is swept once
-        up = (ph8 is not None and b["h"] > ph8 and b["c"] < ph8 and pl3 is not None and pl3 < b["c"]
-              and pl3 != pl8 and ph8 != used.get("h"))
-        dn = (pl8 is not None and b["l"] < pl8 and b["c"] > pl8 and ph3 is not None and ph3 > b["c"]
-              and ph3 != ph8 and pl8 != used.get("l"))
+        # scanning: a sweep of the latest swing high or low that is still live
+        up = live["h"] and b["h"] > ph8 and b["c"] < ph8 and pl3 is not None and pl3 < b["c"]
+        dn = live["l"] and b["l"] < pl8 and b["c"] > pl8 and ph3 is not None and ph3 > b["c"]
+        # the structure to break must be internal: when it is the opposite major swing itself, that swing
+        # has to be older than the level being swept (fitted to the indicator's tables, see the docstring)
+        if up and pl3 == pl8 and at.get("l8", -1) >= at.get("h8", -1):
+            up = False
+        if dn and ph3 == ph8 and at.get("h8", -1) >= at.get("l8", -1):
+            dn = False
+        if p.get("internal_rule"):                             # research switch: the old, stricter rule
+            up, dn = up and pl3 != pl8, dn and ph3 != ph8
+        if p.get("open_inside"):                               # research switch: the bar opens inside the level
+            up, dn = up and b["o"] <= ph8, dn and b["o"] >= pl8
         if up != dn:
             sweeps += 1
-            used["h" if up else "l"] = ph8 if up else pl8
+            live["h" if up else "l"] = False                               # a level is taken once
             st.clear()
             st.update(stage="swept", dir=-1 if up else 1, sweep_i=i, level=ph8 if up else pl8,
                       extreme=b["h"] if up else b["l"], mss_level=pl3 if up else ph3)
@@ -350,7 +364,12 @@ def run(bars, params=None, flat_eod=False):
     state.update(price=bars[last]["c"] if bars else None, atr=a, swing_high=ph8, swing_low=pl8,
                  as_of=bars[last]["t"].strftime("%Y-%m-%d %H:%M") if bars else None)
     if bars and a:
-        near = [(abs(v - bars[last]["c"]) / a, name) for v, name in ((ph8, "up"), (pl8, "down")) if v is not None]
+        c = bars[last]["c"]
+        # liquidity is above for a swing high and below for a swing low: a level price closed beyond is not
+        levels = [(v, name) for v, name, k in ((ph8, "up", "h"), (pl8, "down", "l")) if v is not None
+                  and ((v > c) if k == "h" else (v < c)) and live[k]]
+        near = [(abs(v - c) / a, name) for v, name in (levels or
+                [(v, n_) for v, n_ in ((ph8, "up"), (pl8, "down")) if v is not None])]
         if near:
             state["liq_atr"], state["liq_side"] = round(min(near)[0], 1), min(near)[1]
         if st["stage"] == "setup":
