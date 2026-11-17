@@ -203,6 +203,7 @@ def main(argv=None):
     ap.add_argument("--offline", metavar="DIR")
     ap.add_argument("--now", help="New York time, e.g. '2026-11-17 08:50'")
     ap.add_argument("--min-n", type=int, default=100)
+    ap.add_argument("--debug", action="store_true", help="per stock: bars, first and last date, bars a year")
     a = ap.parse_args(argv)
     t0 = time.time()
     now = scan.parse_now(a.now)
@@ -232,6 +233,14 @@ def main(argv=None):
         bars = sw.session_bars(series, now, minutes) if series else []
         if a.interval == "4h":
             bars = sw.bars_4h(bars, now)
+        if a.debug:
+            raw = (series or {}).get("t") or []
+            per_year = {}
+            for b in bars:
+                per_year[b["day"][:4]] = per_year.get(b["day"][:4], 0) + 1
+            print("  %s: %d marcas de tiempo, %d velas de sesion, %s a %s, por ano %s" % (
+                sym, len(raw), len(bars), bars[0]["day"] if bars else "-", bars[-1]["day"] if bars else "-",
+                per_year), file=sys.stderr)
         if len(bars) < 300:
             skipped += 1
             continue
