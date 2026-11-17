@@ -25,6 +25,7 @@ import datetime
 import json
 import os
 import re
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -97,6 +98,10 @@ def bars(sym, frame, start, end, feed, http=None):
                                                  urllib.parse.quote(sym), urllib.parse.urlencode(q)))
         out += doc.get("bars") or []
         token = doc.get("next_page_token")
+        if os.environ.get("ALPACA_DEBUG"):
+            got = doc.get("bars") or []
+            print("    alpaca %s %s: page of %d bars, %s to %s, more: %s" % (sym, frame, len(got), got[0]["t"] if got else "-",
+                  got[-1]["t"] if got else "-", bool(token)), file=sys.stderr)
         if not token:
             break
     return out

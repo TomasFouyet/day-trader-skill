@@ -57,6 +57,7 @@ jobs:
           if [ "$ROBUSTNESS" = "true" ]; then ARGS="$ARGS --robustness --no-portfolio"; fi
           if [ "$STUDY" = "sweep" ]; then
             if [ -n "$LIMIT" ]; then SWEEP_ARGS="$SWEEP_ARGS --limit $LIMIT"; fi
+            case "$SWEEP_ARGS" in *--debug*) export ALPACA_DEBUG=1 ;; esac
             python3 trader-analyst/sweep_study.py $SWEEP_ARGS
             exit $?
           fi
