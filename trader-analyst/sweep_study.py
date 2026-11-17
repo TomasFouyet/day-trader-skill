@@ -18,6 +18,7 @@ bars), else Yahoo (60 days only). Prints aggregates only. Research, never orders
 """
 
 import argparse
+import concurrent.futures
 import importlib.util
 import os
 import random
@@ -228,8 +229,13 @@ def main(argv=None):
     spy = get(BENCH)
     trend = spy_trend(sw.session_bars(spy, now, minutes)) if spy else {}
     trades, rnd, used, skipped, nbars, days = [], [], 0, 0, 0, set()
+    ahead = concurrent.futures.ThreadPoolExecutor(max_workers=3)     # download the next stocks while this one runs
+    futs = {}
     for k, sym in enumerate(syms):
-        series = get(sym)
+        for nxt in syms[k:k + 3]:
+            if nxt not in futs:
+                futs[nxt] = ahead.submit(get, nxt)
+        series = futs.pop(sym).result()
         bars = sw.session_bars(series, now, minutes) if series else []
         if a.interval == "4h":
             bars = sw.bars_4h(bars, now)

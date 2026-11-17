@@ -168,3 +168,51 @@ class ThroughTheTools(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LongHistory(unittest.TestCase):
+    """Five years of 30 minute bars come a few hundred to a page: fetched in date windows, all pages each."""
+
+    def fake(self, calls, fail_first=False):
+        state = {"failed": not fail_first}
+
+        def http(url):
+            q = dict(urllib.parse.parse_qsl(url.split("?", 1)[1]))
+            calls.append(q)
+            if not state["failed"]:
+                state["failed"] = True
+                raise urllib.error.HTTPError(url, 429, "too many", {}, None)
+            t0 = datetime.datetime.strptime(q["start"][:19], "%Y-%m-%dT%H:%M:%S")
+            t1 = datetime.datetime.strptime(q["end"][:19], "%Y-%m-%dT%H:%M:%S")
+            page = int(q.get("page_token") or 0)
+            day = t0 + datetime.timedelta(days=page * 10)
+            got = []
+            while day < min(t1, t0 + datetime.timedelta(days=(page + 1) * 10)):
+                got.append({"t": day.strftime("%Y-%m-%dT%H:%M:%SZ"), "o": 1, "h": 1, "l": 1, "c": 1, "v": 1})
+                day += datetime.timedelta(days=1)
+            more = t0 + datetime.timedelta(days=(page + 1) * 10) < t1
+            return {"bars": got, "next_page_token": str(page + 1) if more else None}
+        return http
+
+    def test_every_day_once_in_order(self):
+        calls = []
+        bs = md.bars_chunked("MU", "30Min", "2021-01-01T00:00:00Z", "2023-01-01T00:00:00Z", "sip",
+                             http=self.fake(calls), chunk_days=100, workers=4)
+        days = [b["t"][:10] for b in bs]
+        self.assertEqual(len(days), 730)
+        self.assertEqual(days, sorted(set(days)))
+        self.assertEqual((days[0], days[-1]), ("2021-01-01", "2022-12-31"))
+        self.assertGreater(len(calls), 20)        # the old 20 page cap would have stopped short
+
+    def test_429_waits_and_retries(self):
+        calls, waits = [], []
+        bs = md.bars("MU", "30Min", "2021-01-01T00:00:00Z", "2021-01-05T00:00:00Z", "sip",
+                     http=self.fake(calls, fail_first=True), sleep=waits.append)
+        self.assertEqual(len(bs), 4)
+        self.assertEqual(waits, [1])
+
+    def test_other_4xx_is_final(self):
+        def http(url):
+            raise urllib.error.HTTPError(url, 403, "no", {}, None)
+        with self.assertRaises(urllib.error.HTTPError):
+            md.bars("MU", "30Min", "2021-01-01T00:00:00Z", "2021-01-05T00:00:00Z", "sip", http=http, sleep=lambda s: 0)

@@ -21,11 +21,13 @@ ALPACA_DISABLE=1 turns it off. STATS counts what each source served.
 """
 
 import calendar
+import concurrent.futures
 import datetime
 import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -85,17 +87,30 @@ def window(rng, interval, now_utc, prepost):
     return frame, _iso(start), None, ("iex" if prepost else "sip")
 
 
-def bars(sym, frame, start, end, feed, http=None):
+def _get(http, url, sleep=None, tries=8):
+    """One GET with backoff on HTTP 429 (Alpaca's per-minute request limit) and 5xx."""
+    sleep = sleep or time.sleep
+    for k in range(tries):
+        try:
+            return http(url)
+        except urllib.error.HTTPError as e:
+            if (e.code != 429 and e.code < 500) or k == tries - 1:
+                raise
+            sleep(min(30, 2 ** k))
+    return {}
+
+
+def bars(sym, frame, start, end, feed, http=None, max_pages=20, sleep=None):
     http = http or _http
     out, token = [], None
-    for _ in range(20):
+    for _ in range(max_pages):
         q = {"timeframe": frame, "start": start, "adjustment": "split", "feed": feed, "limit": 10000}
         if end:
             q["end"] = end
         if token:
             q["page_token"] = token
-        doc = http("%s/v2/stocks/%s/bars?%s" % (os.environ.get("ALPACA_DATA_URL", DATA_URL),
-                                                 urllib.parse.quote(sym), urllib.parse.urlencode(q)))
+        doc = _get(http, "%s/v2/stocks/%s/bars?%s" % (os.environ.get("ALPACA_DATA_URL", DATA_URL),
+                                                       urllib.parse.quote(sym), urllib.parse.urlencode(q)), sleep)
         out += doc.get("bars") or []
         token = doc.get("next_page_token")
         if os.environ.get("ALPACA_DEBUG"):
@@ -104,6 +119,35 @@ def bars(sym, frame, start, end, feed, http=None):
                   got[-1]["t"] if got else "-", bool(token)), file=sys.stderr)
         if not token:
             break
+    return out
+
+
+LONG_DAYS = 400      # intraday history longer than this is fetched in parallel date windows
+CHUNK_DAYS = 120
+WORKERS = 6
+
+
+def bars_chunked(sym, frame, start, end, feed, http=None, chunk_days=CHUNK_DAYS, workers=WORKERS, sleep=None):
+    """Long intraday history: Alpaca serves a few hundred bars a page, so five years of 30 minute bars take
+    about 70 pages. Split [start, end) into windows of chunk_days, fetch them at the same time (each one paged
+    to its end), and join them in time order without duplicates."""
+    t0 = datetime.datetime.strptime(start[:19], "%Y-%m-%dT%H:%M:%S")
+    t1 = datetime.datetime.strptime(end[:19], "%Y-%m-%dT%H:%M:%S") if end else _utc_now()
+    edges = []
+    while t0 < t1:
+        nxt = min(t1, t0 + datetime.timedelta(days=chunk_days))
+        edges.append((_iso(t0), _iso(nxt)))
+        t0 = nxt
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(workers, len(edges)))) as ex:
+        parts = list(ex.map(lambda e: bars(sym, frame, e[0], e[1], feed, http=http, max_pages=500, sleep=sleep),
+                            edges))
+    seen, out = set(), []
+    for part in parts:
+        for b in part:
+            if b.get("t") not in seen:
+                seen.add(b.get("t"))
+                out.append(b)
+    out.sort(key=lambda b: b["t"])
     return out
 
 
@@ -158,7 +202,10 @@ def yahoo_like(path_or_url, now_utc=None, http=None):
             w = window(q.get("range"), q.get("interval"), now_utc, q.get("includePrePost") == "true")
             if not w:
                 return None
-            bs = bars(_to_alpaca(ysym), *w, http=http)
+            if q.get("interval") != "1d" and RANGES[q.get("range")] > LONG_DAYS:
+                bs = bars_chunked(_to_alpaca(ysym), *w, http=http)
+            else:
+                bs = bars(_to_alpaca(ysym), *w, http=http)
             if not bs:
                 raise ValueError("sin velas %s %s" % (q.get("interval"), q.get("range")))
             STATS["alpaca"] += 1
