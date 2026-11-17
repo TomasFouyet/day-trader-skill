@@ -643,6 +643,36 @@ más del 33 % de las veces, y las reglas ganan entre 33 % y 36 %. Cerrando al
 final del día casi nada llega al stop ni al objetivo. El script no coloca
 órdenes ni avisa en tiempo real.
 
+**La estrategia de Pine tal como está (solo largos, objetivo 1,5R, 30 min),
+en 5 años y 246 acciones:** `python3 trader-analyst/sweep_study.py` (o el
+workflow "Investigacion" con `study: sweep`) corre la réplica sobre cada
+acción con velas de 30 minutos de Alpaca desde noviembre de 2021, la compara
+con compras al azar con el mismo stop mediano, y busca patrones: separa las
+operaciones por tipo de entrada, tendencia, SPY, tamaño del stop y del
+barrido, velas hasta el MSS, tamaño del hueco, volatilidad, volumen, hora,
+día y calidad, elige en la primera mitad del período los cortes que
+destacan y los mide en la segunda, que no participó en elegirlos.
+
+| | Operaciones | Ganadoras | Promedio | Al azar |
+|---|---|---|---|---|
+| Todas | 8.544 | 42 % | −0,002R ± 0,014 | +0,005R |
+| 2022 | 1.672 | 40 % | −0,04R | −0,10R |
+| 2023 | 1.693 | 44 % | +0,06R | +0,07R |
+| 2024 | 1.744 | 43 % | +0,01R | +0,08R |
+| 2025 | 1.713 | 43 % | +0,03R | +0,01R |
+| 2026 | 1.541 | 41 % | −0,03R | −0,04R |
+
+Con objetivo a 1,5R hay que ganar más del 40 % para empatar; la réplica gana
+42 %, pero los stops que se pasan con gap dejan el promedio en cero, igual
+que el azar, y la comisión (~0,03R) lo deja negativo. El único corte que
+destacó en la primera mitad (barridos de jueves, +0,15R) dio 0,00R en la
+segunda. Las 25 mejores acciones de la primera mitad dieron +0,01R en la
+segunda: no hay acciones donde funcione mejor de forma estable. Lo más
+parecido a un patrón, sin pasar la prueba: volatilidad alta (ATR de 30 min
+≥ 1,5 % del precio) +0,06R y +0,12R en cada mitad, stop ancho (≥ 3,5 ATR)
++0,04R y +0,05R, SPY bajo su media de 20 días +0,02R y +0,05R; con unas 50
+casillas mirando a la vez, se esperan 2 o 3 así por azar.
+
 En cripto (el uso original del indicador) se midió aparte con velas exactas
 de Binance de 30 minutos: las 20 monedas de su lista, noviembre de 2023 a
 noviembre de 2026, 4.440 operaciones. La réplica coincide ahí con casi todas
