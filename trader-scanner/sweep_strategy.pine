@@ -15,11 +15,12 @@ intLen      = input.int(3, "Internal structure length", minval = 1, group = "Ent
 maxSweepMss = input.int(20, "Max bars sweep -> MSS", minval = 1, group = "Entry model")
 maxSetup    = input.int(30, "Max bars setup -> entry", minval = 1, group = "Entry model")
 maxInTrade  = input.int(200, "Max bars in trade", minval = 1, group = "Entry model")
-tpR         = input.float(2.0, "Take profit (R)", minval = 0.1, group = "Entry model")
+tpR         = input.float(1.5, "Take profit (R)", minval = 0.1, group = "Entry model")
 minStopAtr  = input.float(0.2, "Min stop distance (x ATR)", minval = 0.0, group = "Entry model")
 minFvgAtr   = input.float(0.1, "Smallest gap that counts (x ATR)", minval = 0.0, group = "Entry model")
 atrLen      = input.int(14, "ATR length", minval = 1, group = "Entry model")
-sides       = input.string("Both", "Trade", options = ["Both", "Long only", "Short only"], group = "Backtest")
+allowLong   = input.bool(true, "Allow longs", group = "Backtest")
+allowShort  = input.bool(false, "Allow shorts", group = "Backtest")
 riskPct     = input.float(1.0, "Risk per trade (% of equity)", minval = 0.01, group = "Backtest")
 flatEod     = input.bool(false, "Day trading: flat at the regular session close (stocks)", group = "Backtest")
 fromTime    = input.time(timestamp("2015-01-01T00:00:00"), "Trade from", group = "Backtest")
@@ -251,7 +252,7 @@ if stage == "swept" and not handled
             targetPx := e + dir * tpR * math.abs(e - s)
             setupBar := bar_index
             stage := "setup"
-            bool sideOk = sides == "Both" or (sides == "Long only" and dir > 0) or (sides == "Short only" and dir < 0)
+            bool sideOk = (dir > 0 and allowLong) or (dir < 0 and allowShort)
             tradable := sideOk and time >= fromTime
             if tradable
                 float qty = strategy.equity * riskPct / 100 / math.abs(e - s)
