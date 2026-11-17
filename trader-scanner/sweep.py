@@ -250,7 +250,10 @@ def run(bars, params=None, flat_eod=False):
             "body_atr": round(max(abs(bars[k]["c"] - bars[k]["o"]) for k in range(st["sweep_i"] + 1, i + 1)) / a, 2),
             "with_trend": None if trend[i] is None else bool((bars[i]["c"] - trend[i]) * d > 0),
             "to_entry_atr": round(abs(entry - bars[i]["c"]) / a, 2), "hour": bars[st["sweep_i"]]["t"].hour,
-            "atr_pct": round(100 * a / bars[i]["c"], 3)}
+            "atr_pct": round(100 * a / bars[i]["c"], 3),
+            "vol_ratio": round(bars[st["sweep_i"]]["v"] / max(1e-9, sum(x["v"] for x in bars[max(0, st["sweep_i"] - 20):
+                                                                                    st["sweep_i"]]) / max(1, min(20, st["sweep_i"]))), 2),
+            "dow": bars[st["sweep_i"]]["t"].weekday()}
         if st["quality"] < p["min_quality"]:
             return False
         st["stage"] = "setup"

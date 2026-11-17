@@ -10,6 +10,15 @@ on:
         description: "Cuantas acciones de la watchlist de ejemplo (vacio = todas)"
         required: false
         default: ""
+      study:
+        description: "Estudio a correr"
+        type: choice
+        options: ["resultados", "sweep"]
+        default: "resultados"
+      sweep_args:
+        description: "Opciones del estudio sweep (por ejemplo: --target 2 --shorts --interval 1h)"
+        required: false
+        default: "--interval 30m --range 5y --target 1.5"
       robustness:
         description: "Pruebas de robustez (walk-forward, sensibilidad, bootstrap) en vez de la cartera"
         type: boolean
@@ -36,10 +45,19 @@ jobs:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           LIMIT: ${{ inputs.limit }}
           TRIAL_VAR: ${{ inputs.trial_var }}
+          STUDY: ${{ inputs.study }}
+          SWEEP_ARGS: ${{ inputs.sweep_args }}
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
           ROBUSTNESS: ${{ inputs.robustness }}
         run: |
           ARGS="--symbols trader-scanner/watchlist.example.txt"
           if [ -n "$LIMIT" ]; then ARGS="$ARGS --limit $LIMIT"; fi
           if [ -n "$TRIAL_VAR" ]; then ARGS="$ARGS --trial-var $TRIAL_VAR"; fi
           if [ "$ROBUSTNESS" = "true" ]; then ARGS="$ARGS --robustness --no-portfolio"; fi
+          if [ "$STUDY" = "sweep" ]; then
+            if [ -n "$LIMIT" ]; then SWEEP_ARGS="$SWEEP_ARGS --limit $LIMIT"; fi
+            python3 trader-analyst/sweep_study.py $SWEEP_ARGS
+            exit $?
+          fi
           python3 trader-analyst/drift_study.py $ARGS
