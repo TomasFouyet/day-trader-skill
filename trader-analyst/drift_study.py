@@ -43,6 +43,7 @@ def _module(name, path):
 
 
 pf = _module("trader_performance", os.path.join(_HERE, "performance.py"))
+rb = _module("trader_robustness", os.path.join(_HERE, "robustness.py"))
 
 SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBS = "https://data.sec.gov/submissions/%s"
@@ -313,6 +314,74 @@ def portfolio_report(cal_dates, spy_bars, legs, n_trials, trial_var):
     return lines
 
 
+# ---------------------------------------------------------------- robustness (walk-forward, sensitivity, bootstrap)
+
+RB_HS, RB_KS, RB_TS = (20, 40, 60), (2.0, 3.0, 4.0), (3.0, 5.0, 10.0, None)
+RB_THR = (0.05, 0.08, 0.10, 0.12, 0.15, 0.20)
+RB_FIXED = {"H": 60, "K": 3.0, "T": 10.0, "thr": 0.12}       # earnings_gap as it trades
+
+
+def robustness_events(bars, events, rng):
+    """earnings reactions >= +5 % and random entries (every ~30 bars) with 60 bars ahead."""
+    atr = atr_series(bars)
+    idx = {b["date"]: i for i, b in enumerate(bars)}
+    gap, rnd = [], []
+    for e in events:
+        i = idx.get(e["date"])
+        if e["r0"] >= RB_THR[0] and i is not None and atr[i] and i + 1 < len(bars):
+            gap.append({"date": e["date"], "entry": bars[i]["c"], "atr": atr[i], "r0": e["r0"],
+                        "fwd": rb.fwd_array(bars[i + 1:i + 61])})
+    for i in range(30 + rng.randrange(30), len(bars) - 1, 30):
+        if atr[i]:
+            rnd.append({"date": bars[i]["date"], "entry": bars[i]["c"], "atr": atr[i], "r0": 0.0,
+                        "fwd": rb.fwd_array(bars[i + 1:i + 61])})
+    return gap, rnd
+
+
+def robustness_report(gap, rnd):
+    G, R = rb.Grid(gap, RB_HS, RB_KS, RB_TS), rb.Grid(rnd, RB_HS, RB_KS, RB_TS)
+    S = rb.stats
+    sel = lambda e, c: e["r0"] >= c["thr"]
+    lines = ["", "=" * 100, "PRUEBAS DE ROBUSTEZ del momentum de resultados (neto de 0,1% de costo por operacion)",
+             "", "1. SENSIBILIDAD: R promedio (ventaja sobre el azar con la misma salida)"]
+    for T in RB_TS:
+        lines.append("objetivo %s" % ("sin objetivo" if not T else "%gR" % T))
+        lines.append("   umbral   " + "".join("%17s" % ("%dd %gATR" % (H, K)) for H in RB_HS for K in RB_KS))
+        for thr in RB_THR:
+            idx = [i for i, e in enumerate(gap) if e["r0"] >= thr]
+            row = "   >=%3.0f%% " % (100 * thr)
+            for H in RB_HS:
+                for K in RB_KS:
+                    m, mr = S(G.rs(H, K, T, idx))["mean"], S(R.rs(H, K, T))["mean"]
+                    row += "  %+.2f(%+.2f)  " % (m, m - mr)
+            lines.append(row)
+    grid = [(thr, H, K, T) for thr in RB_THR for H in RB_HS for K in RB_KS for T in RB_TS]
+    pos = edge = 0
+    for thr, H, K, T in grid:
+        idx = [i for i, e in enumerate(gap) if e["r0"] >= thr]
+        m, mr = S(G.rs(H, K, T, idx))["mean"], S(R.rs(H, K, T))["mean"]
+        pos += m > 0
+        edge += m > mr
+    lines.append("configuraciones con R > 0: %d de %d; con ventaja sobre el azar: %d de %d" % (pos, len(grid), edge, len(grid)))
+    fi = [i for i, e in enumerate(gap) if e["r0"] >= RB_FIXED["thr"]]
+    lines.append("en uso (%s, umbral 12%%): %s | azar %s" % (rb.cfg_label({k: RB_FIXED[k] for k in "HKT"}),
+                                                          rb.fmt(S(G.rs(60, 3.0, 10.0, fi))), rb.fmt(S(R.rs(60, 3.0, 10.0)))))
+    lines += ["", "2. WALK-FORWARD (5 anos de entrenamiento, 1 de prueba)"]
+    configs = [{"H": H, "K": K, "T": T, "thr": thr} for thr in RB_THR for H in RB_HS for K in RB_KS for T in RB_TS]
+    rows = rb.walk_forward(G, R, configs, RB_FIXED, sel, train_years=5, min_n=30)
+    lines += rb.report_walk_forward(rows, RB_FIXED)
+    lines += ["", "3. BOOTSTRAP POR MESES"]
+    rand_trades = [(rnd[i]["date"], r) for i, r in enumerate(R.rs(60, 3.0, 10.0))]
+    lines += rb.report_bootstrap("En uso, 2005-2026", rb.bootstrap([(gap[i]["date"], r) for i, r in
+                                                                     zip(fi, G.rs(60, 3.0, 10.0, fi))], rand_trades))
+    oos = []
+    for r in rows:
+        ids = [i for i, e in enumerate(gap) if int(e["date"][:4]) == r["year"] and sel(e, r["chosen"])]
+        oos += [(gap[i]["date"], x) for i, x in zip(ids, r["oos"])]
+    lines += rb.report_bootstrap("Walk-forward fuera de muestra", rb.bootstrap(oos, rand_trades))
+    return lines
+
+
 # ---------------------------------------------------------------- report
 
 def _m(xs):
@@ -397,6 +466,7 @@ def main(argv=None):
     ap.add_argument("--no-portfolio", action="store_true", help="skip the Sharpe / Sortino / DSR section")
     ap.add_argument("--trials", type=int, default=350, help="strategy variants tried in the research (DSR)")
     ap.add_argument("--trial-var", type=float, help="variance of the daily Sharpe across those variants")
+    ap.add_argument("--robustness", action="store_true", help="walk-forward, parameter sensitivity and bootstrap")
     a = ap.parse_args(argv)
     syms = symbols_from(a.symbols)
     if a.limit:
@@ -443,6 +513,7 @@ def main(argv=None):
     legs = {"gap": [], "tech": [], "rnd15": [], "rnd60": []}
     prng = random.Random(23)
     events, base, missing = [], [], 0
+    rob_gap, rob_rnd, rrng = [], [], random.Random(31)
     hours, clock = {}, {}
     for n, sym in enumerate(syms):
         try:
@@ -465,6 +536,10 @@ def main(argv=None):
         if not a.no_portfolio:
             for key, v in portfolio_trades(sym, bars, ev, cal, prng, tm).items():
                 legs[key] += v
+        if a.robustness:
+            g, r = robustness_events(bars, ev, rrng)
+            rob_gap += g
+            rob_rnd += r
         if (n + 1) % 25 == 0:
             print("  %d/%d acciones, %d eventos" % (n + 1, len(syms), len(events)), file=sys.stderr)
     print("Acciones sin datos del SEC (ETF, extranjeras) o con error: %d de %d" % (missing, len(syms)))
@@ -476,6 +551,8 @@ def main(argv=None):
         print("Sin eventos: nada que medir.")
         return 1
     print("\n".join(report(events, base)))
+    if a.robustness:
+        print("\n".join(robustness_report(rob_gap, rob_rnd)))
     if not a.no_portfolio:
         print("\n".join(portfolio_report([b["date"] for b in spy_bars], spy_bars, legs, a.trials, a.trial_var)))
     print("\nInvestigacion, no asesoria: promedios pasados, acciones de la lista de hoy (sesgo de supervivencia).")

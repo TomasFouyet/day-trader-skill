@@ -10,6 +10,10 @@ on:
         description: "Cuantas acciones de la watchlist de ejemplo (vacio = todas)"
         required: false
         default: ""
+      robustness:
+        description: "Pruebas de robustez (walk-forward, sensibilidad, bootstrap) en vez de la cartera"
+        type: boolean
+        default: false
       trial_var:
         description: "Varianza del Sharpe diario entre las variantes probadas (Deflated Sharpe)"
         required: false
@@ -32,8 +36,10 @@ jobs:
           SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
           LIMIT: ${{ inputs.limit }}
           TRIAL_VAR: ${{ inputs.trial_var }}
+          ROBUSTNESS: ${{ inputs.robustness }}
         run: |
           ARGS="--symbols trader-scanner/watchlist.example.txt"
           if [ -n "$LIMIT" ]; then ARGS="$ARGS --limit $LIMIT"; fi
           if [ -n "$TRIAL_VAR" ]; then ARGS="$ARGS --trial-var $TRIAL_VAR"; fi
+          if [ "$ROBUSTNESS" = "true" ]; then ARGS="$ARGS --robustness --no-portfolio"; fi
           python3 trader-analyst/drift_study.py $ARGS
