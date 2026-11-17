@@ -538,6 +538,31 @@ acciones son las grandes de hoy (sesgo de supervivencia), así que los números
 absolutos están inflados. La comparación contra el azar en las mismas
 acciones es la cifra honesta. Para medirlo de verdad está el paper trading.
 
+#### Pruebas de robustez (walk-forward, sensibilidad, bootstrap)
+
+`trader-analyst/robustness.py`. La parte técnica se corre en local con 20
+años de velas diarias; el momentum de resultados, en el workflow
+"Investigacion (resultados)" con la opción `robustness`. Todo es neto de
+0,1 % de costo por operación y "azar" son entradas al azar en las mismas
+acciones con la misma salida.
+
+| Prueba | Momentum de resultados (60d, 3 ATR, ≥ +12 %) | Setups técnicos (15d, 2 ATR) |
+|---|---|---|
+| Sensibilidad: configuraciones con ventaja sobre el azar | 213 de 216, y crece con el umbral y el plazo | 12 de 100, todas entre −0,02R y +0,003R |
+| Sensibilidad de los parámetros del setup | — | todas las variantes entre −0,006R y +0,004R |
+| Walk-forward 2010-2026, configuración en uso | +0,62R por operación, ventaja +0,30R | ventaja −0,005R |
+| Walk-forward eligiendo cada año con los 5 anteriores | ventaja +0,77R (casi siempre elige 60d, 2 ATR, umbral 15-20 %) | ventaja +0,006R |
+| Bootstrap por meses: ventaja (95 %) | +0,25R [+0,08 a +0,42], P(≤ 0) = 0,3 % | 0,00R [−0,016 a +0,016], P(≤ 0) = 50 % |
+| Bootstrap: años negativos | 10 % | 16 % |
+| Bootstrap: caída máxima (R sumados) | mediana 20R, peor 5 % 32R | — |
+
+El momentum de resultados pasa las tres pruebas. Los setups técnicos no
+tienen ventaja propia con ninguna salida ni con ningún parámetro: lo que ganan
+lo gana también el azar. La salvedad de siempre: las acciones son las grandes
+de hoy, y una acción que dio un gran salto por resultados tiene más
+probabilidad de estar hoy en la lista. Por eso el paper trading es la prueba
+que falta.
+
 ### 12. Sweep scanner (velas de 30 minutos, 1 hora o 4 horas)
 
 `trader-scanner/sweep.py` replica el indicador de TradingView "Trading
