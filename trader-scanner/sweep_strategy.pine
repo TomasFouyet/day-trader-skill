@@ -1,0 +1,311 @@
+// This Pine Script(R) strategy is a backtest of trader-scanner/sweep.py, the replica of the
+// "Trading Scanner" indicator: liquidity sweep -> market structure shift (MSS) -> limit entry at the
+// fair value gap (or the retest), stop beyond the sweep bar, target in R, time stop.
+// Same rules and defaults as sweep.py, so the Strategy Tester runs on TradingView's own candles
+// (the ones the indicator sees). Put it next to the indicator on the same chart: both should mark
+// the same sweeps, entries and stops. Research only: it places no real orders.
+//@version=6
+strategy("Sweep replica (backtest)", shorttitle = "Sweep BT", overlay = true, initial_capital = 10000,
+     commission_type = strategy.commission.percent, commission_value = 0.05, slippage = 1, pyramiding = 0,
+     max_bars_back = 500, process_orders_on_close = false)
+
+// ---------------------------------------------------------------- inputs (the indicator's settings)
+swingLen    = input.int(8, "Liquidity swing length", minval = 1, group = "Entry model")
+intLen      = input.int(3, "Internal structure length", minval = 1, group = "Entry model")
+maxSweepMss = input.int(20, "Max bars sweep -> MSS", minval = 1, group = "Entry model")
+maxSetup    = input.int(30, "Max bars setup -> entry", minval = 1, group = "Entry model")
+maxInTrade  = input.int(200, "Max bars in trade", minval = 1, group = "Entry model")
+tpR         = input.float(2.0, "Take profit (R)", minval = 0.1, group = "Entry model")
+minStopAtr  = input.float(0.2, "Min stop distance (x ATR)", minval = 0.0, group = "Entry model")
+minFvgAtr   = input.float(0.1, "Smallest gap that counts (x ATR)", minval = 0.0, group = "Entry model")
+atrLen      = input.int(14, "ATR length", minval = 1, group = "Entry model")
+sides       = input.string("Both", "Trade", options = ["Both", "Long only", "Short only"], group = "Backtest")
+riskPct     = input.float(1.0, "Risk per trade (% of equity)", minval = 0.01, group = "Backtest")
+flatEod     = input.bool(false, "Day trading: flat at the regular session close (stocks)", group = "Backtest")
+fromTime    = input.time(timestamp("2015-01-01T00:00:00"), "Trade from", group = "Backtest")
+
+atr = ta.atr(atrLen)
+
+// ---------------------------------------------------------------- pivots
+// A pivot confirmed on this bar: the pivot bar is n bars back, its n left bars are not higher
+// (lower for a low) and its n right bars are strictly lower (higher). Same as sweep.py.
+pivotHigh(int n) =>
+    float v = high[n]
+    bool ok = bar_index >= 2 * n
+    if ok
+        for k = 0 to n - 1
+            if high[k] >= v
+                ok := false
+                break
+    if ok
+        for k = n + 1 to 2 * n
+            if high[k] > v
+                ok := false
+                break
+    ok ? v : na
+
+pivotLow(int n) =>
+    float v = low[n]
+    bool ok = bar_index >= 2 * n
+    if ok
+        for k = 0 to n - 1
+            if low[k] <= v
+                ok := false
+                break
+    if ok
+        for k = n + 1 to 2 * n
+            if low[k] < v
+                ok := false
+                break
+    ok ? v : na
+
+// The latest fair value gap between the sweep bar and now that price has not come back into:
+// [near edge, far edge] or [na, na]. d = -1 for a short (low of the 1st candle above the high of the 3rd).
+findFvg(int fromBar, int d, float minSize) =>
+    float near = na
+    float far = na
+    int lastOff = bar_index - (fromBar + 2)
+    if lastOff >= 0
+        for o = 0 to lastOff
+            if d < 0 and low[o + 2] > high[o]
+                float nr = high[o]
+                float fr = low[o + 2]
+                bool clean = fr - nr >= minSize and close < nr
+                if clean and o > 0
+                    for j = 0 to o - 1
+                        if high[j] >= nr
+                            clean := false
+                            break
+                if clean
+                    near := nr
+                    far := fr
+                    break
+            if d > 0 and high[o + 2] < low[o]
+                float nr = low[o]
+                float fr = high[o + 2]
+                bool clean = nr - fr >= minSize and close > nr
+                if clean and o > 0
+                    for j = 0 to o - 1
+                        if low[j] <= nr
+                            clean := false
+                            break
+                if clean
+                    near := nr
+                    far := fr
+                    break
+    [near, far]
+
+newPh8 = pivotHigh(swingLen)
+newPl8 = pivotLow(swingLen)
+newPh3 = pivotHigh(intLen)
+newPl3 = pivotLow(intLen)
+
+// ---------------------------------------------------------------- state
+var float ph8 = na
+var float pl8 = na
+var float ph3 = na
+var float pl3 = na
+var int ph8Bar = na
+var int pl8Bar = na
+var bool liveH = false
+var bool liveL = false
+
+var string stage = "scan"      // scan, swept, setup, open
+var int dir = 0                // 1 long (a low was swept), -1 short
+var int sweepBar = na
+var int sweepDay = na
+var int setupBar = na
+var int entryBar = na
+var float level = na
+var float extreme = na
+var float mssLevel = na
+var float entryPx = na
+var float stopPx = na
+var float targetPx = na
+var bool tradable = false
+
+// the replica's own track record (in R, before costs): the Strategy Tester shows money after costs
+var int nTrades = 0
+var int nWins = 0
+var float sumR = 0.0
+var int nLong = 0
+var float sumRLong = 0.0
+var int nShort = 0
+var float sumRShort = 0.0
+
+if not na(newPh8)
+    ph8 := newPh8
+    ph8Bar := bar_index - swingLen
+    liveH := true
+if not na(newPl8)
+    pl8 := newPl8
+    pl8Bar := bar_index - swingLen
+    liveL := true
+if not na(newPh3)
+    ph3 := newPh3
+if not na(newPl3)
+    pl3 := newPl3
+
+today = year * 10000 + month * 100 + dayofmonth
+lastOfDay = flatEod and session.islastbar_regular
+orderId = dir > 0 ? "Long" : "Short"
+
+resetState() =>
+    "scan"
+
+recordR(float exitPx) =>
+    float r = (exitPx - entryPx) * dir / math.abs(entryPx - stopPx)
+    r
+
+// ---------------------------------------------------------------- one bar, the order of sweep.py
+bool handled = false
+
+if stage == "open"
+    float exitPx = na
+    if (open - stopPx) * dir <= 0
+        exitPx := open                                         // gapped through the stop
+    else if (dir > 0 ? low <= stopPx : high >= stopPx)
+        exitPx := stopPx
+    else if (dir > 0 ? high >= targetPx : low <= targetPx)
+        exitPx := targetPx
+    else if bar_index - entryBar >= maxInTrade
+        exitPx := close
+        if tradable
+            strategy.close(orderId, comment = "time", immediately = true)
+    else if lastOfDay
+        exitPx := close
+        if tradable
+            strategy.close(orderId, comment = "eod", immediately = true)
+    if not na(exitPx)
+        if tradable
+            float r = recordR(exitPx)
+            nTrades += 1
+            nWins += r > 0 ? 1 : 0
+            sumR += r
+            if dir > 0
+                nLong += 1
+                sumRLong += r
+            else
+                nShort += 1
+                sumRShort += r
+        stage := resetState()
+    handled := true
+
+if stage == "setup" and not handled
+    if bar_index - setupBar > maxSetup or (open - stopPx) * dir <= 0
+        if tradable
+            strategy.cancel(orderId)
+        stage := resetState()
+    else if (dir > 0 ? low <= entryPx : high >= entryPx)
+        stage := "open"
+        entryBar := bar_index
+        if (dir > 0 ? low <= stopPx : high >= stopPx)          // filled and stopped in the same bar
+            if tradable
+                float r = -1.0
+                nTrades += 1
+                sumR += r
+                if dir > 0
+                    nLong += 1
+                    sumRLong += r
+                else
+                    nShort += 1
+                    sumRShort += r
+            stage := resetState()
+        else if lastOfDay
+            if tradable
+                strategy.close(orderId, comment = "eod", immediately = true)
+                float r = recordR(close)
+                nTrades += 1
+                nWins += r > 0 ? 1 : 0
+                sumR += r
+                if dir > 0
+                    nLong += 1
+                    sumRLong += r
+                else
+                    nShort += 1
+                    sumRShort += r
+            stage := resetState()
+        handled := true
+    else if lastOfDay
+        if tradable
+            strategy.cancel(orderId)
+        stage := resetState()
+    else
+        handled := true
+
+if stage == "swept" and not handled
+    if (close - extreme) * dir < 0                             // closed beyond the sweep bar: dead
+        stage := resetState()
+    else if bar_index - sweepBar > maxSweepMss or (flatEod and today != sweepDay)
+        stage := resetState()
+    else if (close - mssLevel) * dir > 0                       // the market structure shift
+        [near, far] = findFvg(sweepBar, dir, minFvgAtr * atr)
+        float e = na(near) ? mssLevel : near                   // the gap's near edge, else the retest
+        float floorDist = minStopAtr * atr
+        float s = dir < 0 ? math.max(extreme, e + floorDist) : math.min(extreme, e - floorDist)
+        if (s - e) * dir >= 0
+            stage := resetState()
+        else
+            entryPx := e
+            stopPx := s
+            targetPx := e + dir * tpR * math.abs(e - s)
+            setupBar := bar_index
+            stage := "setup"
+            bool sideOk = sides == "Both" or (sides == "Long only" and dir > 0) or (sides == "Short only" and dir < 0)
+            tradable := sideOk and time >= fromTime
+            if tradable
+                float qty = strategy.equity * riskPct / 100 / math.abs(e - s)
+                strategy.entry(orderId, dir > 0 ? strategy.long : strategy.short, qty = qty, limit = e)
+                strategy.exit(orderId + " exit", from_entry = orderId, stop = s, limit = targetPx)
+        handled := true
+    else
+        handled := true                                        // one sweep at a time
+
+if not handled
+    // a sweep of the latest swing high or low that is still live
+    bool upS = liveH and not na(ph8) and high > ph8 and close < ph8 and not na(pl3) and pl3 < close
+    bool dnS = liveL and not na(pl8) and low < pl8 and close > pl8 and not na(ph3) and ph3 > close
+    // the internal structure may be the opposite major swing only when that swing is older
+    if upS and pl3 == pl8 and nz(pl8Bar, -1) >= nz(ph8Bar, -1)
+        upS := false
+    if dnS and ph3 == ph8 and nz(ph8Bar, -1) >= nz(pl8Bar, -1)
+        dnS := false
+    if upS != dnS
+        if upS
+            liveH := false
+        else
+            liveL := false
+        stage := "swept"
+        dir := upS ? -1 : 1
+        sweepBar := bar_index
+        sweepDay := today
+        level := upS ? ph8 : pl8
+        extreme := upS ? high : low
+        mssLevel := upS ? pl3 : ph3
+
+// ---------------------------------------------------------------- drawing
+plot(ph8, "Swing high (liquidity)", color = color.new(color.gray, 60), style = plot.style_stepline)
+plot(pl8, "Swing low (liquidity)", color = color.new(color.gray, 60), style = plot.style_stepline)
+plot(stage == "swept" ? mssLevel : na, "MSS level", color = color.aqua, linewidth = 2, style = plot.style_linebr)
+plot(stage == "setup" or stage == "open" ? entryPx : na, "Entry", color = color.yellow, style = plot.style_linebr)
+plot(stage == "setup" or stage == "open" ? stopPx : na, "Stop", color = color.red, style = plot.style_linebr)
+plot(stage == "setup" or stage == "open" ? targetPx : na, "Target", color = color.lime, style = plot.style_linebr)
+plotshape(stage == "swept" and sweepBar == bar_index and dir < 0, "Sweep of a high", shape.triangledown,
+     location.abovebar, color.orange, size = size.tiny)
+plotshape(stage == "swept" and sweepBar == bar_index and dir > 0, "Sweep of a low", shape.triangleup,
+     location.belowbar, color.orange, size = size.tiny)
+
+var table box = table.new(position.bottom_right, 2, 6, bgcolor = color.new(color.black, 20), border_width = 1)
+if barstate.islast
+    table.cell(box, 0, 0, "Replica (R, before costs)", text_color = color.white)
+    table.cell(box, 1, 0, stage + (dir > 0 ? " long" : dir < 0 ? " short" : ""), text_color = color.white)
+    table.cell(box, 0, 1, "Trades", text_color = color.white)
+    table.cell(box, 1, 1, str.tostring(nTrades), text_color = color.white)
+    table.cell(box, 0, 2, "Win rate", text_color = color.white)
+    table.cell(box, 1, 2, nTrades > 0 ? str.tostring(100.0 * nWins / nTrades, "#.0") + "%" : "-", text_color = color.white)
+    table.cell(box, 0, 3, "Average R", text_color = color.white)
+    table.cell(box, 1, 3, nTrades > 0 ? str.tostring(sumR / nTrades, "+#.00;-#.00") : "-", text_color = color.white)
+    table.cell(box, 0, 4, "Long: n / avg R", text_color = color.white)
+    table.cell(box, 1, 4, str.tostring(nLong) + " / " + (nLong > 0 ? str.tostring(sumRLong / nLong, "+#.00;-#.00") : "-"), text_color = color.white)
+    table.cell(box, 0, 5, "Short: n / avg R", text_color = color.white)
+    table.cell(box, 1, 5, str.tostring(nShort) + " / " + (nShort > 0 ? str.tostring(sumRShort / nShort, "+#.00;-#.00") : "-"), text_color = color.white)

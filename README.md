@@ -605,6 +605,18 @@ en `"sweep": {...}` de la config (`swing_len`, `internal_len`,
 `take_profit_r`, `min_fvg_atr`, `symbols`, ...). Las velas de 4 horas son
 las dos de TradingView por sesión (09:30-13:30 y 13:30-16:00).
 
+**En TradingView:** `trader-scanner/sweep_strategy.pine` es la misma réplica
+como estrategia de Pine Script (v6). Copia el archivo, ábrelo en el Pine
+Editor, pulsa "Add to chart" y mira el "Strategy Tester". Úsalo junto al
+indicador en el mismo gráfico: deberían marcar los mismos barridos (triángulos
+naranjos), la misma línea de MSS (celeste) y la misma entrada, stop y objetivo.
+La tabla abajo a la derecha da el resultado de la réplica en R antes de
+costos; el Strategy Tester, en dinero con comisión (0,05 % por lado) y
+deslizamiento. Opciones: lado (ambos, solo largos o solo cortos), riesgo por
+operación, "flat at the regular session close" para day trading en acciones y
+fecha de inicio. En una vela que toca stop y objetivo, TradingView decide el
+orden con su propio supuesto, así que puede diferir algo de `sweep.py`.
+
 Dos cosas son propias y no del indicador: el hueco mínimo que cuenta
 (0,1 × ATR) y la nota de calidad (0 a 100).
 
