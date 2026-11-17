@@ -93,7 +93,8 @@ def walk_forward(grid, rand_grid, configs, fixed, select, train_years=5, min_n=3
     """Each test year: pick the config with the best mean R over the previous `train_years` years
     (at least min_n trades), then record what it did in the test year, next to the fixed config and
     random entries under the chosen config. select(event, cfg) -> True when the event is a trade.
-    -> [{"year", "chosen", "n", "oos", "fixed", "rand", "train"}]"""
+    -> [{"year", "chosen", "train", "oos", "fixed", "rand", "rand_fixed", "oos_dated", "rand_dated"}]
+    (the *_dated lists are (date, R) pairs, for bootstrap: the random entries use the CHOSEN exit)"""
     years = sorted({int(e["date"][:4]) for e in grid.events})
     rows = []
     by_year = {}
@@ -103,9 +104,15 @@ def walk_forward(grid, rand_grid, configs, fixed, select, train_years=5, min_n=3
     for i, e in enumerate(rand_grid.events):
         rby.setdefault(int(e["date"][:4]), []).append(i)
 
+    def sel_of(g, cfg, idx):
+        return [i for i in idx if select(g.events[i], cfg)] if g is grid else idx
+
     def rs_of(g, cfg, idx):
-        sel = [i for i in idx if select(g.events[i], cfg)] if g is grid else idx
-        return g.rs(cfg["H"], cfg["K"], cfg["T"], sel)
+        return g.rs(cfg["H"], cfg["K"], cfg["T"], sel_of(g, cfg, idx))
+
+    def dated(g, cfg, idx):
+        sel = sel_of(g, cfg, idx)
+        return [(g.events[i]["date"], r) for i, r in zip(sel, g.rs(cfg["H"], cfg["K"], cfg["T"], sel))]
     for y in years:
         train = [i for yy in range(y - train_years, y) for i in by_year.get(yy, [])]
         test = by_year.get(y, [])
@@ -123,7 +130,8 @@ def walk_forward(grid, rand_grid, configs, fixed, select, train_years=5, min_n=3
             continue
         rows.append({"year": y, "chosen": best, "train": best_m, "oos": rs_of(grid, best, test),
                      "fixed": rs_of(grid, fixed, test), "rand": rs_of(rand_grid, best, rby.get(y, [])),
-                     "rand_fixed": rs_of(rand_grid, fixed, rby.get(y, []))})
+                     "rand_fixed": rs_of(rand_grid, fixed, rby.get(y, [])),
+                     "oos_dated": dated(grid, best, test), "rand_dated": dated(rand_grid, best, rby.get(y, []))})
     return rows
 
 

@@ -374,11 +374,9 @@ def robustness_report(gap, rnd):
     rand_trades = [(rnd[i]["date"], r) for i, r in enumerate(R.rs(60, 3.0, 10.0))]
     lines += rb.report_bootstrap("En uso, 2005-2026", rb.bootstrap([(gap[i]["date"], r) for i, r in
                                                                      zip(fi, G.rs(60, 3.0, 10.0, fi))], rand_trades))
-    oos = []
-    for r in rows:
-        ids = [i for i, e in enumerate(gap) if int(e["date"][:4]) == r["year"] and sel(e, r["chosen"])]
-        oos += [(gap[i]["date"], x) for i, x in zip(ids, r["oos"])]
-    lines += rb.report_bootstrap("Walk-forward fuera de muestra", rb.bootstrap(oos, rand_trades))
+    oos = [p for r in rows for p in r["oos_dated"]]
+    rnd_oos = [p for r in rows for p in r["rand_dated"]]          # random entries with the chosen exits
+    lines += rb.report_bootstrap("Walk-forward fuera de muestra", rb.bootstrap(oos, rnd_oos))
     return lines
 
 

@@ -53,6 +53,8 @@ class WalkForwardAndBootstrap(unittest.TestCase):
             self.assertEqual(r["chosen"]["kind"], "a")                 # the rising one, every year
             self.assertTrue(all(x > 0 for x in r["oos"]))
             self.assertTrue(all(x < 0 for x in r["fixed"]))
+            self.assertEqual(len(r["oos_dated"]), len(r["oos"]))
+            self.assertTrue(all(d[:4] == str(r["year"]) for d, _ in r["rand_dated"]))
         text = "\n".join(rb.report_walk_forward(rows, fixed))
         self.assertIn("anos fuera de muestra positivos (elegida): 5 de 5", text)
 
