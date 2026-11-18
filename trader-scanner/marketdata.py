@@ -87,8 +87,9 @@ def window(rng, interval, now_utc, prepost):
     return frame, _iso(start), None, ("iex" if prepost else "sip")
 
 
-def _get(http, url, sleep=None, tries=8):
-    """One GET with backoff on HTTP 429 (Alpaca's per-minute request limit) and 5xx."""
+def _get(http, url, sleep=None, tries=12):
+    """One GET with backoff on HTTP 429 (Alpaca's per-minute request limit) and 5xx. On a 429 it waits until
+    the X-RateLimit-Reset time Alpaca sends, when there is one (at most a minute)."""
     sleep = sleep or time.sleep
     for k in range(tries):
         try:
@@ -96,7 +97,14 @@ def _get(http, url, sleep=None, tries=8):
         except urllib.error.HTTPError as e:
             if (e.code != 429 and e.code < 500) or k == tries - 1:
                 raise
-            sleep(min(30, 2 ** k))
+            wait = min(60, 2 ** k)
+            try:
+                reset = float((e.headers or {}).get("X-RateLimit-Reset") or 0)
+                if reset:
+                    wait = max(1.0, min(60.0, reset - time.time() + 1))
+            except (TypeError, ValueError, AttributeError):
+                pass
+            sleep(wait)
     return {}
 
 

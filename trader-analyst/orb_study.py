@@ -233,15 +233,16 @@ def main(argv=None):
     def get(sym):
         try:
             return fetch(sym, a.days, a.offline)
-        except scan.ScanError:
+        except Exception as e:                     # one stock that will not download is skipped, not the run
+            print("  %s: sin datos (%s)" % (sym, type(e).__name__), file=sys.stderr)
             return None
 
     trades, rnd, var = [], [], {name: [] for name, _ in VARIANTS}
     used, skipped, first, last = 0, [], None, None
-    ahead = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+    ahead = concurrent.futures.ThreadPoolExecutor(max_workers=2)
     futs = {}
     for k, sym in enumerate(syms):
-        for nxt in syms[k:k + 3]:
+        for nxt in syms[k:k + 2]:
             if nxt not in futs:
                 futs[nxt] = ahead.submit(get, nxt)
         series = futs.pop(sym).result()
