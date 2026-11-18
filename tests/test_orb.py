@@ -6,6 +6,7 @@ import gzip
 import io
 import json
 import os
+import random
 import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
@@ -15,6 +16,7 @@ from _load import load
 orb = load("trader-scanner", "orb")
 study = load("trader-analyst", "orb_study")
 validate = load("trader-analyst", "orb_validate")
+optimize = load("trader-analyst", "orb_optimize")
 
 UP = (2.0, 1.0, 999)       # (ema 50, ema 200, completed 15m bars): trend up
 DOWN = (1.0, 2.0, 999)
@@ -311,6 +313,50 @@ class Validate(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("orden limite en el retesteo", out.getvalue())
         validate.OPTS.update(entry="close", overlap=False)
+
+    def test_optimizer_report(self):
+        tmp = tempfile.mkdtemp()
+        write_test_chart(tmp)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = optimize.main(["--offline", tmp, "--symbols", "TEST", "--small", "--workers", "1", "--boots", "20",
+                                  "--min-n", "1", "--min-train", "1"])
+        text = out.getvalue()
+        self.assertEqual(code, 0, err.getvalue())
+        for part in ("1. Las 15 mejores", "2. Probabilidad de sobreajuste", "3. Reality Check", "4. Walk-forward",
+                     "5. Estabilidad", "6. Deflated Sharpe"):
+            self.assertIn(part, text)
+        doc = json.loads(text.split("@@ORBOPT@@ ", 1)[1].splitlines()[0])
+        self.assertEqual(doc["versions"], 16)
+
+    def test_optimizer_grid_holds_the_current_rules(self):
+        cfgs = list(__import__("itertools").product(*(optimize.FULL[d] for d in optimize.DIMS)))
+        self.assertEqual(len(cfgs), 2880)
+        self.assertIn(optimize.CURRENT, cfgs)
+        p = optimize.params(optimize.CURRENT)
+        self.assertEqual((p["box_end"], p["partial_r"], p["partial_frac"], p["hold_days"]), ("10:00", 1.7, 0.7, 20))
+        self.assertIsNone(optimize.params(("10:00", "both", "none", "12:55", 1.7, 1.0, 0))["partial_r"])
+
+    def test_overfitting_measures_tell_luck_from_edge(self):
+        rng = random.Random(4)
+        months, per = 60, 20
+        month_of = [m for m in range(months) for _ in range(per)]
+        days_in = [per] * months
+
+        def agg(edge):
+            daily = [rng.gauss(edge, 1.0) for _ in month_of]
+            return optimize.Agg(daily, [1] * len(daily), month_of, months)
+        noise = [agg(0.0) for _ in range(40)]
+        near = [[] for _ in noise]
+        elig = [True] * len(noise)
+        luck = optimize.cscv(noise, elig, near, months, days_in)
+        self.assertGreater(luck["best"]["pbo"], 0.2)
+        self.assertGreater(optimize.reality_check(noise, elig, months, 200, random.Random(1))["p_rc"], 0.05)
+        real = noise + [agg(0.25)]
+        near = [[] for _ in real]
+        elig = [True] * len(real)
+        self.assertLess(optimize.cscv(real, elig, near, months, days_in)["best"]["pbo"], 0.05)
+        self.assertLess(optimize.reality_check(real, elig, months, 200, random.Random(1))["p_rc"], 0.05)
 
     def test_block_bootstrap(self):
         import random
