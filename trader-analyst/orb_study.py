@@ -218,6 +218,7 @@ def main(argv=None):
     if a.limit:
         syms = syms[:a.limit]
     base = {"target_r": a.target}
+    scan._marketdata()           # load it once here, before the download threads start
 
     def get(sym):
         try:

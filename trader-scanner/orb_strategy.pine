@@ -1,0 +1,138 @@
+// Caja 09:00-10:30 (ruptura) - la misma regla que trader-scanner/orb.py, para el Strategy Tester.
+// Investigacion: no es asesoria y no coloca ordenes reales.
+//
+// Reglas:
+//  1. Caja: maximo y minimo de las velas de 09:00 a 10:30 de Nueva York (pre-mercado incluido).
+//     Usalo en velas de 5 minutos. En acciones activa el horario extendido (ETH) del grafico;
+//     si no, la caja empieza a las 09:30.
+//  2. Despues de las 10:30, una vela que CIERRA sobre la caja es un largo; bajo la caja, un corto.
+//  3. Entrada a ese cierre, stop en el otro borde de la caja, objetivo a 3R.
+//  4. Filtro: largos solo con la EMA 50 sobre la EMA 200 en 15 minutos; cortos al reves.
+//  Una operacion al dia. Por defecto se cierra a las 16:00 si no toco stop ni objetivo.
+//
+//@version=6
+strategy("Caja 9:00-10:30 (ruptura)", overlay = true, initial_capital = 100000,
+     process_orders_on_close = true, pyramiding = 0,
+     commission_type = strategy.commission.percent, commission_value = 0.01, slippage = 1)
+
+boxSess    = input.session("0900-1030", "Caja (hora de Nueva York)")
+tradeSess  = input.session("1030-1600", "Ventana de entradas (hora de Nueva York)")
+tpR        = input.float(3.0, "Objetivo (R)", minval = 0.5, step = 0.5)
+useFilter  = input.bool(true, "Filtro EMA rapida/lenta")
+filterTf   = input.timeframe("15", "Temporalidad del filtro")
+fastLen    = input.int(50, "EMA rapida", minval = 1)
+slowLen    = input.int(200, "EMA lenta", minval = 2)
+allowLong  = input.bool(true, "Permitir largos")
+allowShort = input.bool(true, "Permitir cortos")
+firstOnly  = input.bool(false, "Solo la primera ruptura del dia")
+flatEod    = input.bool(true, "Cerrar a la hora de cierre si sigue abierta")
+flatH      = input.int(16, "Hora de cierre (NY)", minval = 0, maxval = 23)
+flatM      = input.int(0, "Minuto de cierre", minval = 0, maxval = 59)
+minBoxBars = input.int(9, "Velas minimas en la caja", minval = 1)
+riskPct    = input.float(1.0, "Riesgo por operacion (% del capital)", minval = 0.1, step = 0.1)
+fromTime   = input.time(timestamp("2020-01-01T00:00:00"), "Desde")
+
+TZ = "America/New_York"
+
+inBox   = not na(time(timeframe.period, boxSess, TZ))
+inTrade = not na(time(timeframe.period, tradeSess, TZ))
+nyDay   = dayofmonth(time, TZ)
+newDay  = nyDay != nyDay[1]
+
+var float boxHi = na
+var float boxLo = na
+var int   boxBars = 0
+var bool  traded = false
+var int   firstDir = 0
+var float entryPx = na
+var float stopPx = na
+var float tgtPx = na
+var float riskPts = na
+
+if newDay
+    boxHi := na
+    boxLo := na
+    boxBars := 0
+    traded := false
+    firstDir := 0
+
+if inBox
+    boxHi := na(boxHi) ? high : math.max(boxHi, high)
+    boxLo := na(boxLo) ? low : math.min(boxLo, low)
+    boxBars += 1
+
+// EMAs de 15 minutos ya cerradas al cierre de esta vela (sin mirar al futuro en el historico)
+[emaF, emaS] = request.security(syminfo.tickerid, filterTf, [ta.ema(close, fastLen), ta.ema(close, slowLen)],
+     lookahead = barmerge.lookahead_off)
+trendUp = emaF > emaS
+trendDn = emaF < emaS
+
+boxReady = inTrade and not inBox and boxBars >= minBoxBars and not na(boxHi)
+brkUp = boxReady and close > boxHi
+brkDn = boxReady and close < boxLo
+isFirst = firstDir == 0
+if (brkUp or brkDn) and firstDir == 0
+    firstDir := brkUp ? 1 : -1
+
+canTrade = strategy.position_size == 0 and not traded and time >= fromTime
+longOk  = canTrade and brkUp and allowLong and (not useFilter or trendUp) and (not firstOnly or isFirst)
+shortOk = canTrade and brkDn and allowShort and (not useFilter or trendDn) and (not firstOnly or isFirst)
+
+qtyFor(r) =>
+    q = math.floor(strategy.equity * riskPct / 100.0 / (r * syminfo.pointvalue))
+    math.max(q, 1)
+
+if longOk
+    entryPx := close
+    stopPx := boxLo
+    riskPts := entryPx - stopPx
+    tgtPx := entryPx + tpR * riskPts
+    strategy.entry("Largo", strategy.long, qty = qtyFor(riskPts))
+    strategy.exit("Salida L", "Largo", stop = stopPx, limit = tgtPx)
+    traded := true
+else if shortOk
+    entryPx := close
+    stopPx := boxHi
+    riskPts := stopPx - entryPx
+    tgtPx := entryPx - tpR * riskPts
+    strategy.entry("Corto", strategy.short, qty = qtyFor(riskPts))
+    strategy.exit("Salida C", "Corto", stop = stopPx, limit = tgtPx)
+    traded := true
+
+flatT = timestamp(TZ, year(time, TZ), month(time, TZ), dayofmonth(time, TZ), flatH, flatM)
+if flatEod and strategy.position_size != 0 and time_close >= flatT and time < flatT
+    strategy.close_all(comment = "cierre")
+
+// Resultado en R antes de comisiones (comparable con orb.py)
+var float sumR = 0.0
+var int nTr = 0
+var int nWin = 0
+var float riskOpen = na
+if strategy.position_size != 0 and strategy.position_size[1] == 0
+    riskOpen := riskPts
+if strategy.closedtrades > strategy.closedtrades[1] and not na(riskOpen)
+    k = strategy.closedtrades - 1
+    d = strategy.closedtrades.size(k) > 0 ? 1.0 : -1.0
+    r = (strategy.closedtrades.exit_price(k) - strategy.closedtrades.entry_price(k)) * d / riskOpen
+    sumR += r
+    nTr += 1
+    nWin += r > 0 ? 1 : 0
+
+var table tb = table.new(position.bottom_right, 2, 4, bgcolor = color.new(color.black, 20), border_width = 1)
+if barstate.islast
+    table.cell(tb, 0, 0, "Operaciones", text_color = color.white)
+    table.cell(tb, 1, 0, str.tostring(nTr), text_color = color.white)
+    table.cell(tb, 0, 1, "Ganadoras", text_color = color.white)
+    table.cell(tb, 1, 1, nTr > 0 ? str.tostring(100.0 * nWin / nTr, "#.0") + "%" : "-", text_color = color.white)
+    table.cell(tb, 0, 2, "R promedio", text_color = color.white)
+    table.cell(tb, 1, 2, nTr > 0 ? str.tostring(sumR / nTr, "#.000") : "-", text_color = color.white)
+    table.cell(tb, 0, 3, "R total", text_color = color.white)
+    table.cell(tb, 1, 3, str.tostring(sumR, "#.0"), text_color = color.white)
+
+plot(boxReady or inBox ? boxHi : na, "Techo de la caja", color.new(color.teal, 0), 2, plot.style_linebr)
+plot(boxReady or inBox ? boxLo : na, "Piso de la caja", color.new(color.orange, 0), 2, plot.style_linebr)
+plot(strategy.position_size != 0 ? stopPx : na, "Stop", color.red, 1, plot.style_linebr)
+plot(strategy.position_size != 0 ? tgtPx : na, "Objetivo", color.lime, 1, plot.style_linebr)
+bgcolor(inBox ? color.new(color.blue, 90) : na, title = "Horario de la caja")
+plot(useFilter ? emaF : na, "EMA rapida (15m)", color.new(color.yellow, 40))
+plot(useFilter ? emaS : na, "EMA lenta (15m)", color.new(color.purple, 40))

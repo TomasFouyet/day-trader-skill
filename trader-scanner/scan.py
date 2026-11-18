@@ -243,8 +243,8 @@ def _marketdata():
         import importlib.util
         spec = importlib.util.spec_from_file_location("trader_marketdata", path)
         m = importlib.util.module_from_spec(spec)
-        sys.modules["trader_marketdata"] = m
         spec.loader.exec_module(m)
+        m = sys.modules.setdefault("trader_marketdata", m)   # registered only once loaded: threads may race here
     return m
 
 
