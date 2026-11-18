@@ -15,6 +15,8 @@
 //
 // Otras versiones probadas: caja 0900-1030 o 0900-0930, filtro EMA 50/200 de 15 minutos, entrada en el
 // retesteo con orden limite, objetivo para el resto (si es mayor que el parcial), cierre a las 16:00.
+// Una ruptura sin entrada porque sigue abierta otra operacion se marca con una etiqueta gris ("Ruptura sin
+// entrada") y se cuenta en la tabla. Es la regla probada (una a la vez por indice), no un error.
 // TradingView no mantiene un largo y un corto a la vez: con "Permitir otra operacion" una senal contraria
 // cierra la posicion abierta.
 //
@@ -26,7 +28,7 @@
 strategy("Caja 9:00-10:00 (parcial)", overlay = true, initial_capital = 100000,
      process_orders_on_close = true, pyramiding = 20, margin_long = 0, margin_short = 0,
      commission_type = strategy.commission.percent, commission_value = 0.01, slippage = 1,
-     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 50)
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500)
 
 boxSess    = input.session("0900-1000", "Caja (hora de Nueva York)")
 tradeSess  = input.session("1000-1300", "Ventana de entradas (hora de Nueva York)")
@@ -54,6 +56,8 @@ fromTime   = input.time(timestamp("2020-01-01T00:00:00"), "Desde")
 maxDays    = input.int(20, "Cerrar despues de (dias de mercado, 0 = nunca)", minval = 0)
 drawBox    = input.bool(true, "Dibujar la caja")
 boxColor   = input.color(color.new(color.blue, 85), "Color de la caja")
+showSkips  = input.bool(true, "Marcar las rupturas sin entrada (y por que)")
+showExits  = input.bool(true, "Marcar cada salida en su precio real (en R)")
 
 TZ = "America/New_York"
 
@@ -83,6 +87,8 @@ var int nDays = 0        // dias con caja valida
 var int nBreakDays = 0   // dias con al menos un cierre fuera de la caja
 var int nBlocked = 0     // rupturas descartadas por el filtro o por el lado apagado
 var int nOrders = 0      // entradas enviadas
+var int nBusy = 0        // dias con ruptura sin entrada porque seguia abierta otra operacion
+var bool skipNoted = false
 
 if newDay
     boxHi := na
@@ -92,6 +98,7 @@ if newDay
     firstDir := 0
     sawBreak := false
     boxCounted := false
+    skipNoted := false
     bx := na
     lnHi := na
     lnLo := na
@@ -141,6 +148,19 @@ shortOk = canTrade and brkDn and allowShort and (not useFilter or trendDn) and (
 if canTrade and (brkUp or brkDn) and not longOk and not shortOk
     nBlocked += 1
 
+// Ruptura valida pero sin entrada porque sigue abierta una operacion de antes (por defecto el 30% que queda
+// tras el parcial puede seguir hasta 20 dias): es la regla, no un error. Se marca en el grafico.
+busy = not allowStack and strategy.opentrades > 0 and not traded and time >= fromTime
+if busy and (brkUp or brkDn) and not skipNoted
+    skipNoted := true
+    nBusy += 1
+    if showSkips
+        t0 = strategy.opentrades.entry_time(0)
+        side0 = strategy.opentrades.size(0) > 0 ? "larga" : "corta"
+        label.new(bar_index, brkUp ? high : low, "Ruptura sin entrada:\nsigue abierta la " + side0 + " del " +
+             str.format_time(t0, "dd/MM", TZ), color = color.new(color.gray, 10), textcolor = color.white,
+             style = brkUp ? label.style_label_down : label.style_label_up, size = size.small)
+
 qtyFor(r) =>
     float q = fixedQty
     if sizeMode == "Riesgo %"
@@ -155,6 +175,8 @@ var map<string, float> riskById = map.new<string, float>()
 var map<string, float> qtyById = map.new<string, float>()
 var map<string, float> runTgtById = map.new<string, float>()
 var map<string, bool> beDone = map.new<string, bool>()
+var float showStop = na   // stop vigente de la ultima operacion (pasa a la entrada tras el parcial)
+var float showTgt = na    // proximo objetivo (el parcial; despues, el del resto si lo hay)
 retest = entryMode == "Retesteo (limite)"
 if longOk or shortOk
     dir = longOk ? 1 : -1
@@ -178,8 +200,11 @@ if longOk or shortOk
         runTgtById.put(tid, runTgt)
         strategy.exit(tid + "p", tid, qty_percent = partialPct, stop = stopPx, limit = entryPx + dir * partialR * riskPts)
         strategy.exit(tid + "r", tid, stop = stopPx, limit = runTgt)
+        showTgt := entryPx + dir * partialR * riskPts
     else
         strategy.exit(tid + "x", tid, stop = stopPx, limit = tgtPx)
+        showTgt := tgtPx
+    showStop := stopPx
     traded := true
     nOrders += 1
 
@@ -191,6 +216,8 @@ if usePartial and strategy.opentrades > 0
         if not na(q0) and math.abs(strategy.opentrades.size(i)) < q0 and not beDone.contains(eid)
             strategy.exit(eid + "r", eid, stop = strategy.opentrades.entry_price(i), limit = runTgtById.get(eid))
             beDone.put(eid, true)
+            showStop := strategy.opentrades.entry_price(i)
+            showTgt := runTgtById.get(eid)
 
 // lo que siga abierto a los maxDays dias de mercado se cierra (a partir de las 15:30)
 var int dayCount = 0
@@ -231,6 +258,13 @@ while seen < strategy.closedtrades
         d = strategy.closedtrades.size(seen) > 0 ? 1.0 : -1.0
         r = (strategy.closedtrades.exit_price(seen) - strategy.closedtrades.entry_price(seen)) * d / rk
         f = math.abs(strategy.closedtrades.size(seen)) / q0
+        // TradingView dibuja la flecha de la orden debajo o encima de la vela, no en el precio: esta marca
+        // queda en el precio real de la salida
+        if showExits
+            label.new(strategy.closedtrades.exit_time(seen), strategy.closedtrades.exit_price(seen),
+                 (r >= 0 ? "+" : "") + str.tostring(r, "#.0#") + "R", xloc = xloc.bar_time,
+                 style = label.style_label_left, size = size.tiny, textcolor = color.white,
+                 color = r > 0.05 ? color.new(color.green, 15) : r < -0.05 ? color.new(color.red, 15) : color.new(color.gray, 15))
         a = nz(accR.get(eid)) + r * f
         b = nz(accF.get(eid)) + f
         accR.put(eid, a)
@@ -241,7 +275,7 @@ while seen < strategy.closedtrades
             nWin += a > 0 ? 1 : 0
     seen += 1
 
-var table tb = table.new(position.bottom_right, 2, 8, bgcolor = color.new(color.black, 20), border_width = 1)
+var table tb = table.new(position.bottom_right, 2, 9, bgcolor = color.new(color.black, 20), border_width = 1)
 cell(row, name, value) =>
     table.cell(tb, 0, row, name, text_color = color.white, text_size = size.small)
     table.cell(tb, 1, row, value, text_color = color.white, text_size = size.small)
@@ -254,11 +288,12 @@ if barstate.islast
     cell(5, "Ganadoras", nTr > 0 ? str.tostring(100.0 * nWin / nTr, "#.0") + "%" : "-")
     cell(6, "R promedio", nTr > 0 ? str.tostring(sumR / nTr, "#.000") : "-")
     cell(7, "R total", str.tostring(sumR, "#.0"))
+    cell(8, "Rupturas con otra abierta", str.tostring(nBusy))
     if nDays == 0
         label.new(bar_index, high, "Sin velas en la caja: usa velas de 5 min y activa el horario extendido (ETH)",
              color = color.red, textcolor = color.white, style = label.style_label_down)
 
-plot(strategy.position_size != 0 ? stopPx : na, "Stop", color.red, 1, plot.style_linebr)
-plot(strategy.position_size != 0 ? tgtPx : na, "Objetivo", color.lime, 1, plot.style_linebr)
+plot(strategy.position_size != 0 ? showStop : na, "Stop vigente", color.red, 1, plot.style_linebr)
+plot(strategy.position_size != 0 ? showTgt : na, "Proximo objetivo", color.lime, 1, plot.style_linebr)
 plot(useFilter ? emaF : na, "EMA rapida (15m)", color.new(color.yellow, 40))
 plot(useFilter ? emaS : na, "EMA lenta (15m)", color.new(color.purple, 40))
