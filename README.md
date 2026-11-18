@@ -969,6 +969,27 @@ mientras sigue abierto: esas ~3.600 rupturas saltadas promedian −0,025R. La
 regla solo mira el pasado (no hay trampa), pero que casi todo dependa de ella
 hace al resultado más frágil.
 
+**Optimización** (`trader-analyst/orb_optimize.py`, en Actions: Investigación,
+estudio `optimizar-caja`): 2.880 versiones (caja, lados, filtro, última
+entrada, nivel y tamaño del parcial, días abierta), una a la vez por índice.
+
+| Prueba | Resultado |
+|---|---|
+| Probabilidad de sobreajuste (CSCV, 252 divisiones) | 17 % eligiendo el mejor Sharpe, 27 % eligiendo la mejor meseta. El Sharpe de la elegida cae de 1,78 dentro de muestra a 0,45 fuera |
+| Reality Check de White / SPA de Hansen | p = 0,088 / 0,084: con 2.880 intentos, la mejor no supera a la suerte al 5 % |
+| Walk-forward, ventana móvil de 24 meses | mejor Sharpe +0,017R por operación; mejor meseta +0,093R; mezcla de las 10 mejores +0,036R |
+| Walk-forward, ventana anclada | −0,037R, −0,046R y −0,001R |
+| La elegida, fija, en los mismos meses | +0,088R (Sharpe 0,74) |
+| Deflated Sharpe | 0,11 la mejor, 0,01 la elegida (la suerte da 1,95 a la mejor de 2.880) |
+| Vecinas de la elegida | 8 de 8 positivas (Sharpe 0,33 a 1,02): está en una meseta, no en un pico |
+
+Lo que se repite en todas: caja hasta 10:00 o 10:30 (la de 09:30 pierde),
+dejar un resto abierto (cerrar el 100 % en el objetivo queda en cero) y
+mantenerlo 20 a 40 días (0 a 10 días queda en cero). El nivel del parcial
+importa poco. Los largos aportan casi todo (la elegida: +0,19R los largos y
++0,05R los cortos), en cinco años de alza, aunque 2022 fue positivo.
+Reoptimizar no mejoró a la elegida fuera de muestra, así que no se cambia.
+
 ### 14. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
