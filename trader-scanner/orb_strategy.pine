@@ -3,7 +3,8 @@
 //
 // Reglas:
 //  1. Caja: maximo y minimo de las velas de 09:00 a 09:30 de Nueva York (pre-mercado incluido).
-//     La version anterior usaba 09:00-10:30: cambia "Caja" a 0900-1030 y "Ventana" a 1030-1600.
+//     La version anterior usaba 09:00-10:30: cambia "Caja" a 0900-1030, "Ventana" a 1030-1600 y
+//     "Velas minimas" a 9.
 //     Usalo en velas de 5 minutos. En ETF y acciones activa el horario extendido (ETH) del grafico:
 //     sin el pre-mercado la caja de 09:00-09:30 queda vacia y no opera. En futuros no hace falta.
 //  2. Despues de las 09:30, una vela que CIERRA sobre la caja es un largo; bajo la caja, un corto.
@@ -11,10 +12,15 @@
 //  4. Filtro: largos solo con la EMA 50 sobre la EMA 200 en 15 minutos; cortos al reves.
 //  Una operacion al dia. Por defecto se cierra a las 16:00 si no toco stop ni objetivo.
 //
+// margin_long/short = 0: sin esto TradingView rechaza en silencio las ordenes cuyo valor supera el
+// capital (con una caja chica, arriesgar 1% puede ser comprar 3 veces el capital; un contrato de NQ vale
+// mas de 500.000 USD), y la estrategia hace muy pocas operaciones.
+//
 //@version=6
 strategy("Caja 9:00-9:30 (ruptura)", overlay = true, initial_capital = 100000,
-     process_orders_on_close = true, pyramiding = 0,
-     commission_type = strategy.commission.percent, commission_value = 0.01, slippage = 1)
+     process_orders_on_close = true, pyramiding = 0, margin_long = 0, margin_short = 0,
+     commission_type = strategy.commission.percent, commission_value = 0.01, slippage = 1,
+     max_boxes_count = 500, max_lines_count = 500, max_labels_count = 50)
 
 boxSess    = input.session("0900-0930", "Caja (hora de Nueva York)")
 tradeSess  = input.session("0930-1600", "Ventana de entradas (hora de Nueva York)")
@@ -30,8 +36,12 @@ flatEod    = input.bool(true, "Cerrar a la hora de cierre si sigue abierta")
 flatH      = input.int(16, "Hora de cierre (NY)", minval = 0, maxval = 23)
 flatM      = input.int(0, "Minuto de cierre", minval = 0, maxval = 59)
 minBoxBars = input.int(3, "Velas minimas en la caja", minval = 1)
+sizeMode   = input.string("Riesgo %", "Tamano", options = ["Riesgo %", "Cantidad fija"])
 riskPct    = input.float(1.0, "Riesgo por operacion (% del capital)", minval = 0.1, step = 0.1)
+fixedQty   = input.float(1, "Cantidad fija (contratos o acciones)", minval = 0.001)
 fromTime   = input.time(timestamp("2020-01-01T00:00:00"), "Desde")
+drawBox    = input.bool(true, "Dibujar la caja")
+boxColor   = input.color(color.new(color.blue, 85), "Color de la caja")
 
 TZ = "America/New_York"
 
@@ -39,16 +49,28 @@ inBox   = not na(time(timeframe.period, boxSess, TZ))
 inTrade = not na(time(timeframe.period, tradeSess, TZ))
 nyDay   = dayofmonth(time, TZ)
 newDay  = nyDay != nyDay[1]
+flatT   = timestamp(TZ, year(time, TZ), month(time, TZ), dayofmonth(time, TZ), flatH, flatM)
 
 var float boxHi = na
 var float boxLo = na
 var int   boxBars = 0
 var bool  traded = false
 var int   firstDir = 0
+var bool  sawBreak = false
+var bool  boxCounted = false
 var float entryPx = na
 var float stopPx = na
 var float tgtPx = na
 var float riskPts = na
+var box   bx = na
+var line  lnHi = na
+var line  lnLo = na
+
+// Diagnostico: donde se pierden los dias
+var int nDays = 0        // dias con caja valida
+var int nBreakDays = 0   // dias con al menos un cierre fuera de la caja
+var int nBlocked = 0     // rupturas descartadas por el filtro o por el lado apagado
+var int nOrders = 0      // entradas enviadas
 
 if newDay
     boxHi := na
@@ -56,11 +78,24 @@ if newDay
     boxBars := 0
     traded := false
     firstDir := 0
+    sawBreak := false
+    boxCounted := false
+    bx := na
+    lnHi := na
+    lnLo := na
 
 if inBox
     boxHi := na(boxHi) ? high : math.max(boxHi, high)
     boxLo := na(boxLo) ? low : math.min(boxLo, low)
     boxBars += 1
+    if drawBox
+        if na(bx)
+            bx := box.new(time, boxHi, time_close, boxLo, xloc = xloc.bar_time, border_color = color.new(color.blue, 30),
+                 bgcolor = boxColor)
+        else
+            box.set_top(bx, boxHi)
+            box.set_bottom(bx, boxLo)
+            box.set_right(bx, time_close)
 
 // EMAs de 15 minutos ya cerradas al cierre de esta vela (sin mirar al futuro en el historico)
 [emaF, emaS] = request.security(syminfo.tickerid, filterTf, [ta.ema(close, fastLen), ta.ema(close, slowLen)],
@@ -69,19 +104,37 @@ trendUp = emaF > emaS
 trendDn = emaF < emaS
 
 boxReady = inTrade and not inBox and boxBars >= minBoxBars and not na(boxHi)
+
+if boxReady and not boxCounted
+    boxCounted := true
+    nDays += 1
+    if drawBox
+        lnHi := line.new(time, boxHi, flatT, boxHi, xloc = xloc.bar_time, color = color.new(color.teal, 0),
+             style = line.style_dashed)
+        lnLo := line.new(time, boxLo, flatT, boxLo, xloc = xloc.bar_time, color = color.new(color.orange, 0),
+             style = line.style_dashed)
+
 brkUp = boxReady and close > boxHi
 brkDn = boxReady and close < boxLo
 isFirst = firstDir == 0
 if (brkUp or brkDn) and firstDir == 0
     firstDir := brkUp ? 1 : -1
+if (brkUp or brkDn) and not sawBreak
+    sawBreak := true
+    nBreakDays += 1
 
 canTrade = strategy.position_size == 0 and not traded and time >= fromTime
 longOk  = canTrade and brkUp and allowLong and (not useFilter or trendUp) and (not firstOnly or isFirst)
 shortOk = canTrade and brkDn and allowShort and (not useFilter or trendDn) and (not firstOnly or isFirst)
+if canTrade and (brkUp or brkDn) and not longOk and not shortOk
+    nBlocked += 1
 
 qtyFor(r) =>
-    q = math.floor(strategy.equity * riskPct / 100.0 / (r * syminfo.pointvalue))
-    math.max(q, 1)
+    float q = fixedQty
+    if sizeMode == "Riesgo %"
+        q := math.floor(strategy.equity * riskPct / 100.0 / (r * syminfo.pointvalue))
+        q := math.max(q, 1)
+    q
 
 if longOk
     entryPx := close
@@ -91,6 +144,7 @@ if longOk
     strategy.entry("Largo", strategy.long, qty = qtyFor(riskPts))
     strategy.exit("Salida L", "Largo", stop = stopPx, limit = tgtPx)
     traded := true
+    nOrders += 1
 else if shortOk
     entryPx := close
     stopPx := boxHi
@@ -99,8 +153,8 @@ else if shortOk
     strategy.entry("Corto", strategy.short, qty = qtyFor(riskPts))
     strategy.exit("Salida C", "Corto", stop = stopPx, limit = tgtPx)
     traded := true
+    nOrders += 1
 
-flatT = timestamp(TZ, year(time, TZ), month(time, TZ), dayofmonth(time, TZ), flatH, flatM)
 if flatEod and strategy.position_size != 0 and time_close >= flatT and time < flatT
     strategy.close_all(comment = "cierre")
 
@@ -119,21 +173,24 @@ if strategy.closedtrades > strategy.closedtrades[1] and not na(riskOpen)
     nTr += 1
     nWin += r > 0 ? 1 : 0
 
-var table tb = table.new(position.bottom_right, 2, 4, bgcolor = color.new(color.black, 20), border_width = 1)
+var table tb = table.new(position.bottom_right, 2, 8, bgcolor = color.new(color.black, 20), border_width = 1)
+cell(row, name, value) =>
+    table.cell(tb, 0, row, name, text_color = color.white, text_size = size.small)
+    table.cell(tb, 1, row, value, text_color = color.white, text_size = size.small)
 if barstate.islast
-    table.cell(tb, 0, 0, "Operaciones", text_color = color.white)
-    table.cell(tb, 1, 0, str.tostring(nTr), text_color = color.white)
-    table.cell(tb, 0, 1, "Ganadoras", text_color = color.white)
-    table.cell(tb, 1, 1, nTr > 0 ? str.tostring(100.0 * nWin / nTr, "#.0") + "%" : "-", text_color = color.white)
-    table.cell(tb, 0, 2, "R promedio", text_color = color.white)
-    table.cell(tb, 1, 2, nTr > 0 ? str.tostring(sumR / nTr, "#.000") : "-", text_color = color.white)
-    table.cell(tb, 0, 3, "R total", text_color = color.white)
-    table.cell(tb, 1, 3, str.tostring(sumR, "#.0"), text_color = color.white)
+    cell(0, "Dias con caja", str.tostring(nDays))
+    cell(1, "Dias con ruptura", str.tostring(nBreakDays))
+    cell(2, "Rupturas filtradas", str.tostring(nBlocked))
+    cell(3, "Entradas enviadas", str.tostring(nOrders))
+    cell(4, "Operaciones cerradas", str.tostring(nTr))
+    cell(5, "Ganadoras", nTr > 0 ? str.tostring(100.0 * nWin / nTr, "#.0") + "%" : "-")
+    cell(6, "R promedio", nTr > 0 ? str.tostring(sumR / nTr, "#.000") : "-")
+    cell(7, "R total", str.tostring(sumR, "#.0"))
+    if nDays == 0
+        label.new(bar_index, high, "Sin velas en la caja: usa velas de 5 min y activa el horario extendido (ETH)",
+             color = color.red, textcolor = color.white, style = label.style_label_down)
 
-plot(boxReady or inBox ? boxHi : na, "Techo de la caja", color.new(color.teal, 0), 2, plot.style_linebr)
-plot(boxReady or inBox ? boxLo : na, "Piso de la caja", color.new(color.orange, 0), 2, plot.style_linebr)
 plot(strategy.position_size != 0 ? stopPx : na, "Stop", color.red, 1, plot.style_linebr)
 plot(strategy.position_size != 0 ? tgtPx : na, "Objetivo", color.lime, 1, plot.style_linebr)
-bgcolor(inBox ? color.new(color.blue, 90) : na, title = "Horario de la caja")
 plot(useFilter ? emaF : na, "EMA rapida (15m)", color.new(color.yellow, 40))
 plot(useFilter ? emaS : na, "EMA lenta (15m)", color.new(color.purple, 40))

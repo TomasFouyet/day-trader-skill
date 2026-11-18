@@ -702,7 +702,12 @@ revés. Una operación al día; si no tocó stop ni objetivo, se cierra a las
   Tester de TradingView, con la caja de 09:00-09:30 por defecto (para la de
   10:30: "Caja" 0900-1030, "Ventana" 1030-1600, "Velas mínimas" 9). Úsala
   en velas de 5 minutos; en ETF y acciones activa el horario extendido. Ahí puedes probarla
-  sobre los futuros reales (NQ, ES, MNQ, MES) con todo su historial.
+  sobre los futuros reales (NQ, ES, MNQ, MES) con todo su historial. Dibuja la caja y sus
+  bordes hasta las 16:00, y una tabla dice cuántos días tuvieron caja, ruptura, ruptura
+  descartada por el filtro y entrada. Va con `margin_long/short = 0`: con el margen por
+  defecto (100 %), TradingView rechaza en silencio las órdenes que valen más que el capital,
+  y con una caja chica (o un contrato de NQ) eso deja casi sin operaciones. "Tamaño" permite
+  una cantidad fija de contratos en vez del riesgo en %.
 - `python3 trader-analyst/orb_study.py --symbols QQQ,SPY` (o el workflow
   "Investigacion" con `study: caja`): el estudio. Compara con entradas al
   azar en la dirección del filtro, con la caja como stop, y busca patrones
