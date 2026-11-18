@@ -72,11 +72,14 @@ def label(cfg):
                                                    "dejar correr" if hold else "cierre 16:00")
 
 
+OPTS = {"entry": "close", "overlap": False}     # set for the whole run from --entry and --overlap
+
+
 def params(cfg):
     b, s, f, t, last, hold = cfg
     bars = (orb._minutes(b) - orb._minutes("09:00")) // 5
     return {"box_start": "09:00", "box_end": b, "sides": s, "filter": f, "target_r": t, "last_entry": last,
-            "hold_days": hold, "min_box_bars": max(2, bars // 2)}
+            "hold_days": hold, "min_box_bars": max(2, bars // 2), "entry": OPTS["entry"], "overlap": OPTS["overlap"]}
 
 
 def fast_random(d, boxes, cfg, rng, cost_pct):
@@ -104,7 +107,8 @@ def fast_random(d, boxes, cfg, rng, cost_pct):
         e = bars[i]["c"]
         end = orb.end_index(bars, days, pos[day], sess[-1], hold, flat)
         r, _, held = orb.simulate(bars, i, k, e, e - k * (hi - lo), tgt, end)
-        busy = i + held
+        if not OPTS["overlap"]:
+            busy = i + held
         out.append((day.isoformat(), net_r(r, (hi - lo) / e * 100, cost_pct)))
     return out
 
@@ -181,8 +185,12 @@ def main(argv=None):
     ap.add_argument("--min-n", type=int, default=300, help="trades a version needs to rank among the best")
     ap.add_argument("--extra", default="", help="more versions to test in full, e.g. "
                     "'10:30,long,trend,2,15:55,20;10:00,both,none,3,15:55,20' (box end, side, filter, target, last entry, hold days)")
+    ap.add_argument("--entry", choices=("close", "retest"), default="close",
+                    help="close: at the breakout close; retest: limit order at the broken box edge")
+    ap.add_argument("--overlap", action="store_true", help="allow a new trade while one on the same index is open")
     ap.add_argument("--offline", metavar="DIR")
     a = ap.parse_args(argv)
+    OPTS.update(entry=a.entry, overlap=a.overlap)
     t0 = time.time()
     syms = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
     scan._marketdata()
@@ -203,8 +211,10 @@ def main(argv=None):
         return 1
     calendar = sorted({b["t"].date().isoformat() for d in data.values() for b in d["bars"]
                        if b["t"].weekday() < 5 and datetime.time(9, 30) <= b["t"].time() < datetime.time(16, 0)})
-    print("Validacion de la caja de las 09:00: %s, %s a %s (%d dias de mercado), costo %.3f%% por lado." % (
-        ", ".join(sorted(data)), calendar[0], calendar[-1], len(calendar), a.cost_pct))
+    print("Validacion de la caja de las 09:00: %s, %s a %s (%d dias de mercado), costo %.3f%% por lado. Entrada: %s; %s." % (
+        ", ".join(sorted(data)), calendar[0], calendar[-1], len(calendar), a.cost_pct,
+        "orden limite en el retesteo del borde de la caja" if a.entry == "retest" else "al cierre de la vela que rompe",
+        "varias operaciones abiertas por indice" if a.overlap else "una operacion abierta por indice"))
 
     # 1. the grid
     grid, gross = {}, {}

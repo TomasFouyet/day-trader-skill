@@ -18,6 +18,10 @@ Choices the rules leave open (switches in run()):
     hold_days=N keeps it, overnight bars included, up to the 16:00 close N trading days later.
   - a bar that touches stop and target is counted as a stop; a bar that opens past the stop or the
     target exits at that open.
+  - entry="retest": the breakout close (in the filter's direction) arms a limit order at the box edge it
+    broke. It fills on a later bar that trades back to that edge (at the edge, or at a better open), up to
+    the last entry time, else it is cancelled. Same stop, target in R from the fill. In the fill bar only the
+    stop is checked. overlap=True drops the one-position-at-a-time rule.
 """
 
 import datetime
@@ -27,6 +31,8 @@ DEFAULTS = {
     "target_r": 3.0, "ema_fast": 50, "ema_slow": 200, "filter": "trend",   # trend | none | counter
     "first_only": False, "min_box_bars": 9, "bar_minutes": 5, "sides": "both",
     "hold_days": 0,      # 0: out at the 16:00 close; N: keep it (overnight too) up to the 16:00 close N days later
+    "entry": "close",    # close: at the close of the breakout bar | retest: limit order at the box edge after it
+    "overlap": False,    # True: a new day's trade may open while an earlier one on the same symbol is still open
 }
 
 
@@ -176,6 +182,24 @@ def end_index(bars, days_list, day_pos, sess_last, hold_days, flat):
     return last[-1] if last else idx[-1]
 
 
+def retest_fill(bars, i, k, level, stop, sess, last_entry):
+    """The limit order at the broken edge, armed at the close of bar i. -> (fill bar, fill price) or None.
+    A bar that opens past the edge (toward the stop side) fills at its open, unless it opens past the stop."""
+    for j in sess:
+        if j <= i:
+            continue
+        b = bars[j]
+        if b["t"].time() > last_entry:
+            return None
+        if k > 0 and b["l"] <= level:
+            px = min(level, b["o"])
+            return None if px <= stop else (j, px)
+        if k < 0 and b["h"] >= level:
+            px = max(level, b["o"])
+            return None if px >= stop else (j, px)
+    return None
+
+
 def run(bars, p=None, ema=None):
     """All trades of the rules on these bars. -> list of trade dicts (R before costs)."""
     p = dict(DEFAULTS, **(p or {}))
@@ -213,16 +237,28 @@ def run(bars, p=None, ema=None):
         if pick is None:
             continue
         i, k, trend, f, s = pick
-        entry = bars[i]["c"]
         stop = lo if k > 0 else hi
-        r, outcome, held = simulate(bars, i, k, entry, stop, p["target_r"],
-                                    end_index(bars, days, pos[d], sess[-1], p["hold_days"], flat))
-        busy = i + held
+        end = end_index(bars, days, pos[d], sess[-1], p["hold_days"], flat)
+        if p["entry"] == "retest":
+            got = retest_fill(bars, i, k, hi if k > 0 else lo, stop, sess, last_entry)
+            if got is None:
+                continue
+            i, entry = got
+            b = bars[i]
+            if (k > 0 and b["l"] <= stop) or (k < 0 and b["h"] >= stop):
+                r, outcome, held = -1.0, "stop", 0
+            else:
+                r, outcome, held = simulate(bars, i, k, entry, stop, p["target_r"], end)
+        else:
+            entry = bars[i]["c"]
+            r, outcome, held = simulate(bars, i, k, entry, stop, p["target_r"], end)
+        if not p["overlap"]:
+            busy = i + held
         t = bars[i]["t"]
         box_h = hi - lo
         trades.append({
             "day": d.isoformat(), "entry_time": t.strftime("%Y-%m-%d %H:%M"), "dir": k, "entry": entry,
-            "exit_time": bars[busy]["t"].strftime("%Y-%m-%d %H:%M"),
+            "exit_time": bars[i + held]["t"].strftime("%Y-%m-%d %H:%M"),
             "stop": stop, "R": r, "outcome": outcome, "bars": held,
             "risk_pct": abs(entry - stop) / entry * 100, "box_pct": box_h / entry * 100,
             "features": {

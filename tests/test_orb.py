@@ -154,6 +154,58 @@ class Holding(unittest.TestCase):
         self.assertEqual(len(orb.run(bars, {"last_entry": "12:55"}, [UP] * len(bars))), 1)
 
 
+class Retest(unittest.TestCase):
+    BOX = {"09:00": (100, 101, 99, 100)}
+
+    def run_with(self, moves, **p):
+        """After the 11:00 break, price holds above the box (103) unless a bar is given."""
+        full = dict(self.BOX)
+        t = datetime.datetime.combine(D, datetime.time(11, 5))
+        while t.time() < datetime.time(16, 0):
+            full[t.strftime("%H:%M")] = (103, 103.5, 102.5, 103)
+            t += datetime.timedelta(minutes=5)
+        full.update(moves)
+        bars = day(D, full)
+        return orb.run(bars, dict({"entry": "retest"}, **p), [UP] * len(bars))
+
+    def test_limit_at_the_box_top_after_the_break(self):
+        # close 102 breaks out; 11:30 trades back to 101 -> long at 101, stop 99 (risk 2), target 101 + 6 = 107
+        t, = self.run_with({"11:00": (100, 102.5, 100, 102), "11:05": (102, 103, 101.5, 102.5),
+                            "11:30": (102, 102, 100.8, 101.5), "12:00": (101.5, 107.5, 101.5, 107)})
+        self.assertEqual((t["entry"], t["stop"], t["outcome"], t["R"]), (101, 99, "target", 3.0))
+        self.assertEqual(t["entry_time"], "2026-11-17 11:30")
+
+    def test_no_retest_no_trade(self):
+        self.assertEqual(self.run_with({"11:00": (100, 102.5, 100, 102)}), [])
+
+    def test_cancelled_at_the_last_entry(self):
+        moves = {"11:00": (100, 102.5, 100, 102), "14:00": (102, 102, 100.5, 101)}   # comes back after 13:00
+        self.assertEqual(self.run_with(moves, last_entry="12:55"), [])
+
+    def test_stop_in_the_fill_bar(self):
+        t, = self.run_with({"11:00": (100, 102.5, 100, 102), "11:05": (102, 102, 98.5, 99)})
+        self.assertEqual((t["entry"], t["outcome"], t["R"]), (101, "stop", -1.0))
+
+    def test_better_open_fills_at_the_open(self):
+        t, = self.run_with({"11:00": (100, 102.5, 100, 102), "11:05": (100.5, 101, 100.2, 100.8)})
+        self.assertEqual(t["entry"], 100.5)
+
+    def test_filter_still_applies(self):
+        bars = day(D, dict(self.BOX, **{"11:00": (100, 102.5, 100, 102), "11:30": (102, 102, 100.8, 101.5)}))
+        self.assertEqual(orb.run(bars, {"entry": "retest"}, [DOWN] * len(bars)), [])
+        self.assertEqual(len(orb.run(bars, {"entry": "retest"}, [UP] * len(bars))), 1)
+
+
+class Overlap(unittest.TestCase):
+    def test_overlap_opens_while_one_is_open(self):
+        box = {"09:00": (100, 101, 99, 100)}
+        bars = day(D, dict(box, **{"11:00": (100, 102.5, 100, 102)})) + day(
+            D + datetime.timedelta(days=1), {"09:00": (100, 101, 99.5, 100), "11:00": (100, 102.5, 100, 102)})
+        ema = [UP] * len(bars)
+        self.assertEqual(len(orb.run(bars, {"hold_days": 5}, ema)), 1)
+        self.assertEqual(len(orb.run(bars, {"hold_days": 5, "overlap": True}, ema)), 2)
+
+
 class Ema(unittest.TestCase):
     def test_15m_bar_counts_when_its_last_5m_bar_closes(self):
         bars = day(D, start="09:00", end="09:30")
@@ -211,6 +263,17 @@ class Validate(unittest.TestCase):
         self.assertEqual(len(doc["grid"]), 288)
         self.assertGreaterEqual(len(doc["equity"]), 4)
         self.assertEqual(len(doc["dates"]), len(doc["equity"][0]["equity"]))
+
+    def test_retest_and_overlap_options(self):
+        tmp = tempfile.mkdtemp()
+        write_test_chart(tmp)
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            code = validate.main(["--offline", tmp, "--symbols", "TEST", "--random", "2", "--sims", "10", "--min-n", "1",
+                                  "--entry", "retest", "--overlap"])
+        self.assertEqual(code, 0)
+        self.assertIn("orden limite en el retesteo", out.getvalue())
+        validate.OPTS.update(entry="close", overlap=False)
 
     def test_block_bootstrap(self):
         import random
