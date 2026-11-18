@@ -1,4 +1,4 @@
-# Investigacion (solo a mano): estudio de "momentum de resultados" con las fechas oficiales del SEC.
+# Investigacion (solo a mano): momentum de resultados (fechas del SEC), la replica del sweep y la caja 09:00-10:30.
 # Imprime solo tablas agregadas (conteos y promedios). No toca ninguna cuenta ni coloca ordenes.
 
 name: Investigacion (resultados)
@@ -13,12 +13,16 @@ on:
       study:
         description: "Estudio a correr"
         type: choice
-        options: ["resultados", "sweep"]
+        options: ["resultados", "sweep", "caja"]
         default: "resultados"
       sweep_args:
         description: "Opciones del estudio sweep (por ejemplo: --target 2 --shorts --interval 1h)"
         required: false
         default: "--interval 30m --range 5y --target 1.5"
+      caja_args:
+        description: "Opciones del estudio caja 09:00-10:30 (por ejemplo: --symbols QQQ,SPY o --days 730 --cost-pct 0.05)"
+        required: false
+        default: "--symbols QQQ,SPY --days 1827 --cost-pct 0.01"
       robustness:
         description: "Pruebas de robustez (walk-forward, sensibilidad, bootstrap) en vez de la cartera"
         type: boolean
@@ -47,6 +51,7 @@ jobs:
           TRIAL_VAR: ${{ inputs.trial_var }}
           STUDY: ${{ inputs.study }}
           SWEEP_ARGS: ${{ inputs.sweep_args }}
+          CAJA_ARGS: ${{ inputs.caja_args }}
           ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
           ROBUSTNESS: ${{ inputs.robustness }}
@@ -59,6 +64,11 @@ jobs:
             if [ -n "$LIMIT" ]; then SWEEP_ARGS="$SWEEP_ARGS --limit $LIMIT"; fi
             case "$SWEEP_ARGS" in *--debug*) export ALPACA_DEBUG=1 ;; esac
             python3 trader-analyst/sweep_study.py $SWEEP_ARGS
+            exit $?
+          fi
+          if [ "$STUDY" = "caja" ]; then
+            if [ -n "$LIMIT" ]; then CAJA_ARGS="$CAJA_ARGS --limit $LIMIT"; fi
+            python3 trader-analyst/orb_study.py $CAJA_ARGS
             exit $?
           fi
           python3 trader-analyst/drift_study.py $ARGS
