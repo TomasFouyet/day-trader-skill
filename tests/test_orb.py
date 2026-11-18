@@ -351,7 +351,9 @@ class Validate(unittest.TestCase):
         elig = [True] * len(noise)
         luck = optimize.cscv(noise, elig, near, months, days_in)
         self.assertGreater(luck["best"]["pbo"], 0.2)
-        self.assertGreater(optimize.reality_check(noise, elig, months, 200, random.Random(1))["p_rc"], 0.05)
+        rc = optimize.reality_check(noise, elig, months, 200, random.Random(1))
+        self.assertGreater(rc["p_rc"], 0.05)
+        self.assertLessEqual(rc["p_spa"], rc["p_rc"])       # SPA drops the hopeless versions, never adds
         real = noise + [agg(0.25)]
         near = [[] for _ in real]
         elig = [True] * len(real)

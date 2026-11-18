@@ -91,17 +91,22 @@ DATA, CAL = {}, {}          # filled before the worker processes fork
 
 
 def evaluate(job):
-    """One version on every index -> (cfg, daily net R by calendar day, trades opened by calendar day)."""
+    """One version on every index -> (cfg, daily net R by calendar day, trades opened by calendar day,
+    [R sum, trades] of the shorts)."""
     cfg, cost = job
     n = len(CAL["days"])
-    daily, counts = array("d", [0.0]) * n, array("i", [0]) * n
+    daily, counts, shorts = array("d", [0.0]) * n, array("i", [0]) * n, [0.0, 0]
     for d in DATA.values():
         for t in orb.run(d["bars"], params(cfg), d["ema"]):
             k = CAL["pos"].get(t["day"])
             if k is not None:
-                daily[k] += validate.net_r(t["R"], t["risk_pct"], cost)
+                r = validate.net_r(t["R"], t["risk_pct"], cost)
+                daily[k] += r
                 counts[k] += 1
-    return cfg, daily, counts
+                if t["dir"] < 0:
+                    shorts[0] += r
+                    shorts[1] += 1
+    return cfg, daily, counts, shorts
 
 
 def _worker(jobs, queue):
@@ -246,7 +251,7 @@ def reality_check(aggs, eligible, n_months, boots, rng):
         for (m, mean, sd), gc in zip(rows, g_c):
             mb = sum(map(mul, m, c)) / n_months
             v_rc = max(v_rc, root * (mb - mean) / sd)
-            v_spa = max(v_spa, root * (mb - mean + gc) / sd)
+            v_spa = max(v_spa, root * (mb - gc) / sd)
         hit_rc += v_rc >= stat
         hit_spa += v_spa >= stat
     return {"stat": stat, "p_rc": hit_rc / float(boots), "p_spa": hit_spa / float(boots), "best": best,
@@ -331,18 +336,19 @@ def main(argv=None):
         for pr in procs:
             pr.start()
         for k in range(len(jobs)):
-            cfg, dl, ct = queue.get()
-            results[cfg] = (dl, ct)
+            cfg, dl, ct, sh = queue.get()
+            results[cfg] = (dl, ct, sh)
             if (k + 1) % 200 == 0:
                 print("  %d de %d versiones, %.0fs" % (k + 1, len(cfgs), time.time() - t0), file=sys.stderr)
         for pr in procs:
             pr.join()
     else:
         for job in jobs:
-            cfg, dl, ct = evaluate(job)
-            results[cfg] = (dl, ct)
+            cfg, dl, ct, sh = evaluate(job)
+            results[cfg] = (dl, ct, sh)
     dailies = [results[c][0] for c in cfgs]
     counts = [results[c][1] for c in cfgs]
+    shorts = [results[c][2] for c in cfgs]
     aggs = [Agg(dl, ct, month_of, len(months)) for dl, ct in zip(dailies, counts)]
     near = neighbours(cfgs, space)
     mid = len(calendar) // 2
@@ -437,7 +443,11 @@ def main(argv=None):
         print("   %-14s Sharpe %+.2f, R/op %+.3f, n %d | vecinas: %d, media %+.2f, min %+.2f, positivas %d de %d" % (
             "", rows[k]["sharpe"], rows[k]["mean"], rows[k]["n"], len(nb), sum(nb) / len(nb) if nb else 0.0,
             min(nb) if nb else 0.0, sum(1 for v in nb if v > 0), len(nb)))
-        stab.append({"name": name, "label": rows[k]["label"], "sharpe": rows[k]["sharpe"], "mean": rows[k]["mean"],
+        sr, sn = shorts[k]
+        lr, ln = rows[k]["total"] - sr, rows[k]["n"] - sn
+        print("   %-14s largos: n %d, %+.3fR por operacion | cortos: n %d, %+.3fR por operacion" % (
+            "", ln, lr / ln if ln else 0.0, sn, sr / sn if sn else 0.0))
+        stab.append({"long": [ln, lr / ln if ln else 0.0], "short": [sn, sr / sn if sn else 0.0], "name": name, "label": rows[k]["label"], "sharpe": rows[k]["sharpe"], "mean": rows[k]["mean"],
                      "n": rows[k]["n"], "neighbours": nb})
     maps = []
     base = cfgs[k_plat]
