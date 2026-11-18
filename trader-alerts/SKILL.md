@@ -183,6 +183,13 @@ watched; with `add --opening-bell`, the bell rings at 9:30.
 It never places, cancels or changes an order, never claims a quote is
 live, and never predicts where a price is going.
 
+## The paper-trading scripts next to it
+
+`paper_trader.py` (the swing setups) and `orb_paper.py` (the 09:00 box, README section 13) are separate
+scripts, not part of this skill. They place orders, but only on Alpaca's PAPER API
+(`paper-api.alpaca.markets`, simulated money), only with `PAPER_TRADING=true`, and never through
+trader-broker. A test fails if either one names any other trading host.
+
 ## Safety
 
 - Education and tooling, not financial advice. A PASS is a rules check, not a recommendation.

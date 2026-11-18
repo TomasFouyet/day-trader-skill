@@ -686,32 +686,91 @@ entrada, tamaño del barrido, hora o tendencia se sostiene en las dos mitades
 del período. Lo que no se pudo probar es el filtro de calidad "Q" del
 indicador, cuya fórmula no se conoce.
 
-### 13. Caja 09:00-10:30 (ruptura, velas de 5 minutos)
+### 13. Caja de las 09:00 (ruptura, velas de 5 minutos)
 
-Reglas: la caja es el máximo y el mínimo de las velas de 5 minutos de 09:00
-a 10:30 de Nueva York (pre-mercado incluido). Después de las 10:30, una vela
-que **cierra** sobre la caja es un largo y una que cierra bajo ella, un corto.
-Entrada a ese cierre, stop en el otro borde de la caja, objetivo a 3R. Filtro:
-largos solo con la EMA 50 sobre la EMA 200 en velas de 15 minutos, cortos al
-revés. Una operación al día; si no tocó stop ni objetivo, se cierra a las
-16:00.
+**La estrategia elegida.** Después de 5 años de pruebas en QQQ, SPY, IWM y DIA
+(el detalle está más abajo, en "Cómo se llegó"):
 
-- `trader-scanner/orb.py`: las reglas (y variantes: sin filtro, solo la
-  primera ruptura, otro objetivo, mantener varios días).
-- `trader-scanner/orb_strategy.pine`: la misma estrategia para el Strategy
-  Tester de TradingView, con la caja de 09:00-09:30 por defecto (para la de
-  10:30: "Caja" 0900-1030, "Ventana" 1030-1600, "Velas mínimas" 9). Úsala
-  en velas de 5 minutos; en ETF y acciones activa el horario extendido. Ahí puedes probarla
-  sobre los futuros reales (NQ, ES, MNQ, MES) con todo su historial. Dibuja la caja y sus
-  bordes hasta las 16:00, y una tabla dice cuántos días tuvieron caja, ruptura, ruptura
-  descartada por el filtro y entrada. Va con `margin_long/short = 0`: con el margen por
-  defecto (100 %), TradingView rechaza en silencio las órdenes que valen más que el capital,
-  y con una caja chica (o un contrato de NQ) eso deja casi sin operaciones. "Tamaño" permite
-  una cantidad fija de contratos en vez del riesgo en %.
-- `python3 trader-analyst/orb_study.py --symbols QQQ,SPY` (o el workflow
-  "Investigacion" con `study: caja`): el estudio. Compara con entradas al
-  azar en la dirección del filtro, con la caja como stop, y busca patrones
-  en la primera mitad del período para medirlos en la segunda.
+1. Caja: máximo y mínimo de las velas de 5 minutos de **09:00 a 10:00** de
+   Nueva York, pre-mercado incluido.
+2. Desde las 10:00, la primera vela que **cierra** fuera de la caja: arriba
+   largo, abajo corto. Ambos lados, sin filtro de medias, solo velas que
+   cierran hasta las **13:00**. Una operación al día por índice y ninguna
+   mientras otra siga abierta en ese índice.
+3. Entrada al cierre de esa vela. Stop en el otro borde de la caja.
+4. A **1,7R** se cierra el **70 %** y el stop del 30 % restante pasa a la
+   entrada (breakeven). Ese resto no tiene objetivo ni cierre a las 16:00.
+5. Lo que siga abierto a los 20 días de mercado se cierra.
+
+Resultado en los 5 años: +0,121R ± 0,048 por operación después de costos
+(0,01 % por lado), Sharpe 0,96, +0,096R y +0,145R en cada mitad del período,
+peor caída 42R. No pasa el Deflated Sharpe (0,04): fue elegida entre 288
+versiones, así que el resultado real puede ser bastante menor. 2024 dio −0,07R.
+
+| Archivo | Para qué |
+|---|---|
+| `trader-scanner/orb.py` | Las reglas y todas sus variantes, para backtest |
+| `trader-scanner/orb_strategy.pine` | La estrategia en TradingView, ya configurada así |
+| `trader-alerts/orb_paper.py` | La opera todos los días en la cuenta **paper** de Alpaca |
+| `.github/workflows/caja-diaria.yml` | Corre `orb_paper.py` cada 5 minutos |
+| `trader-analyst/orb_study.py` | Estudio de una versión: por año, lado, hora, patrones |
+| `trader-analyst/orb_validate.py` | Las pruebas: 288 versiones, Deflated Sharpe, Monte Carlo, walk-forward, costos |
+
+**Operarla todos los días en Alpaca (paper, dinero simulado).** Solo usa
+`paper-api.alpaca.markets` (un test lo exige) y nunca `trader-broker`.
+
+1. Los secretos `ALPACA_API_KEY_ID` y `ALPACA_API_SECRET_KEY` (de la cuenta
+   paper) y la Variable `PAPER_TRADING=true` ya los usa el paper trader de la
+   sección 10; si no están, créalos igual que ahí.
+2. Opcional: la Variable `ORB_RISK_PCT` (riesgo por operación en % del
+   capital; por defecto 0,25, porque pueden estar abiertos los cuatro
+   índices). `ORB_MAX_NOTIONAL_PCT` (por defecto 50) limita cada posición.
+3. En cron-job.org, un trabajo nuevo igual a los de la sección 5, con la URL
+   `https://api.github.com/repos/<usuario>/day-trader-skill/actions/workflows/caja-diaria.yml/dispatches`,
+   cada 5 minutos, de lunes a viernes, de 09:55 a 16:05 en `America/New_York`.
+   El workflow también tiene su propio horario cada 5 minutos como respaldo
+   (GitHub los atrasa); si dos pasadas coinciden no se duplica nada, porque
+   cada orden lleva un id por día.
+4. Prueba a mano: Actions, "Caja diaria (paper)", Run workflow, con "Solo
+   mostrar lo que haría" marcado. "Mandar el resumen" envía a Telegram las
+   operaciones abiertas.
+
+Qué hace cada pasada: arma la caja con las velas de IEX (el feed en tiempo
+real gratis de Alpaca), busca la señal, entra a mercado si la vela cerró hace
+10 minutos o menos (si no, ese día no entra, porque ya no sería la operación
+probada), pone el stop y una orden OCO para el 70 % (1,7R o el stop), y cuando
+el 70 % se cobra pasa el stop del resto a la entrada. Avisa por Telegram cada
+entrada, parcial y cierre. A mano:
+
+```bash
+python3 trader-alerts/orb_paper.py status
+```
+
+```bash
+python3 trader-alerts/orb_paper.py run --dry-run
+```
+
+Diferencias con el backtest: IEX en vez de la cinta consolidada (puede mover
+un poco la caja, sobre todo en el pre-mercado de DIA e IWM, por eso pide solo
+3 velas en la caja), la entrada es a mercado uno o dos minutos después del
+cierre de la vela, y Alpaca dispara los stops solo en horario regular.
+
+**En TradingView:** `trader-scanner/orb_strategy.pine` ya trae estas reglas.
+Úsalo en velas de 5 minutos; en ETF activa el horario extendido (sin el
+pre-mercado la caja queda vacía). Ahí puedes probarla sobre los futuros
+reales (NQ, ES, MNQ, MES) con todo su historial. Dibuja la caja y una tabla
+dice cuántos días tuvieron caja, ruptura, ruptura filtrada y entrada. Va con
+`margin_long/short = 0`, porque con el margen por defecto TradingView rechaza
+en silencio las órdenes que valen más que el capital. "Tamaño" permite una
+cantidad fija de contratos.
+
+#### Cómo se llegó
+
+La primera versión: caja de 09:00 a 10:30, entrada al cierre fuera de la
+caja, stop en el otro borde, objetivo 3R, filtro EMA 50/200 de 15 minutos,
+cierre a las 16:00. `python3 trader-analyst/orb_study.py --symbols QQQ,SPY`
+(o el workflow "Investigacion" con `study: caja`) la estudia y compara con
+entradas al azar.
 
 Futuros: Alpaca no tiene futuros y Yahoo solo da 60 días de velas de 5
 minutos de NQ=F y ES=F. En esos 60 días, QQQ y SPY dieron casi las mismas
@@ -926,7 +985,9 @@ wash sales likely. Nothing here is tax advice.
 ## Files
 
 ```
-trader-scanner/     SKILL.md, scan.py
+trader-scanner/     SKILL.md, scan.py, marketdata.py (Alpaca data), watchlist_top.py,
+                    sweep.py + sweep_strategy.pine (sweep scanner),
+                    orb.py + orb_strategy.pine (caja de las 09:00)
 trader-news/        SKILL.md, news.py
 trader-entry/       SKILL.md, entry.py
 trader-exit/        SKILL.md, exit.py
@@ -934,9 +995,12 @@ trader-timemachine/ SKILL.md, timemachine.py
 trader-risk/        SKILL.md, check.py
 trader-budget/      SKILL.md, size.py, config.example.json, targets.example.json
 trader-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
-trader-alerts/      SKILL.md, alerts.py, alerts.example.json
-trader-analyst/     SKILL.md, facts.py, metrics.example.json
+trader-alerts/      SKILL.md, alerts.py, alerts.example.json, notify_telegram.py, swing_pipeline.py,
+                    premarket.py, paper_trader.py (swing en paper), orb_paper.py (caja en paper)
+trader-analyst/     SKILL.md, facts.py, metrics.example.json, earnings.py, drift_study.py,
+                    performance.py, robustness.py, sweep_study.py, orb_study.py, orb_validate.py
 trader-pelosi/      SKILL.md, ptr.py
+.github/workflows/  swing-daily.yml, paper-daily.yml, caja-diaria.yml, research.yml, tests.yml
 tests/              unittest suite + offline fixtures
 ```
 

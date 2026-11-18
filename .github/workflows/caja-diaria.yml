@@ -1,0 +1,78 @@
+# Caja 09:00-10:00 en la cuenta PAPER de Alpaca (simulada: sin dinero real). Una pasada cada 5 minutos.
+#
+# Cada pasada (trader-alerts/orb_paper.py run) arma la caja de 09:00 a 10:00 de Nueva York en QQQ, SPY, DIA e
+# IWM, entra con la primera vela de 5 minutos que cierra fuera (hasta las 13:00), pone el stop en el otro borde
+# y una orden OCO para el 70% a 1,7R, y cuando ese 70% se cobra pasa el stop del 30% restante a la entrada.
+# Solo coloca ordenes con la Variable PAPER_TRADING=true, y solo en paper-api.alpaca.markets.
+#
+# Disparo: cron-job.org cada 5 minutos de 09:55 a 16:05 de Nueva York, lunes a viernes (README, seccion 13),
+# porque el cron de GitHub se atrasa. El horario de abajo es solo un respaldo: si dos pasadas coinciden,
+# las ordenes llevan un id por dia y Alpaca no acepta la misma dos veces.
+
+name: Caja diaria (paper)
+
+on:
+  schedule:
+    - cron: "*/5 13-21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Solo mostrar lo que haria, sin ordenes"
+        type: boolean
+        default: false
+      report:
+        description: "Mandar el resumen de las operaciones abiertas a Telegram"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orb-paper
+  cancel-in-progress: false
+
+jobs:
+  pass:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restaurar estado (cache privado)
+        uses: actions/cache/restore@v4
+        with:
+          path: trader/state
+          key: orb-state-${{ github.run_id }}
+          restore-keys: orb-state-
+
+      - name: Una pasada (solo cuenta paper, nada real)
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          PAPER_TRADING: ${{ vars.PAPER_TRADING || secrets.PAPER_TRADING }}
+          ORB_RISK_PCT: ${{ vars.ORB_RISK_PCT }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          REPORT: ${{ github.event_name == 'workflow_dispatch' && inputs.report }}
+        run: |
+          mkdir -p trader/state
+          if [ "$REPORT" = "true" ]; then
+            python3 trader-alerts/orb_paper.py report --telegram
+            exit $?
+          fi
+          ARGS="--telegram"
+          if [ "$DRY_RUN" = "true" ]; then ARGS="--dry-run"; fi
+          python3 trader-alerts/orb_paper.py run $ARGS
+
+      - name: Guardar estado (cache privado)
+        if: ${{ always() }}
+        uses: actions/cache/save@v4
+        with:
+          path: trader/state
+          key: orb-state-${{ github.run_id }}

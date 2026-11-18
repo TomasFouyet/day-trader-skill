@@ -1,56 +1,57 @@
-// Caja 09:00-09:30 (ruptura) - la misma regla que trader-scanner/orb.py, para el Strategy Tester.
+// Caja 09:00-10:00 con parcial - la misma regla que trader-scanner/orb.py y la que opera
+// trader-alerts/orb_paper.py en la cuenta paper de Alpaca. Para el Strategy Tester de TradingView.
 // Investigacion: no es asesoria y no coloca ordenes reales.
 //
-// Reglas:
-//  1. Caja: maximo y minimo de las velas de 09:00 a 09:30 de Nueva York (pre-mercado incluido).
-//     La version anterior usaba 09:00-10:30: cambia "Caja" a 0900-1030, "Ventana" a 1030-1600 y
-//     "Velas minimas" a 9.
-//     Usalo en velas de 5 minutos. En ETF y acciones activa el horario extendido (ETH) del grafico:
-//     sin el pre-mercado la caja de 09:00-09:30 queda vacia y no opera. En futuros no hace falta.
-//  2. Despues de las 09:30, una vela que CIERRA sobre la caja es un largo; bajo la caja, un corto.
-//  Parcial (por defecto): al llegar a 1,7R se cierra el 70% y el stop del resto pasa a la entrada; el resto
-//  va al objetivo si es mayor que el parcial, si no hasta el cierre.
-//  3. Entrada a ese cierre, o (por defecto) con una orden limite en el borde roto de la caja, que se llena
-//     si el precio vuelve a tocarlo dentro de la ventana de entradas. Stop en el otro borde de la caja,
-//     objetivo a 3R desde el precio de entrada.
-//  4. Filtro: largos solo con la EMA 50 sobre la EMA 200 en 15 minutos; cortos al reves.
-//  Una senal al dia. Puede abrirse aunque haya otra operacion abierta ("Permitir otra operacion"); ojo:
-//  TradingView no mantiene un largo y un corto a la vez, una senal contraria cierra la posicion abierta.
-//  Por defecto se cierra a las 16:00 si no toco stop ni objetivo.
+// Reglas por defecto (las elegidas tras 5 anos de pruebas, README seccion 13):
+//  1. Caja: maximo y minimo de las velas de 5 minutos de 09:00 a 10:00 de Nueva York (pre-mercado incluido).
+//     En ETF (QQQ, SPY, DIA, IWM) activa el horario extendido (ETH) del grafico; en futuros no hace falta.
+//  2. Desde las 10:00, la primera vela que CIERRA fuera de la caja: arriba largo, abajo corto. Ambos lados,
+//     sin filtro de medias. Solo velas que cierran hasta las 13:00. Una operacion al dia y ninguna mientras
+//     haya otra abierta.
+//  3. Entrada al cierre de esa vela. Stop en el otro borde de la caja.
+//  4. Al llegar a 1,7R se cierra el 70% y el stop del 30% restante pasa a la entrada (breakeven). El resto
+//     no tiene objetivo ("Objetivo" 1,7 = igual al parcial) y no se cierra a las 16:00.
+//  5. Lo que siga abierto a los 20 dias de mercado se cierra.
+//
+// Otras versiones probadas: caja 0900-1030 o 0900-0930, filtro EMA 50/200 de 15 minutos, entrada en el
+// retesteo con orden limite, objetivo para el resto (si es mayor que el parcial), cierre a las 16:00.
+// TradingView no mantiene un largo y un corto a la vez: con "Permitir otra operacion" una senal contraria
+// cierra la posicion abierta.
 //
 // margin_long/short = 0: sin esto TradingView rechaza en silencio las ordenes cuyo valor supera el
 // capital (con una caja chica, arriesgar 1% puede ser comprar 3 veces el capital; un contrato de NQ vale
 // mas de 500.000 USD), y la estrategia hace muy pocas operaciones.
 //
 //@version=6
-strategy("Caja 9:00-9:30 (ruptura)", overlay = true, initial_capital = 100000,
+strategy("Caja 9:00-10:00 (parcial)", overlay = true, initial_capital = 100000,
      process_orders_on_close = true, pyramiding = 20, margin_long = 0, margin_short = 0,
      commission_type = strategy.commission.percent, commission_value = 0.01, slippage = 1,
      max_boxes_count = 500, max_lines_count = 500, max_labels_count = 50)
 
-boxSess    = input.session("0900-0930", "Caja (hora de Nueva York)")
-tradeSess  = input.session("0930-1600", "Ventana de entradas (hora de Nueva York)")
-tpR        = input.float(3.0, "Objetivo (R)", minval = 0.5, step = 0.5)
-useFilter  = input.bool(true, "Filtro EMA rapida/lenta")
+boxSess    = input.session("0900-1000", "Caja (hora de Nueva York)")
+tradeSess  = input.session("1000-1300", "Ventana de entradas (hora de Nueva York)")
+tpR        = input.float(1.7, "Objetivo (R)", minval = 0.5, step = 0.1)
+useFilter  = input.bool(false, "Filtro EMA rapida/lenta")
 filterTf   = input.timeframe("15", "Temporalidad del filtro")
 fastLen    = input.int(50, "EMA rapida", minval = 1)
 slowLen    = input.int(200, "EMA lenta", minval = 2)
 allowLong  = input.bool(true, "Permitir largos")
 allowShort = input.bool(true, "Permitir cortos")
 firstOnly  = input.bool(false, "Solo la primera ruptura del dia")
-entryMode  = input.string("Retesteo (limite)", "Entrada", options = ["Cierre de la ruptura", "Retesteo (limite)"])
-allowStack = input.bool(true, "Permitir otra operacion con una ya abierta")
+entryMode  = input.string("Cierre de la ruptura", "Entrada", options = ["Cierre de la ruptura", "Retesteo (limite)"])
+allowStack = input.bool(false, "Permitir otra operacion con una ya abierta")
 usePartial = input.bool(true, "Cerrar un parcial y mover el stop a la entrada")
 partialR   = input.float(1.7, "Parcial a (R)", minval = 0.1, step = 0.1)
 partialPct = input.float(70, "Parcial (% de la posicion)", minval = 1, maxval = 99)
-flatEod    = input.bool(true, "Cerrar a la hora de cierre si sigue abierta")
+flatEod    = input.bool(false, "Cerrar a la hora de cierre si sigue abierta")
 flatH      = input.int(16, "Hora de cierre (NY)", minval = 0, maxval = 23)
 flatM      = input.int(0, "Minuto de cierre", minval = 0, maxval = 59)
-minBoxBars = input.int(3, "Velas minimas en la caja", minval = 1)
+minBoxBars = input.int(6, "Velas minimas en la caja", minval = 1)
 sizeMode   = input.string("Riesgo %", "Tamano", options = ["Riesgo %", "Cantidad fija"])
-riskPct    = input.float(1.0, "Riesgo por operacion (% del capital)", minval = 0.1, step = 0.1)
+riskPct    = input.float(0.25, "Riesgo por operacion (% del capital)", minval = 0.1, step = 0.1)
 fixedQty   = input.float(1, "Cantidad fija (contratos o acciones)", minval = 0.001)
 fromTime   = input.time(timestamp("2020-01-01T00:00:00"), "Desde")
+maxDays    = input.int(20, "Cerrar despues de (dias de mercado, 0 = nunca)", minval = 0)
 drawBox    = input.bool(true, "Dibujar la caja")
 boxColor   = input.color(color.new(color.blue, 85), "Color de la caja")
 
@@ -190,6 +191,21 @@ if usePartial and strategy.opentrades > 0
         if not na(q0) and math.abs(strategy.opentrades.size(i)) < q0 and not beDone.contains(eid)
             strategy.exit(eid + "r", eid, stop = strategy.opentrades.entry_price(i), limit = runTgtById.get(eid))
             beDone.put(eid, true)
+
+// lo que siga abierto a los maxDays dias de mercado se cierra (a partir de las 15:30)
+var int dayCount = 0
+var map<string, int> dayById = map.new<string, int>()
+if newDay
+    dayCount += 1
+if (longOk or shortOk)
+    dayById.put((longOk ? "L" : "C") + str.format("{0,date,yyyyMMdd}", time), dayCount)
+late = time_close >= timestamp(TZ, year(time, TZ), month(time, TZ), dayofmonth(time, TZ), 15, 30)
+if maxDays > 0 and late and strategy.opentrades > 0
+    for i = 0 to strategy.opentrades - 1
+        eid = strategy.opentrades.entry_id(i)
+        d0 = dayById.get(eid)
+        if not na(d0) and dayCount - d0 >= maxDays
+            strategy.close(eid, comment = "dias")
 
 // la orden limite pendiente se cancela al salir de la ventana de entradas
 if not na(pendId) and not inTrade and not inBox

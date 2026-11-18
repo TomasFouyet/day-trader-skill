@@ -1,0 +1,287 @@
+"""trader-alerts/orb_paper.py against a fake Alpaca PAPER API: the 09:00-10:00 box, the signal, the entry with
+its OCO (70% at 1.7R or the stop) and the runner's stop, breakeven after the partial, the 20 day limit, and
+that it only ever talks to the paper API."""
+
+import datetime
+import os
+import re
+import tempfile
+import unittest
+
+from _load import load, ROOT
+
+orb = load("trader-alerts", "orb_paper")
+paper = orb.paper
+
+DAY = datetime.date(2026, 11, 18)          # a Wednesday
+
+
+def ny(day, hhmm):
+    h, m = map(int, hhmm.split(":"))
+    return datetime.datetime.combine(day, datetime.time(h, m))
+
+
+def utc(day, hhmm):
+    return orb.scan.eastern_to_utc(ny(day, hhmm))
+
+
+def bars(day=DAY, moves=None, until="12:55", base=100.0):
+    """5 minute bars from 09:00, flat at base +- 0.1 (the box is set by moves['09:00'])."""
+    out, t = [], ny(day, "09:00")
+    end = ny(day, until)
+    while t <= end:
+        o, h, l, c = (moves or {}).get(t.strftime("%H:%M"), (base, base + 0.1, base - 0.1, base))
+        out.append({"t": t, "o": o, "h": h, "l": l, "c": c})
+        t += datetime.timedelta(minutes=5)
+    return out
+
+
+BOX = {"09:00": (100, 101, 99, 100)}
+
+
+class FakePaper(object):
+    def __init__(self, equity=100000.0, fill=102.05):
+        self.orders, self.positions, self.calls = {}, {}, []
+        self.equity, self.fill, self.n = equity, fill, 0
+
+    def http(self, method, url, body=None):
+        assert url.startswith("https://paper-api.alpaca.markets/"), url
+        path = url[len("https://paper-api.alpaca.markets"):]
+        self.calls.append((method, path, body))
+        if path == "/v2/account":
+            return {"equity": str(self.equity)}
+        if path == "/v2/positions":
+            return list(self.positions.values())
+        if path.startswith("/v2/orders:by_client_order_id"):
+            c = path.split("client_order_id=")[1]
+            for o in self.orders.values():
+                if o["client_order_id"] == c:
+                    return o
+            raise paper.PaperError("Alpaca paper answered HTTP 404: order not found")
+        if path.startswith("/v2/orders?") and method == "GET":
+            q = dict(kv.split("=") for kv in path.split("?")[1].split("&"))
+            out = [o for o in self.orders.values() if o["symbol"] == q.get("symbols", o["symbol"])]
+            if q["status"] == "open":
+                out = [o for o in out if o["status"] in ("new", "accepted", "held")]
+            elif q["status"] == "closed":
+                out = [o for o in out if o["status"] in ("filled", "canceled", "replaced")]
+            return sorted(out, key=lambda o: -o["n"])
+        if path == "/v2/orders" and method == "POST":
+            return self.add(dict(body))
+        if method == "PATCH":
+            old = self.orders[path.split("/")[-1]]
+            old["status"] = "replaced"
+            new = dict(old, **body)
+            new.pop("id")
+            new["status"] = "new"
+            return self.add(new)
+        if method == "DELETE" and path.startswith("/v2/positions/"):
+            self.positions.pop(path.split("/")[-1], None)
+            return {}
+        if method == "DELETE" and path.startswith("/v2/orders/"):
+            self.orders[path.split("/")[-1]]["status"] = "canceled"
+            return {}
+        raise AssertionError("unexpected call %s %s" % (method, path))
+
+    def add(self, o):
+        self.n += 1
+        o["id"], o["n"] = "id%d" % self.n, self.n
+        o.setdefault("status", "new")
+        if o.get("type") == "market":
+            o["status"], o["filled_avg_price"] = "filled", str(self.fill)
+            q = float(o["qty"]) * (1 if o["side"] == "buy" else -1)
+            self.positions[o["symbol"]] = {"symbol": o["symbol"], "qty": str(q),
+                                           "side": "long" if q > 0 else "short", "current_price": str(self.fill)}
+        self.orders[o["id"]] = o
+        return o
+
+    def posts(self):
+        return [b for m, p, b in self.calls if m == "POST"]
+
+
+class Base(unittest.TestCase):
+    def setUp(self):
+        os.environ["ALPACA_API_KEY_ID"] = "k"
+        os.environ["ALPACA_API_SECRET_KEY"] = "s"
+        for k in ("ORB_RISK_PCT", "ORB_MAX_NOTIONAL_PCT", "ORB_SYMBOLS"):
+            os.environ.pop(k, None)
+        os.environ["ORB_SYMBOLS"] = "QQQ"
+        self.tmp = tempfile.mkdtemp()
+        self.old_state = orb.STATE
+        orb.STATE = os.path.join(self.tmp, "orb.json")
+        self.fake = FakePaper()
+        self.acct = orb.Account(paper.Paper(http=self.fake.http))
+
+    def tearDown(self):
+        orb.STATE = self.old_state
+        os.environ.pop("ORB_SYMBOLS", None)
+
+    def run_at(self, hhmm, moves, dry_run=False, state=None, day=DAY):
+        b = bars(day, dict(BOX, **moves), until=hhmm)
+        return orb.run_pass(self.acct, utc(day, hhmm), {"QQQ": b}, dry_run=dry_run, state=state,
+                            sleep=lambda s: None)
+
+
+class Box(unittest.TestCase):
+    def test_box_and_first_close_outside(self):
+        b = bars(moves=dict(BOX, **{"10:00": (100, 100.5, 99.5, 100.2), "10:10": (100, 102.5, 100, 102)}))
+        box = orb.box_of(b, DAY)
+        self.assertEqual(box, (101, 99, 12))
+        bar, d = orb.first_signal(b, DAY, box, ny(DAY, "10:16"))
+        self.assertEqual((bar["t"].strftime("%H:%M"), d), ("10:10", 1))
+
+    def test_a_forming_bar_is_not_a_signal(self):
+        b = bars(moves=dict(BOX, **{"10:10": (100, 102.5, 100, 102)}))
+        self.assertIsNone(orb.first_signal(b, DAY, orb.box_of(b, DAY), ny(DAY, "10:13")))
+
+    def test_short_and_the_1300_limit(self):
+        b = bars(moves=dict(BOX, **{"13:00": (100, 100, 97.5, 98)}), until="13:10")
+        self.assertIsNone(orb.first_signal(b, DAY, orb.box_of(b, DAY), ny(DAY, "13:11")))
+        b = bars(moves=dict(BOX, **{"12:55": (100, 100, 97.5, 98)}), until="13:00")
+        self.assertEqual(orb.first_signal(b, DAY, orb.box_of(b, DAY), ny(DAY, "13:01"))[1], -1)
+
+    def test_box_needs_bars(self):
+        b = [x for x in bars(moves=BOX) if x["t"].time() >= datetime.time(9, 50)]
+        self.assertIsNone(orb.box_of(b, DAY))
+
+    def test_plan(self):
+        p = orb.plan(1, 102.0, (101, 99, 12), 100000.0)
+        # 0.25% of 100000 = 250 over a risk of 3 -> 83 shares; 70% = 58 at 102 + 1.7 * 3
+        self.assertEqual((p["qty"], p["partial_qty"], p["runner_qty"], p["stop"], p["partial_px"]), (83, 58, 25, 99, 107.1))
+        os.environ["ORB_MAX_NOTIONAL_PCT"] = "5"
+        self.assertEqual(orb.plan(1, 102.0, (101, 99, 12), 100000.0)["qty"], 49)
+        os.environ.pop("ORB_MAX_NOTIONAL_PCT")
+        self.assertIsNone(orb.plan(1, 102.0, (101, 99, 12), 500.0))
+
+
+class Entry(Base):
+    SIGNAL = {"10:00": (100, 102.5, 100, 102)}             # closes at 10:05 above the box
+
+    def test_entry_with_its_exits(self):
+        events = self.run_at("10:06", self.SIGNAL)
+        posts = self.fake.posts()
+        self.assertEqual([p["client_order_id"] for p in posts], ["orb-QQQ-20261118-in", "orb-QQQ-20261118-tp",
+                                                                 "orb-QQQ-20261118-run"])
+        entry, oco, run = posts
+        self.assertEqual((entry["type"], entry["side"], entry["qty"]), ("market", "buy", "83"))
+        # the OCO: 58 shares at fill + 1.7 x (fill - stop), or the stop at the box low
+        self.assertEqual((oco["order_class"], oco["side"], oco["qty"]), ("oco", "sell", "58"))
+        self.assertEqual(oco["take_profit"]["limit_price"], "%.2f" % (102.05 + 1.7 * 3.05))
+        self.assertEqual(oco["stop_loss"]["stop_price"], "99.00")
+        self.assertEqual((run["type"], run["qty"], run["stop_price"], run["time_in_force"]), ("stop", "25", "99.00", "gtc"))
+        self.assertTrue(any("entro a 102.05" in e[1] for e in events))
+
+    def test_once_a_day(self):
+        self.run_at("10:06", self.SIGNAL)
+        self.fake.positions.clear()                            # even if it already closed
+        self.run_at("10:11", self.SIGNAL)
+        self.assertEqual(len(self.fake.posts()), 3)
+
+    def test_dry_run_places_nothing(self):
+        events = self.run_at("10:06", self.SIGNAL, dry_run=True)
+        self.assertEqual(self.fake.posts(), [])
+        self.assertTrue(any("largo 83 a mercado" in e[1] for e in events))
+
+    def test_late_signal_is_skipped_once(self):
+        state = {}
+        events = self.run_at("10:20", self.SIGNAL, state=state)
+        self.assertEqual(self.fake.posts(), [])
+        self.assertTrue(any("se paso la senal de las 10:05" in e[1] for e in events))
+        self.assertEqual(self.run_at("10:25", self.SIGNAL, state=state), [])
+
+    def test_no_entry_after_1315_or_on_a_holiday(self):
+        self.assertEqual(self.run_at("13:20", {"13:10": (100, 102.5, 100, 102)}), [])
+        self.assertEqual(self.fake.posts(), [])
+        events = self.run_at("10:06", self.SIGNAL, day=datetime.date(2026, 11, 26))      # Thanksgiving
+        self.assertIn("mercado cerrado", events[0][1])
+
+    def test_one_position_at_a_time(self):
+        self.fake.positions["QQQ"] = {"symbol": "QQQ", "qty": "25", "side": "long"}
+        self.fake.orders["old"] = {"id": "old", "n": 0, "symbol": "QQQ", "client_order_id": "orb-QQQ-20261117-in",
+                                   "status": "filled", "side": "buy", "filled_avg_price": "100"}
+        self.fake.orders["oldrun"] = {"id": "oldrun", "n": 0, "symbol": "QQQ", "client_order_id": "orb-QQQ-20261117-run",
+                                      "status": "new", "type": "stop", "stop_price": "98"}
+        self.run_at("10:06", self.SIGNAL)
+        self.assertEqual(self.fake.posts(), [])
+
+    def test_after_a_runner_closes_only_later_bars(self):
+        state = {"open": {"QQQ": True}}                       # open on the last pass, gone now (11:01)
+        moves = {"10:00": (100, 102.5, 100, 102)}
+        self.run_at("11:01", moves, state=state)
+        self.assertEqual(state["closed_today"], {"QQQ-2026-11-18": "11:01"})
+        self.assertEqual(self.fake.posts(), [])               # the 10:00 break came before
+        moves["11:00"] = (100, 100, 97.5, 98)
+        self.run_at("11:06", moves, state=state)
+        self.assertEqual(self.fake.posts()[0]["side"], "sell")
+
+
+class Manage(Base):
+    def open_trade(self, day="20261118", partial=False, runner_stop="99.00"):
+        self.fake.positions["QQQ"] = {"symbol": "QQQ", "qty": "25" if partial else "83", "side": "long"}
+        self.fake.orders["e"] = {"id": "e", "n": 1, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-in" % day,
+                                 "status": "filled", "side": "buy", "filled_avg_price": "102.05", "type": "market"}
+        self.fake.orders["t"] = {"id": "t", "n": 2, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-tp" % day,
+                                 "status": "filled" if partial else "new", "type": "limit"}
+        self.fake.orders["r"] = {"id": "r", "n": 3, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-run" % day,
+                                 "status": "new", "type": "stop", "stop_price": runner_stop, "qty": "25"}
+
+    def test_breakeven_after_the_partial(self):
+        self.open_trade(partial=True)
+        events = self.run_at("12:31", {})
+        patch = [(p, b) for m, p, b in self.fake.calls if m == "PATCH"]
+        self.assertEqual(patch, [("/v2/orders/r", {"stop_price": "102.05", "client_order_id": "orb-QQQ-20261118-run-be"})])
+        self.assertTrue(any("stop del resto a la entrada 102.05" in e[1] for e in events))
+        self.run_at("12:36", {})                               # already at breakeven: nothing more
+        self.assertEqual(len([1 for m, p, b in self.fake.calls if m == "PATCH"]), 1)
+
+    def test_no_breakeven_before_the_partial(self):
+        self.open_trade(partial=False)
+        self.run_at("12:31", {})
+        self.assertEqual([c for c in self.fake.calls if c[0] in ("PATCH", "POST")], [])
+
+    def test_closed_after_20_trading_days(self):
+        self.open_trade(day="20261020")
+        self.run_at("15:31", {}, day=DAY)
+        self.assertNotIn("QQQ", self.fake.positions)
+        self.assertEqual(self.fake.orders["r"]["status"], "canceled")
+
+    def test_missing_exits_are_put_back(self):
+        self.open_trade()
+        self.fake.orders.pop("t")
+        self.fake.orders.pop("r")
+        self.run_at("12:31", {})
+        posts = self.fake.posts()
+        self.assertEqual([p["client_order_id"] for p in posts], ["orb-QQQ-20261118-tp", "orb-QQQ-20261118-run"])
+        self.assertEqual(posts[0]["stop_loss"]["stop_price"], "99.00")         # rebuilt from today's box
+
+    def test_a_position_that_is_not_ours_is_left_alone(self):
+        self.fake.positions["QQQ"] = {"symbol": "QQQ", "qty": "10", "side": "long"}
+        state = {}
+        self.run_at("12:31", {}, state=state)
+        self.run_at("12:36", {}, state=state)
+        self.assertEqual([c for c in self.fake.calls if c[0] in ("PATCH", "POST", "DELETE")], [])
+
+
+class Safety(unittest.TestCase):
+    def test_paper_only(self):
+        with open(os.path.join(ROOT, "trader-alerts", "orb_paper.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        code = re.sub(r'"""[\s\S]*?"""', "", src)
+        self.assertEqual(re.findall(r"https?://", code), [])          # every call goes through paper_trader.Paper
+        for bad in ("trader-broker", "ticket.py", "api.alpaca.markets"):
+            self.assertNotIn(bad, code)
+        self.assertIn("paper.Paper()", code)
+        with self.assertRaises(paper.PaperError):
+            paper._http("POST", "https://api.alpaca.markets/v2/orders", {})
+
+    def test_workflow(self):
+        with open(os.path.join(ROOT, ".github", "workflows", "caja-diaria.yml"), encoding="utf-8") as fh:
+            wf = fh.read()
+        for must in ("orb_paper.py run", "vars.PAPER_TRADING", "secrets.ALPACA_API_KEY_ID", "secrets.TELEGRAM_BOT_TOKEN",
+                     "actions/cache/restore", "concurrency"):
+            self.assertIn(must, wf)
+        self.assertNotIn("upload-artifact", wf)
+
+
+if __name__ == "__main__":
+    unittest.main()
