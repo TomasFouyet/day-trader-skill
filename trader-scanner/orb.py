@@ -11,7 +11,7 @@ The rules, as given:
      only, no look-ahead).
 
 Choices the rules leave open (switches in run()):
-  - one trade a day; by default the first close outside the box in the direction the filter allows
+  - one trade a day, and none while an earlier one is still open (hold_days); by default the first close outside the box in the direction the filter allows
     (a break the other way before it is ignored). first_only=True takes only the day's first close
     outside the box and skips the day when the filter is against it.
   - the trade is closed at the 16:00 close if neither stop nor target was hit (day trading);
@@ -186,11 +186,14 @@ def run(bars, p=None, ema=None):
     flat = _hm(p["flat"])
     avg_rng = daily_ranges(bars, days)
     trades = []
+    busy = -1                      # index of the bar where the open trade ends: one position at a time
     for d, hi, lo, sess in boxes(bars, p):
         first_dir, pick = None, None
         for i in sess:
             if bars[i]["t"].time() > last_entry:
                 break
+            if i <= busy:
+                continue
             c = bars[i]["c"]
             k = 1 if c > hi else -1 if c < lo else 0
             if not k:
@@ -214,10 +217,12 @@ def run(bars, p=None, ema=None):
         stop = lo if k > 0 else hi
         r, outcome, held = simulate(bars, i, k, entry, stop, p["target_r"],
                                     end_index(bars, days, pos[d], sess[-1], p["hold_days"], flat))
+        busy = i + held
         t = bars[i]["t"]
         box_h = hi - lo
         trades.append({
             "day": d.isoformat(), "entry_time": t.strftime("%Y-%m-%d %H:%M"), "dir": k, "entry": entry,
+            "exit_time": bars[busy]["t"].strftime("%Y-%m-%d %H:%M"),
             "stop": stop, "R": r, "outcome": outcome, "bars": held,
             "risk_pct": abs(entry - stop) / entry * 100, "box_pct": box_h / entry * 100,
             "features": {

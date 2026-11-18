@@ -134,6 +134,26 @@ class Spikes(unittest.TestCase):
         self.assertEqual(bars[2]["o"], 104.0)
 
 
+class Holding(unittest.TestCase):
+    def test_no_new_trade_while_one_is_open(self):
+        box = {"09:00": (100, 101, 99, 100)}
+        d1 = day(D, dict(box, **{"11:00": (100, 102.5, 100, 102)}))
+        d2 = day(D + datetime.timedelta(days=1), {"09:00": (100, 101, 99.5, 100), "11:00": (100, 102.5, 100, 102)})
+        bars = d1 + d2
+        ema = [UP] * len(bars)
+        self.assertEqual(len(orb.run(bars, {}, ema)), 2)                  # closed at 16:00 each day
+        held = orb.run(bars, {"hold_days": 5}, ema)
+        self.assertEqual(len(held), 1)                                     # still open on day two
+        self.assertTrue(held[0]["exit_time"].startswith("2026-11-18"))
+
+    def test_last_entry_1300(self):
+        box = {"09:00": (100, 101, 99, 100)}
+        bars = day(D, dict(box, **{"13:05": (100, 102.5, 100, 102)}))
+        self.assertEqual(orb.run(bars, {"last_entry": "12:55"}, [UP] * len(bars)), [])
+        bars = day(D, dict(box, **{"12:55": (100, 102.5, 100, 102)}))
+        self.assertEqual(len(orb.run(bars, {"last_entry": "12:55"}, [UP] * len(bars))), 1)
+
+
 class Ema(unittest.TestCase):
     def test_15m_bar_counts_when_its_last_5m_bar_closes(self):
         bars = day(D, start="09:00", end="09:30")
@@ -181,15 +201,15 @@ class Validate(unittest.TestCase):
         write_test_chart(tmp)
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
-            code = validate.main(["--offline", tmp, "--symbols", "TEST", "--random", "5", "--sims", "20"])
+            code = validate.main(["--offline", tmp, "--symbols", "TEST", "--random", "3", "--sims", "20", "--min-n", "1"])
         text = out.getvalue()
         self.assertEqual(code, 0, err.getvalue())
-        for part in ("1. Backtest de las 54 versiones", "2. Deflated Sharpe", "3a. Monte Carlo", "3b. Monte Carlo",
+        for part in ("1. Backtest de las 288 versiones", "Las 3 mejores por Sharpe", "Tus estrategias:", "2. Deflated Sharpe", "3a. Monte Carlo", "3b. Monte Carlo",
                      "4. Walk-forward", "5. Costos"):
             self.assertIn(part, text)
         doc = json.loads(text.split("@@ORBJSON@@ ", 1)[1].splitlines()[0])
-        self.assertEqual(len(doc["grid"]), 54)
-        self.assertEqual(len(doc["equity"]), 4)
+        self.assertEqual(len(doc["grid"]), 288)
+        self.assertGreaterEqual(len(doc["equity"]), 4)
         self.assertEqual(len(doc["dates"]), len(doc["equity"][0]["equity"]))
 
     def test_block_bootstrap(self):
