@@ -184,6 +184,11 @@ class StudyOffline(unittest.TestCase):
         self.assertIn("1 sin datos suficientes: NOPE", text)
         self.assertIn("Patrones: mitad de descubrimiento", text)
         self.assertIn("TEST", text)
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            study.main(["--offline", tmp, "--symbols", "TEST", "--min-n", "5", "--by-month", "5"])
+        self.assertIn("Por mes (antes de costos):", out.getvalue())
+        self.assertIn("5 operaciones seguidas suman", out.getvalue())
 
     def test_box_option(self):
         out, err = io.StringIO(), io.StringIO()

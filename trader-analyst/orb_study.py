@@ -151,6 +151,30 @@ def summary_lines(trades, rnd, cost_pct):
     return out
 
 
+def month_lines(trades, window=13):
+    """Each month of the main rules, and how the sums of `window` trades in a row are spread over the years:
+    a good month in TradingView means more once you know how often months like it come."""
+    by = {}
+    for t in trades:
+        by.setdefault(t["day"][:7], []).append(t["R"])
+    out = ["", "Por mes (antes de costos):"]
+    for m in sorted(by):
+        rs = by[m]
+        out.append("  %s n%3d gana %3.0f%% suma %+6.1fR" % (m, len(rs), 100.0 * sum(1 for r in rs if r > 0) / len(rs), sum(rs)))
+    sums = [sum(v) for v in by.values()]
+    out.append("  meses positivos: %d de %d; mejor %+.1fR, peor %+.1fR" % (sum(1 for x in sums if x > 0), len(sums), max(sums), min(sums)))
+    seq = [t["R"] for t in sorted(trades, key=lambda t: (t["entry_time"], t["symbol"]))]
+    if len(seq) > window:
+        roll = sorted(sum(seq[i:i + window]) for i in range(len(seq) - window + 1))
+        q = lambda f: roll[min(len(roll) - 1, int(f * len(roll)))]
+        out.append("  %d operaciones seguidas suman: 10%% de las veces menos de %+.1fR, mediana %+.1fR, 10%% de las veces mas de %+.1fR" % (
+            window, q(0.1), q(0.5), q(0.9)))
+        for x in (5, 8, 12):
+            out.append("  %d operaciones seguidas con %+dR o mas: %.0f%% de las veces" % (
+                window, x, 100.0 * sum(1 for v in roll if v >= x) / len(roll)))
+    return out
+
+
 def pattern_lines(trades, min_n):
     dates = sorted(t["day"] for t in trades)
     mid = dates[len(dates) // 2]
@@ -224,6 +248,8 @@ def main(argv=None):
                     help="the main rules on one side only (the variants keep their own)")
     ap.add_argument("--box", default="09:00-10:30", help="the box, New York time, e.g. 09:00-09:30; trading starts at its end")
     ap.add_argument("--min-box-bars", type=int, help="bars the box needs to count (default: half of its 5 minute bars)")
+    ap.add_argument("--by-month", type=int, nargs="?", const=13, metavar="N",
+                    help="each month, and how N trades in a row add up over the years (default 13)")
     ap.add_argument("--min-n", type=int, default=100)
     ap.add_argument("--debug", action="store_true")
     a = ap.parse_args(argv)
@@ -303,6 +329,9 @@ def main(argv=None):
             print("  %-8s %s | con costos %+.3fR | factor %.2f" % (
                 sym, fmt(stats([t["R"] for t in ts])), stats([net(t, a.cost_pct) for t in ts])["mean"],
                 profit_factor([t["R"] for t in ts])))
+    if a.by_month:
+        for line in month_lines(trades, a.by_month):
+            print(line)
     for line in pattern_lines(trades, a.min_n):
         print(line)
     print("\nInvestigacion, no asesoria. Una operacion al dia por simbolo; en una vela que toca stop y objetivo cuenta el stop.")
