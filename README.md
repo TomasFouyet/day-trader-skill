@@ -686,7 +686,70 @@ entrada, tamaño del barrido, hora o tendencia se sostiene en las dos mitades
 del período. Lo que no se pudo probar es el filtro de calidad "Q" del
 indicador, cuya fórmula no se conoce.
 
-### 13. Límites que quedan
+### 13. Caja 09:00-10:30 (ruptura, velas de 5 minutos)
+
+Reglas: la caja es el máximo y el mínimo de las velas de 5 minutos de 09:00
+a 10:30 de Nueva York (pre-mercado incluido). Después de las 10:30, una vela
+que **cierra** sobre la caja es un largo y una que cierra bajo ella, un corto.
+Entrada a ese cierre, stop en el otro borde de la caja, objetivo a 3R. Filtro:
+largos solo con la EMA 50 sobre la EMA 200 en velas de 15 minutos, cortos al
+revés. Una operación al día; si no tocó stop ni objetivo, se cierra a las
+16:00.
+
+- `trader-scanner/orb.py`: las reglas (y variantes: sin filtro, solo la
+  primera ruptura, otro objetivo, mantener varios días).
+- `trader-scanner/orb_strategy.pine`: la misma estrategia para el Strategy
+  Tester de TradingView. Úsala en velas de 5 minutos; en acciones activa el
+  horario extendido, si no la caja empieza a las 09:30. Ahí puedes probarla
+  sobre los futuros reales (NQ, ES, MNQ, MES) con todo su historial.
+- `python3 trader-analyst/orb_study.py --symbols QQQ,SPY` (o el workflow
+  "Investigacion" con `study: caja`): el estudio. Compara con entradas al
+  azar en la dirección del filtro, con la caja como stop, y busca patrones
+  en la primera mitad del período para medirlos en la segunda.
+
+Futuros: Alpaca no tiene futuros y Yahoo solo da 60 días de velas de 5
+minutos de NQ=F y ES=F. En esos 60 días, QQQ y SPY dieron casi las mismas
+operaciones que NQ y ES (mismo día, hora, dirección y resultado), así que
+se usaron QQQ y SPY para los 5 años. (Yahoo trajo una vela falsa en NQ y ES
+el 30 de octubre a las 15:00, 4 % arriba de todo lo demás; `orb.py` limpia
+esas velas aisladas.)
+
+Resultados (5 años, noviembre de 2021 a noviembre de 2026; "al azar" =
+entrar a cualquier hora después de las 10:30 en la dirección del filtro, con
+el alto de la caja como stop, el mismo objetivo y el mismo cierre; costo por
+lado 0,01 % en índices, 0,05 % en acciones):
+
+| Mercado | Operaciones | Ganadoras | Promedio | Con costos | Al azar |
+|---|---|---|---|---|---|
+| QQQ + SPY, las reglas tal cual | 1.676 | 53 % | +0,05R ± 0,02 | +0,02R | +0,03R |
+| QQQ + SPY, solo largos | 980 | 57 % | +0,10R ± 0,02 | +0,06R | +0,02R |
+| QQQ + SPY, solo cortos | 726 | 48 % | −0,02R ± 0,03 | −0,04R | +0,04R |
+| NQ + ES (futuros, 60 días) | 64 | 55 % | +0,07R ± 0,07 | +0,03R | +0,05R |
+| 248 acciones | 160.001 | 48 % | +0,00R ± 0,001 | −0,06R | −0,00R |
+
+- El objetivo de 3R casi nunca llega en el día (12 de 1.676 operaciones en
+  los índices): el stop está al otro lado de la caja, así que el riesgo es
+  la caja entera (mediana 0,8 % del precio en QQQ/SPY) y 3 cajas más no se
+  recorren en una tarde. En la práctica es "entrar en la ruptura y salir a
+  las 16:00". Por eso 1R, 1,5R, 2R y 3R dan casi lo mismo.
+- Mantenerla varios días hasta tocar stop u objetivo empeora: 0,00R en
+  índices y −0,03R en acciones. Solo los largos de índices suben (+0,12R),
+  y eso es la subida del mercado en esos años, no la ruptura.
+- El filtro de medias ayuda algo en los índices (+0,05R con él, +0,04R sin
+  él, +0,03R al revés), pero la diferencia cabe en el ruido.
+- Lo único que se distingue del azar son los **largos en QQQ y SPY**:
+  +0,10R contra +0,02R de entrar al azar, positivos antes de costos en los
+  6 años del período. Pero se eligieron después de ver el resultado y en la
+  segunda mitad bajan a +0,04R ± 0,03 (eran +0,15R en la primera); 2025 dio
+  −0,01R con costos. Con 1 % de riesgo por operación son unos +12R al año
+  entre los dos, con una peor caída de 15R.
+- En acciones no hay nada: 48 % de ganadoras, cero antes de costos, y el
+  costo (0,05R) lo deja negativo. Ningún corte por hora, tamaño de la caja,
+  distancia del cierre a la caja, separación de las medias o día de la
+  semana se sostiene en la segunda mitad, y las 25 mejores acciones de la
+  primera mitad dieron +0,00R en la segunda.
+
+### 14. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
   SEC (el calendario de Yahoo pide un token de sesión). Confírmalas en la web

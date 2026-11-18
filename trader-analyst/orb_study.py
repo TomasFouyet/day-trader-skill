@@ -167,13 +167,18 @@ def pattern_lines(trades, min_n):
         if a and sa and a["n"] >= min_n and a["mean"] - sa["mean"] >= 2 * a["se"]:
             found.append((name, a, v))
     lines += ["", "Filtros que destacan en la mitad de descubrimiento (al menos %d operaciones y 2 errores sobre el" % min_n,
-              "promedio) y lo que hicieron en la de validacion, que no participo en elegirlos:"]
+              "promedio) y lo que hicieron en la de validacion, que no participo en elegirlos (se sostiene: positivo por",
+              "mas de 2 errores en la validacion):"]
     if not found:
         lines.append("  ninguno")
     for name, a, v in found:
-        held = v and sb and v["mean"] > sb["mean"] and v["mean"] > 0
-        lines.append("  %-46s descubrimiento %+.3fR (n%d) -> validacion %s  %s" % (
-            name, a["mean"], a["n"], fmt(v), "SE SOSTIENE" if held else "no se sostiene"))
+        if v and v["mean"] - 2 * v["se"] > 0 and (not sb or v["mean"] > sb["mean"]):
+            verdict = "SE SOSTIENE"
+        elif v and v["mean"] > 0:
+            verdict = "positivo, pero dentro del ruido"
+        else:
+            verdict = "no se sostiene"
+        lines.append("  %-46s descubrimiento %+.3fR (n%d) -> validacion %s  %s" % (name, a["mean"], a["n"], fmt(v), verdict))
     by_sym = {}
     for t in trades:
         by_sym.setdefault(t["symbol"], []).append(t["R"])
@@ -264,7 +269,8 @@ def main(argv=None):
             var[name] += got
         rnd += orb.random_trades(bars, base, ema, random.Random(k), per_day=2)
         if (k + 1) % 25 == 0:
-            print("  %d/%d simbolos, %d operaciones, %.0fs" % (k + 1, len(syms), len(trades), time.time() - t0), file=sys.stderr)
+            print("  %d/%d simbolos, %d operaciones, %.0fs" % (k + 1, len(syms), len(var[VARIANTS[0][0]]), time.time() - t0),
+                  file=sys.stderr)
     ahead.shutdown()
     trades = var[VARIANTS[0][0]]
     if not trades:
