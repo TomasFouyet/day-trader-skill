@@ -8,9 +8,13 @@
 //     Usalo en velas de 5 minutos. En ETF y acciones activa el horario extendido (ETH) del grafico:
 //     sin el pre-mercado la caja de 09:00-09:30 queda vacia y no opera. En futuros no hace falta.
 //  2. Despues de las 09:30, una vela que CIERRA sobre la caja es un largo; bajo la caja, un corto.
-//  3. Entrada a ese cierre, stop en el otro borde de la caja, objetivo a 3R.
+//  3. Entrada a ese cierre, o (por defecto) con una orden limite en el borde roto de la caja, que se llena
+//     si el precio vuelve a tocarlo dentro de la ventana de entradas. Stop en el otro borde de la caja,
+//     objetivo a 3R desde el precio de entrada.
 //  4. Filtro: largos solo con la EMA 50 sobre la EMA 200 en 15 minutos; cortos al reves.
-//  Una operacion al dia. Por defecto se cierra a las 16:00 si no toco stop ni objetivo.
+//  Una senal al dia. Puede abrirse aunque haya otra operacion abierta ("Permitir otra operacion"); ojo:
+//  TradingView no mantiene un largo y un corto a la vez, una senal contraria cierra la posicion abierta.
+//  Por defecto se cierra a las 16:00 si no toco stop ni objetivo.
 //
 // margin_long/short = 0: sin esto TradingView rechaza en silencio las ordenes cuyo valor supera el
 // capital (con una caja chica, arriesgar 1% puede ser comprar 3 veces el capital; un contrato de NQ vale
@@ -18,7 +22,7 @@
 //
 //@version=6
 strategy("Caja 9:00-9:30 (ruptura)", overlay = true, initial_capital = 100000,
-     process_orders_on_close = true, pyramiding = 0, margin_long = 0, margin_short = 0,
+     process_orders_on_close = true, pyramiding = 20, margin_long = 0, margin_short = 0,
      commission_type = strategy.commission.percent, commission_value = 0.01, slippage = 1,
      max_boxes_count = 500, max_lines_count = 500, max_labels_count = 50)
 
@@ -32,6 +36,8 @@ slowLen    = input.int(200, "EMA lenta", minval = 2)
 allowLong  = input.bool(true, "Permitir largos")
 allowShort = input.bool(true, "Permitir cortos")
 firstOnly  = input.bool(false, "Solo la primera ruptura del dia")
+entryMode  = input.string("Retesteo (limite)", "Entrada", options = ["Cierre de la ruptura", "Retesteo (limite)"])
+allowStack = input.bool(true, "Permitir otra operacion con una ya abierta")
 flatEod    = input.bool(true, "Cerrar a la hora de cierre si sigue abierta")
 flatH      = input.int(16, "Hora de cierre (NY)", minval = 0, maxval = 23)
 flatM      = input.int(0, "Minuto de cierre", minval = 0, maxval = 59)
@@ -123,7 +129,7 @@ if (brkUp or brkDn) and not sawBreak
     sawBreak := true
     nBreakDays += 1
 
-canTrade = strategy.position_size == 0 and not traded and time >= fromTime
+canTrade = (allowStack or strategy.opentrades == 0) and not traded and time >= fromTime
 longOk  = canTrade and brkUp and allowLong and (not useFilter or trendUp) and (not firstOnly or isFirst)
 shortOk = canTrade and brkDn and allowShort and (not useFilter or trendDn) and (not firstOnly or isFirst)
 if canTrade and (brkUp or brkDn) and not longOk and not shortOk
@@ -136,42 +142,52 @@ qtyFor(r) =>
         q := math.max(q, 1)
     q
 
-if longOk
-    entryPx := close
-    stopPx := boxLo
-    riskPts := entryPx - stopPx
-    tgtPx := entryPx + tpR * riskPts
-    strategy.entry("Largo", strategy.long, qty = qtyFor(riskPts))
-    strategy.exit("Salida L", "Largo", stop = stopPx, limit = tgtPx)
+// Un id por dia, para que cada operacion tenga su propia salida aunque haya otras abiertas
+var string pendId = na
+var int nFilled = 0
+var map<string, float> riskById = map.new<string, float>()
+retest = entryMode == "Retesteo (limite)"
+if longOk or shortOk
+    dir = longOk ? 1 : -1
+    tid = (dir > 0 ? "L" : "C") + str.format("{0,date,yyyyMMdd}", time)
+    entryPx := retest ? (dir > 0 ? boxHi : boxLo) : close
+    stopPx := dir > 0 ? boxLo : boxHi
+    riskPts := math.abs(entryPx - stopPx)
+    tgtPx := entryPx + dir * tpR * riskPts
+    riskById.put(tid, riskPts)
+    if retest
+        // orden limite en el borde roto de la caja; se cancela si no se llena dentro de la ventana
+        strategy.entry(tid, dir > 0 ? strategy.long : strategy.short, qty = qtyFor(riskPts), limit = entryPx)
+        pendId := tid
+    else
+        strategy.entry(tid, dir > 0 ? strategy.long : strategy.short, qty = qtyFor(riskPts))
+    strategy.exit(tid + "x", tid, stop = stopPx, limit = tgtPx)
     traded := true
     nOrders += 1
-else if shortOk
-    entryPx := close
-    stopPx := boxHi
-    riskPts := stopPx - entryPx
-    tgtPx := entryPx - tpR * riskPts
-    strategy.entry("Corto", strategy.short, qty = qtyFor(riskPts))
-    strategy.exit("Salida C", "Corto", stop = stopPx, limit = tgtPx)
-    traded := true
-    nOrders += 1
+
+// la orden limite pendiente se cancela al salir de la ventana de entradas
+if not na(pendId) and not inTrade and not inBox
+    strategy.cancel(pendId)
+    pendId := na
 
 if flatEod and strategy.position_size != 0 and time_close >= flatT and time < flatT
     strategy.close_all(comment = "cierre")
 
-// Resultado en R antes de comisiones (comparable con orb.py)
+// Resultado en R antes de comisiones (comparable con orb.py), operacion por operacion
 var float sumR = 0.0
 var int nTr = 0
 var int nWin = 0
-var float riskOpen = na
-if strategy.position_size != 0 and strategy.position_size[1] == 0
-    riskOpen := riskPts
-if strategy.closedtrades > strategy.closedtrades[1] and not na(riskOpen)
-    k = strategy.closedtrades - 1
-    d = strategy.closedtrades.size(k) > 0 ? 1.0 : -1.0
-    r = (strategy.closedtrades.exit_price(k) - strategy.closedtrades.entry_price(k)) * d / riskOpen
-    sumR += r
-    nTr += 1
-    nWin += r > 0 ? 1 : 0
+var int seen = 0
+while seen < strategy.closedtrades
+    eid = strategy.closedtrades.entry_id(seen)
+    rk = riskById.get(eid)
+    if not na(rk) and rk > 0
+        d = strategy.closedtrades.size(seen) > 0 ? 1.0 : -1.0
+        r = (strategy.closedtrades.exit_price(seen) - strategy.closedtrades.entry_price(seen)) * d / rk
+        sumR += r
+        nTr += 1
+        nWin += r > 0 ? 1 : 0
+    seen += 1
 
 var table tb = table.new(position.bottom_right, 2, 8, bgcolor = color.new(color.black, 20), border_width = 1)
 cell(row, name, value) =>
@@ -181,7 +197,7 @@ if barstate.islast
     cell(0, "Dias con caja", str.tostring(nDays))
     cell(1, "Dias con ruptura", str.tostring(nBreakDays))
     cell(2, "Rupturas filtradas", str.tostring(nBlocked))
-    cell(3, "Entradas enviadas", str.tostring(nOrders))
+    cell(3, retest ? "Ordenes limite enviadas" : "Entradas enviadas", str.tostring(nOrders))
     cell(4, "Operaciones cerradas", str.tostring(nTr))
     cell(5, "Ganadoras", nTr > 0 ? str.tostring(100.0 * nWin / nTr, "#.0") + "%" : "-")
     cell(6, "R promedio", nTr > 0 ? str.tostring(sumR / nTr, "#.000") : "-")
