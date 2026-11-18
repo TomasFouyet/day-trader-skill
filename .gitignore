@@ -5,3 +5,6 @@ __pycache__/
 trader/
 *.env
 .env
+
+# The dashboard data is built in Actions and published to GitHub Pages, never committed.
+site/data/

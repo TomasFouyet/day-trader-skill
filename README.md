@@ -713,6 +713,7 @@ versiones, así que el resultado real puede ser bastante menor. 2024 dio −0,07
 | `trader-scanner/orb_strategy.pine` | La estrategia en TradingView, ya configurada así |
 | `trader-alerts/orb_paper.py` | La opera todos los días en la cuenta **paper** de Alpaca |
 | `.github/workflows/caja-diaria.yml` | Corre `orb_paper.py` cada 5 minutos |
+| `site/` y `.github/workflows/dashboard.yml` | El panel en GitHub Pages |
 | `trader-analyst/orb_study.py` | Estudio de una versión: por año, lado, hora, patrones |
 | `trader-analyst/orb_validate.py` | Las pruebas: 288 versiones, Deflated Sharpe, Monte Carlo, walk-forward, costos |
 
@@ -763,6 +764,33 @@ dice cuántos días tuvieron caja, ruptura, ruptura filtrada y entrada. Va con
 `margin_long/short = 0`, porque con el margen por defecto TradingView rechaza
 en silencio las órdenes que valen más que el capital. "Tamaño" permite una
 cantidad fija de contratos.
+
+**Panel en GitHub Pages** (`site/`, publicado por `.github/workflows/dashboard.yml`
+en `https://<usuario>.github.io/day-trader-skill/`; no choca con el sitio
+principal `<usuario>.github.io`, que es otro repositorio):
+
+- **En vivo:** velas de 5 minutos de la última sesión en los cuatro índices,
+  con la caja, la señal, el stop y el nivel del 70 %.
+- **Mis operaciones:** capital, operaciones abiertas con su R, cerradas, R
+  acumulado y los avisos del bot. Es la parte privada: se publica **cifrada**
+  y se descifra en el navegador con la frase de `DASHBOARD_KEY`.
+- **Simulador:** para una operación abierta (botón "Simular") o una a mano,
+  miles de caminos armados con días reales recientes del mismo índice,
+  aplicando las reglas; compara cerrar ahora con mantener.
+- **Backtest:** los 5 años de la validación (`site/research/backtest.json`).
+
+Se rehace después de cada pasada del bot (cada 5 minutos). Para activarlo:
+
+1. Settings > Pages > Build and deployment > Source: **GitHub Actions**.
+2. Settings > Secrets and variables > Actions > New repository secret:
+   `DASHBOARD_KEY`, una frase larga al azar (20 caracteres o más). El
+   archivo cifrado queda a la vista de cualquiera, así que una frase corta se
+   podría adivinar. Sin este secreto el panel funciona, sin la parte privada.
+3. Actions > "Panel (GitHub Pages)" > Run workflow (o esperar la próxima
+   pasada del bot).
+
+`python3 trader-alerts/dashboard_data.py --out site/data` arma los datos (solo
+lectura: nunca coloca ni cambia órdenes). Nada de `site/data/` se commitea.
 
 #### Cómo se llegó
 
@@ -996,11 +1024,13 @@ trader-risk/        SKILL.md, check.py
 trader-budget/      SKILL.md, size.py, config.example.json, targets.example.json
 trader-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
 trader-alerts/      SKILL.md, alerts.py, alerts.example.json, notify_telegram.py, swing_pipeline.py,
-                    premarket.py, paper_trader.py (swing en paper), orb_paper.py (caja en paper)
+                    premarket.py, paper_trader.py (swing en paper), orb_paper.py (caja en paper),
+                    dashboard_data.py (datos del panel)
 trader-analyst/     SKILL.md, facts.py, metrics.example.json, earnings.py, drift_study.py,
                     performance.py, robustness.py, sweep_study.py, orb_study.py, orb_validate.py
 trader-pelosi/      SKILL.md, ptr.py
-.github/workflows/  swing-daily.yml, paper-daily.yml, caja-diaria.yml, research.yml, tests.yml
+.github/workflows/  swing-daily.yml, paper-daily.yml, caja-diaria.yml, dashboard.yml, research.yml, tests.yml
+site/               the dashboard (GitHub Pages): index.html, app.js, style.css, research/backtest.json
 tests/              unittest suite + offline fixtures
 ```
 

@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Caja de las 09:00</title>
+<meta name="description" content="Panel de la estrategia de ruptura de la caja de 09:00 a 10:00 en QQQ, SPY, DIA e IWM: en vivo, operaciones paper, simulador y backtest.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1>Caja de las 09:00</h1>
+        <p class="sub">Ruptura de la caja 09:00-10:00 · QQQ · SPY · DIA · IWM · cuenta paper de Alpaca</p>
+      </div>
+    </div>
+    <div class="status">
+      <span id="market-pill" class="pill">cargando</span>
+      <span id="updated" class="muted mono">-</span>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="Secciones">
+    <button role="tab" data-tab="live" aria-selected="true">En vivo</button>
+    <button role="tab" data-tab="trades" aria-selected="false">Mis operaciones</button>
+    <button role="tab" data-tab="sim" aria-selected="false">Simulador</button>
+    <button role="tab" data-tab="backtest" aria-selected="false">Backtest</button>
+    <button role="tab" data-tab="how" aria-selected="false">Cómo funciona</button>
+  </nav>
+</header>
+
+<main>
+  <!-- EN VIVO -->
+  <section id="tab-live" class="tab" role="tabpanel">
+    <div class="section-head">
+      <h2>Sesión <span id="session-day" class="mono">-</span></h2>
+      <p class="muted">Velas de 5 minutos con pre-mercado. La caja es el máximo y el mínimo de 09:00 a 10:00 (Nueva York). La primera vela que cierra fuera, hasta las 13:00, es la señal. Se actualiza con cada pasada del bot (cada 5 minutos).</p>
+    </div>
+    <div id="live-grid" class="grid-live"></div>
+  </section>
+
+  <!-- MIS OPERACIONES -->
+  <section id="tab-trades" class="tab" role="tabpanel" hidden>
+    <div id="lock" class="card lock">
+      <h2>Datos de la cuenta, cifrados</h2>
+      <p class="muted">El repositorio y esta página son públicos, así que la cuenta paper se publica cifrada. Escribe la frase que guardaste en el secreto <code>DASHBOARD_KEY</code>; se descifra solo en tu navegador.</p>
+      <form id="unlock-form" class="row">
+        <label for="pass" class="sr">Frase</label>
+        <input id="pass" type="password" autocomplete="current-password" placeholder="Frase de DASHBOARD_KEY" required>
+        <label class="check"><input id="remember" type="checkbox"> recordar en esta pestaña</label>
+        <button type="submit" class="btn primary">Desbloquear</button>
+      </form>
+      <p id="lock-msg" class="msg" role="status"></p>
+    </div>
+    <div id="trades-body" hidden>
+      <div class="kpis" id="acct-kpis"></div>
+      <div class="card">
+        <div class="card-head"><h3>Operaciones abiertas</h3><button id="relock" class="btn ghost">Bloquear</button></div>
+        <div class="table-wrap"><table id="open-table"><thead><tr><th>Índice</th><th>Lado</th><th>Entrada</th><th>Stop</th><th>Ahora</th><th>R ahora</th><th>Parcial</th><th>Días</th><th></th></tr></thead><tbody></tbody></table></div>
+        <p id="open-empty" class="muted" hidden>Sin operaciones abiertas.</p>
+      </div>
+      <div class="grid-2">
+        <div class="card"><h3>Capital de la cuenta paper</h3><div id="equity-chart" class="chart-svg"></div></div>
+        <div class="card"><h3>R acumulado de la estrategia</h3><div id="r-chart" class="chart-svg"></div></div>
+      </div>
+      <div class="card">
+        <h3>Operaciones cerradas</h3>
+        <div class="table-wrap"><table id="closed-table"><thead><tr><th>Día</th><th>Índice</th><th>Lado</th><th>Entrada</th><th>Stop</th><th>Parcial</th><th>P&amp;L</th><th>R</th></tr></thead><tbody></tbody></table></div>
+        <p id="closed-empty" class="muted" hidden>Todavía no hay operaciones cerradas.</p>
+      </div>
+      <div class="card"><h3>Avisos recientes del bot</h3><ul id="notes" class="notes"></ul></div>
+    </div>
+  </section>
+
+  <!-- SIMULADOR -->
+  <section id="tab-sim" class="tab" role="tabpanel" hidden>
+    <div class="section-head">
+      <h2>¿Mantener o cerrar?</h2>
+      <p class="muted">Simula el futuro de una operación con miles de caminos armados con días reales de los últimos ~25 días del mismo índice (velas de 5 minutos, de noche incluida), aplicando las reglas: 70 % a 1,7R, stop del resto a la entrada, tope de días. Compara el R de cerrar ahora con lo que dejaría mantenerla.</p>
+    </div>
+    <div class="grid-sim">
+      <form id="sim-form" class="card form">
+        <div class="field"><label for="s-sym">Índice</label><select id="s-sym"><option>QQQ</option><option>SPY</option><option>DIA</option><option>IWM</option></select></div>
+        <div class="field"><label for="s-side">Lado</label><select id="s-side"><option value="1">Largo</option><option value="-1">Corto</option></select></div>
+        <div class="field"><label for="s-entry">Entrada</label><input id="s-entry" type="number" step="0.01" required></div>
+        <div class="field"><label for="s-stop">Stop (borde de la caja)</label><input id="s-stop" type="number" step="0.01" required></div>
+        <div class="field"><label for="s-now">Precio ahora</label><input id="s-now" type="number" step="0.01" required></div>
+        <div class="field"><label for="s-days">Días que lleva abierta</label><input id="s-days" type="number" min="0" max="20" value="0"></div>
+        <div class="field"><label for="s-partial">Parcial del 70 %</label><select id="s-partial"><option value="0">Todavía no</option><option value="1">Ya cobrado (stop del resto en la entrada)</option></select></div>
+        <div class="field"><label for="s-runs">Caminos</label><select id="s-runs"><option>1000</option><option selected>3000</option><option>10000</option></select></div>
+        <div class="row-btns"><button class="btn primary" type="submit">Simular</button><button class="btn ghost" type="button" id="s-fill">Usar la señal de hoy</button></div>
+        <p id="sim-msg" class="msg" role="status"></p>
+      </form>
+      <div class="sim-out">
+        <div class="kpis" id="sim-kpis"></div>
+        <div class="card"><h3>Camino del R (percentiles 10, 25, 50, 75 y 90)</h3><div id="sim-fan" class="chart-svg"></div></div>
+        <div class="card"><h3>Distribución del R final</h3><div id="sim-hist" class="chart-svg"></div><p id="sim-read" class="read"></p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BACKTEST -->
+  <section id="tab-backtest" class="tab" role="tabpanel" hidden>
+    <div class="section-head">
+      <h2>5 años de pruebas</h2>
+      <p class="muted" id="bt-meta">-</p>
+    </div>
+    <div class="kpis" id="bt-kpis"></div>
+    <div class="card"><h3>Resultado acumulado, en R después de costos (los cuatro índices)</h3><div id="bt-legend" class="legend"></div><div id="bt-equity" class="chart-svg tall"></div></div>
+    <div class="grid-2">
+      <div class="card"><h3>R por operación, por año</h3><div id="bt-years" class="chart-svg"></div></div>
+      <div class="card"><h3>R por operación según el costo por lado</h3><div id="bt-costs" class="chart-svg"></div></div>
+    </div>
+    <div class="grid-3">
+      <div class="card"><h3>Qué caja</h3><div class="table-wrap"><table id="bt-boxes"></table></div></div>
+      <div class="card"><h3>El 30 % restante</h3><div class="table-wrap"><table id="bt-runner"></table></div></div>
+      <div class="card"><h3>Con y sin parcial</h3><div class="table-wrap"><table id="bt-partial"></table></div></div>
+    </div>
+    <div class="card"><h3>Las 15 mejores de <span id="bt-versions">-</span> versiones (por Sharpe)</h3><div class="table-wrap"><table id="bt-top"></table></div>
+      <p class="muted small">Elegir la mejor entre tantas versiones infla el resultado: con este número de intentos, la suerte sola ya da un Sharpe anual de <span id="bt-luck" class="mono">-</span> a la mejor. Por eso el Deflated Sharpe de la elegida es bajo.</p></div>
+  </section>
+
+  <!-- COMO FUNCIONA -->
+  <section id="tab-how" class="tab" role="tabpanel" hidden>
+    <div class="grid-2">
+      <div class="card prose">
+        <h2>Las reglas</h2>
+        <ol>
+          <li>Caja: máximo y mínimo de las velas de 5 minutos de <b>09:00 a 10:00</b> de Nueva York, pre-mercado incluido.</li>
+          <li>Desde las 10:00, la primera vela que <b>cierra</b> fuera de la caja: arriba largo, abajo corto. Ambos lados, sin filtro de medias, solo velas que cierran hasta las <b>13:00</b>. Una operación al día por índice y ninguna mientras otra siga abierta.</li>
+          <li>Entrada a mercado al cierre de esa vela. Stop en el otro borde de la caja.</li>
+          <li>A <b>1,7R</b> se vende el <b>70 %</b> y el stop del 30 % restante pasa a la entrada. El resto no tiene objetivo.</li>
+          <li>Lo que siga abierto a los 20 días de mercado se cierra.</li>
+        </ol>
+        <h2>Cómo corre</h2>
+        <p>cron-job.org dispara el workflow <code>caja-diaria.yml</code> cada 5 minutos de lunes a viernes. Cada pasada ejecuta <code>trader-alerts/orb_paper.py</code> contra la cuenta <b>paper</b> de Alpaca (dinero simulado) y, al terminar, el workflow <code>dashboard.yml</code> rehace los datos de esta página.</p>
+      </div>
+      <div class="card prose">
+        <h2>Privacidad</h2>
+        <p>El repositorio es público. Esta página publica precios de mercado y resultados de investigación, que son públicos, y la cuenta solo cifrada (PBKDF2 + HMAC-SHA256, encrypt-then-MAC). Sin la frase, <code>data/private.json</code> es ilegible. Usa una frase larga y al azar: el archivo cifrado está a la vista de cualquiera.</p>
+        <h2>Límites</h2>
+        <ul>
+          <li>Se actualiza cada 5 minutos, no tick a tick.</li>
+          <li>En vivo usa datos de IEX (el feed gratuito de Alpaca); el backtest usó la cinta consolidada.</li>
+          <li>El simulador re-muestrea días reales recientes: muestra el rango de caminos posibles, no predice el precio.</li>
+          <li>El resultado del backtest fue elegido entre muchas versiones; el real probablemente sea menor.</li>
+        </ul>
+        <p class="muted small">Investigación, no asesoría financiera.</p>
+        <p><a href="https://github.com/TomasFouyet/day-trader-skill" target="_blank" rel="noopener">Código en GitHub</a></p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="tip" class="tip" hidden></div>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

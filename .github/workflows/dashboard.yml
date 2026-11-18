@@ -1,0 +1,74 @@
+# Panel en GitHub Pages: https://<usuario>.github.io/day-trader-skill/
+#
+# Arma los datos del panel (trader-alerts/dashboard_data.py, solo lectura) y publica site/ en GitHub Pages.
+# Corre despues de cada pasada de "Caja diaria (paper)", cuando cambia el sitio, una vez al dia y a mano.
+#
+# El repositorio y el sitio son publicos: se publican precios de mercado y resultados de investigacion, y la
+# cuenta paper SOLO cifrada con el secreto DASHBOARD_KEY (sin el, la parte privada no se publica).
+# Antes de la primera vez: Settings > Pages > Source: GitHub Actions.
+
+name: Panel (GitHub Pages)
+
+on:
+  workflow_run:
+    workflows: ["Caja diaria (paper)"]
+    types: [completed]
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "trader-alerts/dashboard_data.py"
+      - ".github/workflows/dashboard.yml"
+  schedule:
+    - cron: "23 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Leer el estado del bot (cache privado, solo lectura)
+        uses: actions/cache/restore@v4
+        with:
+          path: trader/state
+          key: orb-state-panel-${{ github.run_id }}
+          restore-keys: orb-state-
+
+      - name: Datos del panel (solo lectura; la cuenta, cifrada)
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          DASHBOARD_KEY: ${{ secrets.DASHBOARD_KEY }}
+        run: python3 trader-alerts/dashboard_data.py --out site/data
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
