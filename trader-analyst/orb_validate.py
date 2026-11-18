@@ -179,6 +179,8 @@ def main(argv=None):
     ap.add_argument("--random", type=int, default=100, help="random strategies for the null")
     ap.add_argument("--sims", type=int, default=5000, help="bootstrap paths")
     ap.add_argument("--min-n", type=int, default=300, help="trades a version needs to rank among the best")
+    ap.add_argument("--extra", default="", help="more versions to test in full, e.g. "
+                    "'10:30,long,trend,2,15:55,20;10:00,both,none,3,15:55,20' (box end, side, filter, target, last entry, hold days)")
     ap.add_argument("--offline", metavar="DIR")
     a = ap.parse_args(argv)
     t0 = time.time()
@@ -247,6 +249,11 @@ def main(argv=None):
     top = distinct(rows)
     keys = list(USER_KEYS) + [("Mejor #%d: %s" % (k + 1, r["label"]), r["cfg"]) for k, r in enumerate(top)
                               if r["cfg"] not in [c for _, c in USER_KEYS]]
+    for part in [x for x in a.extra.split(";") if x.strip()]:
+        b, sd, f, tg, last, hold = [v.strip() for v in part.split(",")]
+        cfg = ("%s" % b, sd, f, float(tg), last, int(hold))
+        if cfg in grid and cfg not in [c for _, c in keys]:
+            keys.append(("Extra: %s" % label(cfg), cfg))
 
     print("\n1. Backtest de las %d versiones, despues de costos (R por operacion; Sharpe anual del resultado diario):" % len(rows))
     print("   %-78s %6s %8s %7s %6s %8s %7s %8s %8s" % ("version", "n", "R/op", "+-", "t", "Sharpe", "caida", "1a mitad", "2a mitad"))
