@@ -823,6 +823,24 @@ Deflated Sharpe suficiente (la suerte da 1,91 con 288 intentos):
 Las tres son negativas en 2026. `orb_validate.py --extra` prueba a fondo
 otras combinaciones.
 
+**Entrada en el retesteo y varias operaciones abiertas** (`--entry retest`,
+`--overlap`; en `orb.py`, `entry="retest"` y `overlap=True`): tras el cierre
+fuera de la caja en la dirección del filtro EMA, una orden límite en el
+borde roto de la caja, que se cancela si no se llena hasta la última hora
+de entrada. R por operación después de costos:
+
+| Versión | Entrada al cierre | Retesteo | Varias abiertas | Retesteo + varias |
+|---|---|---|---|---|
+| Caja 09:00-09:30, hasta 13:00, dejar correr | −0,083 | −0,121 | −0,094 | −0,127 |
+| Caja 09:00-10:30, 1:1,7, hasta 13:00, dejar correr | −0,008 | −0,014 | −0,050 | −0,042 |
+| Caja 09:00-10:30, 1:1,7, hasta 13:00, cierre 16:00 | +0,007 | +0,011 | +0,008 | +0,011 |
+| Caja 09:00-10:30, largos, 2R, hasta 13:00, cierre 16:00 | +0,061 | +0,066 | +0,061 | +0,066 |
+
+El retesteo empeora la caja corta (con un stop tan chico, el precio que
+vuelve al borde suele seguir hasta el stop) y apenas mejora la de 10:30.
+Varias operaciones abiertas a la vez empeoran las versiones que se dejan
+correr.
+
 ### 14. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
