@@ -806,6 +806,23 @@ meses la mejor de los 24 anteriores dio +0,012R ± 0,020 fuera de muestra.
 Solo 19 de 54 versiones quedan positivas después de costos, todas con caja
 hasta las 10:00 o 10:30 y casi todas solo largos.
 
+**288 combinaciones** (se sumaron: objetivo 1,7R, entradas solo hasta las
+13:00, y "dejar correr" hasta stop u objetivo con tope de 20 días y una
+operación abierta a la vez). Caja 09:00-09:30 hasta las 13:00 dejando
+correr: −0,083R por operación. Caja 09:00-10:30, 1:1,7, hasta las 13:00:
+−0,008R dejando correr y +0,007R cerrando a las 16:00. Las tres mejores
+de familias distintas, todas por encima del azar (p = 0,000) y ninguna con
+Deflated Sharpe suficiente (la suerte da 1,91 con 288 intentos):
+
+| Combinación | R/op | Sharpe | Peor caída | 1a → 2a mitad |
+|---|---|---|---|---|
+| 09:00-10:30, largos, 1R, hasta 13:00, cierre 16:00 | +0,058 ± 0,018 | 1,00 | 18R | +0,106 → +0,018 |
+| 09:00-10:30, largos, 2R, todo el día, dejar correr | +0,087 ± 0,047 | 0,63 | 40R | +0,129 → +0,048 |
+| 09:00-10:00, ambos, sin filtro, 3R, todo el día, dejar correr | +0,071 ± 0,044 | 0,58 | 63R | +0,089 → +0,054 |
+
+Las tres son negativas en 2026. `orb_validate.py --extra` prueba a fondo
+otras combinaciones.
+
 ### 14. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
