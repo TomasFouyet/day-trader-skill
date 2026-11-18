@@ -782,6 +782,30 @@ En futuros (60 días de Yahoo, NQ, ES, RTY y YM), la caja de 09:00-09:30
 dio +0,06R ± 0,11 y la de 09:00-10:30 +0,04R ± 0,05: demasiado poco tiempo
 para distinguir una de otra.
 
+**Validación cuantitativa** (`python3 trader-analyst/orb_validate.py`, o el
+workflow "Investigacion" con `study: validar-caja`): 54 versiones (caja hasta
+09:30, 10:00 o 10:30; ambos lados, largos o cortos; con y sin filtro;
+objetivo 1R, 2R o 3R), Deflated Sharpe, Monte Carlo de entradas al azar (300
+estrategias), Monte Carlo por bloques de meses (5.000 caminos), walk-forward
+(24 meses para elegir, 6 para operar) y costos. QQQ, SPY, IWM y DIA, 5 años,
+0,01 % por lado:
+
+| | Tus reglas (09:00-09:30) | 09:00-10:30, solo largos |
+|---|---|---|
+| R por operación, después de costos | −0,065 | +0,035 |
+| Estrategias al azar que la igualan (p) | 0,057 | 0,000 |
+| Sharpe anual | −0,97 | +0,66 |
+| Deflated Sharpe (se pide 0,95) | 0,00 | 0,01 |
+| Años en pérdida (Monte Carlo) | 84 % | 23 % |
+| Quinquenios en pérdida | 99 % | 4 % |
+| 2024 / 2025 / 2026 | −0,17 / −0,07 / −0,07 | +0,05 / −0,00 / −0,03 |
+
+Con 54 versiones probadas, la suerte sola da un Sharpe anual de 1,65 a la
+mejor; ninguna llega (la mejor, 0,70). En el walk-forward, elegir cada 6
+meses la mejor de los 24 anteriores dio +0,012R ± 0,020 fuera de muestra.
+Solo 19 de 54 versiones quedan positivas después de costos, todas con caja
+hasta las 10:00 o 10:30 y casi todas solo largos.
+
 ### 14. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
