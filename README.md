@@ -841,6 +841,31 @@ vuelve al borde suele seguir hasta el stop) y apenas mejora la de 10:30.
 Varias operaciones abiertas a la vez empeoran las versiones que se dejan
 correr.
 
+**Parcial y breakeven** (`--partial-r 1.7 --partial-frac 0.7`; en `orb.py`,
+`partial_r`): al llegar a 1,7R se cierra el 70 % y el stop del resto pasa a la
+entrada; el resto va al objetivo si es mayor que 1,7R, si no hasta el cierre
+(16:00, o hasta 20 días al dejar correr). Entrada al cierre de la ruptura.
+R por operación después de costos:
+
+| Versión | Sin parcial | Parcial 70 % a 1,7R | Parcial 70 % a 1R |
+|---|---|---|---|
+| Caja 09:00-10:30, 1:1,7, hasta 13:00, cierre 16:00 | +0,007 | +0,008 | +0,006 |
+| Caja 09:00-10:30, 1:1,7, hasta 13:00, dejar correr | −0,008 | +0,057 | +0,016 |
+| Caja 09:00-10:30, largos, hasta 13:00, cierre 16:00 | +0,059 | +0,059 | +0,059 |
+| Caja 09:00-10:30, largos, 3R, dejar correr | +0,063 | +0,098 | +0,060 |
+| Caja 09:00-10:00, ambos, sin filtro, hasta 13:00, dejar correr (resto sin objetivo) | +0,003 (2R) | +0,121 | |
+| Caja 09:00-09:30, hasta 13:00, dejar correr | −0,083 | −0,084 | −0,086 |
+
+Con cierre a las 16:00 el parcial no cambia nada (casi nunca se llega a
+1,7R en el día). Dejando correr ayuda mucho: corta la pérdida de las que
+se dan vuelta y deja seguir a las que tienen tendencia. La mejor de las 288
+con parcial a 1,7R pasa a ser caja 09:00-10:00, ambos lados, sin filtro,
+entradas hasta las 13:00, 70 % a 1,7R y el resto sin objetivo con stop en
+breakeven: +0,121R ± 0,048, Sharpe 0,96, +0,096 y +0,145 en cada mitad,
++0,089 en los meses del walk-forward, +0,053 aun con 0,03 % de costo por
+lado, pero 2024 dio −0,07, IWM y SPY aportan poco y el Deflated Sharpe es
+0,04 (la suerte da 1,69 con 288 intentos).
+
 ### 14. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
