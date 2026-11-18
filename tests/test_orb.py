@@ -14,6 +14,7 @@ from _load import load
 
 orb = load("trader-scanner", "orb")
 study = load("trader-analyst", "orb_study")
+validate = load("trader-analyst", "orb_validate")
 
 UP = (2.0, 1.0, 999)       # (ema 50, ema 200, completed 15m bars): trend up
 DOWN = (1.0, 2.0, 999)
@@ -151,6 +152,52 @@ class Ema(unittest.TestCase):
         f, s, n = orb.ema_15m(bars)[-1]
         self.assertGreater(f, s)
         self.assertGreaterEqual(n, 200)
+
+
+def write_test_chart(tmp, days=30):
+    ts, o, h, l, c = [], [], [], [], []
+    for k in range(days):
+        d = D - datetime.timedelta(days=days + 10 - k)
+        if d.weekday() > 4:
+            continue
+        p = 100.0 + k
+        moves = {"09:00": (p, p + 1, p - 1, p), "11:00": (p, p + 2.5, p, p + 2)}
+        if k % 3 == 0:
+            moves["12:00"] = (p + 2, p + 11.5, p + 2, p + 11)
+        for b in day(d, moves, start="04:00", end="20:00", base=p):
+            utc = b["t"] + datetime.timedelta(hours=5)
+            ts.append(int((utc - datetime.datetime(1970, 1, 1)).total_seconds()))
+            o.append(b["o"]); h.append(b["h"]); l.append(b["l"]); c.append(b["c"])
+    doc = {"chart": {"result": [{"meta": {"symbol": "TEST"}, "timestamp": ts,
+                                 "indicators": {"quote": [{"open": o, "high": h, "low": l, "close": c,
+                                                           "volume": [1] * len(ts)}]}}], "error": None}}
+    with gzip.open(os.path.join(tmp, "TEST.json.gz"), "wt") as fh:
+        json.dump(doc, fh)
+
+
+class Validate(unittest.TestCase):
+    def test_report_and_json(self):
+        tmp = tempfile.mkdtemp()
+        write_test_chart(tmp)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = validate.main(["--offline", tmp, "--symbols", "TEST", "--random", "5", "--sims", "20"])
+        text = out.getvalue()
+        self.assertEqual(code, 0, err.getvalue())
+        for part in ("1. Backtest de las 54 versiones", "2. Deflated Sharpe", "3a. Monte Carlo", "3b. Monte Carlo",
+                     "4. Walk-forward", "5. Costos"):
+            self.assertIn(part, text)
+        doc = json.loads(text.split("@@ORBJSON@@ ", 1)[1].splitlines()[0])
+        self.assertEqual(len(doc["grid"]), 54)
+        self.assertEqual(len(doc["equity"]), 4)
+        self.assertEqual(len(doc["dates"]), len(doc["equity"][0]["equity"]))
+
+    def test_block_bootstrap(self):
+        import random
+        tots, dds = validate.block_bootstrap({"a": [1.0, -2.0], "b": [3.0]}, 2, 50, random.Random(1))
+        self.assertEqual(len(tots), 50)
+        self.assertTrue(set(tots) <= {-2.0, 2.0, 6.0})
+        self.assertTrue(all(d >= 0 for d in dds))
 
 
 class StudyOffline(unittest.TestCase):

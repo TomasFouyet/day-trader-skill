@@ -13,7 +13,7 @@ on:
       study:
         description: "Estudio a correr"
         type: choice
-        options: ["resultados", "sweep", "caja"]
+        options: ["resultados", "sweep", "caja", "validar-caja"]
         default: "resultados"
       sweep_args:
         description: "Opciones del estudio sweep (por ejemplo: --target 2 --shorts --interval 1h)"
@@ -64,6 +64,10 @@ jobs:
             if [ -n "$LIMIT" ]; then SWEEP_ARGS="$SWEEP_ARGS --limit $LIMIT"; fi
             case "$SWEEP_ARGS" in *--debug*) export ALPACA_DEBUG=1 ;; esac
             python3 trader-analyst/sweep_study.py $SWEEP_ARGS
+            exit $?
+          fi
+          if [ "$STUDY" = "validar-caja" ]; then
+            python3 trader-analyst/orb_validate.py $CAJA_ARGS
             exit $?
           fi
           if [ "$STUDY" = "caja" ]; then
