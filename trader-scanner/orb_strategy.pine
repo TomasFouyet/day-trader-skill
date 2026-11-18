@@ -8,6 +8,8 @@
 //     Usalo en velas de 5 minutos. En ETF y acciones activa el horario extendido (ETH) del grafico:
 //     sin el pre-mercado la caja de 09:00-09:30 queda vacia y no opera. En futuros no hace falta.
 //  2. Despues de las 09:30, una vela que CIERRA sobre la caja es un largo; bajo la caja, un corto.
+//  Parcial (por defecto): al llegar a 1,7R se cierra el 70% y el stop del resto pasa a la entrada; el resto
+//  va al objetivo si es mayor que el parcial, si no hasta el cierre.
 //  3. Entrada a ese cierre, o (por defecto) con una orden limite en el borde roto de la caja, que se llena
 //     si el precio vuelve a tocarlo dentro de la ventana de entradas. Stop en el otro borde de la caja,
 //     objetivo a 3R desde el precio de entrada.
@@ -38,6 +40,9 @@ allowShort = input.bool(true, "Permitir cortos")
 firstOnly  = input.bool(false, "Solo la primera ruptura del dia")
 entryMode  = input.string("Retesteo (limite)", "Entrada", options = ["Cierre de la ruptura", "Retesteo (limite)"])
 allowStack = input.bool(true, "Permitir otra operacion con una ya abierta")
+usePartial = input.bool(true, "Cerrar un parcial y mover el stop a la entrada")
+partialR   = input.float(1.7, "Parcial a (R)", minval = 0.1, step = 0.1)
+partialPct = input.float(70, "Parcial (% de la posicion)", minval = 1, maxval = 99)
 flatEod    = input.bool(true, "Cerrar a la hora de cierre si sigue abierta")
 flatH      = input.int(16, "Hora de cierre (NY)", minval = 0, maxval = 23)
 flatM      = input.int(0, "Minuto de cierre", minval = 0, maxval = 59)
@@ -146,6 +151,9 @@ qtyFor(r) =>
 var string pendId = na
 var int nFilled = 0
 var map<string, float> riskById = map.new<string, float>()
+var map<string, float> qtyById = map.new<string, float>()
+var map<string, float> runTgtById = map.new<string, float>()
+var map<string, bool> beDone = map.new<string, bool>()
 retest = entryMode == "Retesteo (limite)"
 if longOk or shortOk
     dir = longOk ? 1 : -1
@@ -154,16 +162,34 @@ if longOk or shortOk
     stopPx := dir > 0 ? boxLo : boxHi
     riskPts := math.abs(entryPx - stopPx)
     tgtPx := entryPx + dir * tpR * riskPts
+    q = qtyFor(riskPts)
     riskById.put(tid, riskPts)
+    qtyById.put(tid, q)
     if retest
         // orden limite en el borde roto de la caja; se cancela si no se llena dentro de la ventana
-        strategy.entry(tid, dir > 0 ? strategy.long : strategy.short, qty = qtyFor(riskPts), limit = entryPx)
+        strategy.entry(tid, dir > 0 ? strategy.long : strategy.short, qty = q, limit = entryPx)
         pendId := tid
     else
-        strategy.entry(tid, dir > 0 ? strategy.long : strategy.short, qty = qtyFor(riskPts))
-    strategy.exit(tid + "x", tid, stop = stopPx, limit = tgtPx)
+        strategy.entry(tid, dir > 0 ? strategy.long : strategy.short, qty = q)
+    if usePartial
+        // parcial: partialPct % al llegar a partialR; el resto va al objetivo si es mayor, si no al cierre
+        float runTgt = tpR > partialR ? tgtPx : na
+        runTgtById.put(tid, runTgt)
+        strategy.exit(tid + "p", tid, qty_percent = partialPct, stop = stopPx, limit = entryPx + dir * partialR * riskPts)
+        strategy.exit(tid + "r", tid, stop = stopPx, limit = runTgt)
+    else
+        strategy.exit(tid + "x", tid, stop = stopPx, limit = tgtPx)
     traded := true
     nOrders += 1
+
+// despues del parcial, el stop del resto pasa al precio de entrada (breakeven)
+if usePartial and strategy.opentrades > 0
+    for i = 0 to strategy.opentrades - 1
+        eid = strategy.opentrades.entry_id(i)
+        q0 = qtyById.get(eid)
+        if not na(q0) and math.abs(strategy.opentrades.size(i)) < q0 and not beDone.contains(eid)
+            strategy.exit(eid + "r", eid, stop = strategy.opentrades.entry_price(i), limit = runTgtById.get(eid))
+            beDone.put(eid, true)
 
 // la orden limite pendiente se cancela al salir de la ventana de entradas
 if not na(pendId) and not inTrade and not inBox
@@ -174,19 +200,29 @@ if flatEod and strategy.position_size != 0 and time_close >= flatT and time < fl
     strategy.close_all(comment = "cierre")
 
 // Resultado en R antes de comisiones (comparable con orb.py), operacion por operacion
+// (con parcial, cada operacion se cierra en dos partes: se suman ponderadas por su tamano)
 var float sumR = 0.0
 var int nTr = 0
 var int nWin = 0
 var int seen = 0
+var map<string, float> accR = map.new<string, float>()
+var map<string, float> accF = map.new<string, float>()
 while seen < strategy.closedtrades
     eid = strategy.closedtrades.entry_id(seen)
     rk = riskById.get(eid)
-    if not na(rk) and rk > 0
+    q0 = qtyById.get(eid)
+    if not na(rk) and rk > 0 and not na(q0) and q0 > 0
         d = strategy.closedtrades.size(seen) > 0 ? 1.0 : -1.0
         r = (strategy.closedtrades.exit_price(seen) - strategy.closedtrades.entry_price(seen)) * d / rk
-        sumR += r
-        nTr += 1
-        nWin += r > 0 ? 1 : 0
+        f = math.abs(strategy.closedtrades.size(seen)) / q0
+        a = nz(accR.get(eid)) + r * f
+        b = nz(accF.get(eid)) + f
+        accR.put(eid, a)
+        accF.put(eid, b)
+        if b >= 0.999
+            sumR += a
+            nTr += 1
+            nWin += a > 0 ? 1 : 0
     seen += 1
 
 var table tb = table.new(position.bottom_right, 2, 8, bgcolor = color.new(color.black, 20), border_width = 1)
