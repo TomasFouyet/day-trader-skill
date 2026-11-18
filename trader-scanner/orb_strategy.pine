@@ -1,22 +1,23 @@
-// Caja 09:00-10:30 (ruptura) - la misma regla que trader-scanner/orb.py, para el Strategy Tester.
+// Caja 09:00-09:30 (ruptura) - la misma regla que trader-scanner/orb.py, para el Strategy Tester.
 // Investigacion: no es asesoria y no coloca ordenes reales.
 //
 // Reglas:
-//  1. Caja: maximo y minimo de las velas de 09:00 a 10:30 de Nueva York (pre-mercado incluido).
-//     Usalo en velas de 5 minutos. En acciones activa el horario extendido (ETH) del grafico;
-//     si no, la caja empieza a las 09:30.
-//  2. Despues de las 10:30, una vela que CIERRA sobre la caja es un largo; bajo la caja, un corto.
+//  1. Caja: maximo y minimo de las velas de 09:00 a 09:30 de Nueva York (pre-mercado incluido).
+//     La version anterior usaba 09:00-10:30: cambia "Caja" a 0900-1030 y "Ventana" a 1030-1600.
+//     Usalo en velas de 5 minutos. En ETF y acciones activa el horario extendido (ETH) del grafico:
+//     sin el pre-mercado la caja de 09:00-09:30 queda vacia y no opera. En futuros no hace falta.
+//  2. Despues de las 09:30, una vela que CIERRA sobre la caja es un largo; bajo la caja, un corto.
 //  3. Entrada a ese cierre, stop en el otro borde de la caja, objetivo a 3R.
 //  4. Filtro: largos solo con la EMA 50 sobre la EMA 200 en 15 minutos; cortos al reves.
 //  Una operacion al dia. Por defecto se cierra a las 16:00 si no toco stop ni objetivo.
 //
 //@version=6
-strategy("Caja 9:00-10:30 (ruptura)", overlay = true, initial_capital = 100000,
+strategy("Caja 9:00-9:30 (ruptura)", overlay = true, initial_capital = 100000,
      process_orders_on_close = true, pyramiding = 0,
      commission_type = strategy.commission.percent, commission_value = 0.01, slippage = 1)
 
-boxSess    = input.session("0900-1030", "Caja (hora de Nueva York)")
-tradeSess  = input.session("1030-1600", "Ventana de entradas (hora de Nueva York)")
+boxSess    = input.session("0900-0930", "Caja (hora de Nueva York)")
+tradeSess  = input.session("0930-1600", "Ventana de entradas (hora de Nueva York)")
 tpR        = input.float(3.0, "Objetivo (R)", minval = 0.5, step = 0.5)
 useFilter  = input.bool(true, "Filtro EMA rapida/lenta")
 filterTf   = input.timeframe("15", "Temporalidad del filtro")
@@ -28,7 +29,7 @@ firstOnly  = input.bool(false, "Solo la primera ruptura del dia")
 flatEod    = input.bool(true, "Cerrar a la hora de cierre si sigue abierta")
 flatH      = input.int(16, "Hora de cierre (NY)", minval = 0, maxval = 23)
 flatM      = input.int(0, "Minuto de cierre", minval = 0, maxval = 59)
-minBoxBars = input.int(9, "Velas minimas en la caja", minval = 1)
+minBoxBars = input.int(3, "Velas minimas en la caja", minval = 1)
 riskPct    = input.float(1.0, "Riesgo por operacion (% del capital)", minval = 0.1, step = 0.1)
 fromTime   = input.time(timestamp("2020-01-01T00:00:00"), "Desde")
 

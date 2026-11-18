@@ -699,8 +699,9 @@ revés. Una operación al día; si no tocó stop ni objetivo, se cierra a las
 - `trader-scanner/orb.py`: las reglas (y variantes: sin filtro, solo la
   primera ruptura, otro objetivo, mantener varios días).
 - `trader-scanner/orb_strategy.pine`: la misma estrategia para el Strategy
-  Tester de TradingView. Úsala en velas de 5 minutos; en acciones activa el
-  horario extendido, si no la caja empieza a las 09:30. Ahí puedes probarla
+  Tester de TradingView, con la caja de 09:00-09:30 por defecto (para la de
+  10:30: "Caja" 0900-1030, "Ventana" 1030-1600, "Velas mínimas" 9). Úsala
+  en velas de 5 minutos; en ETF y acciones activa el horario extendido. Ahí puedes probarla
   sobre los futuros reales (NQ, ES, MNQ, MES) con todo su historial.
 - `python3 trader-analyst/orb_study.py --symbols QQQ,SPY` (o el workflow
   "Investigacion" con `study: caja`): el estudio. Compara con entradas al
@@ -748,6 +749,33 @@ lado 0,01 % en índices, 0,05 % en acciones):
   distancia del cierre a la caja, separación de las medias o día de la
   semana se sostiene en la segunda mitad, y las 25 mejores acciones de la
   primera mitad dieron +0,00R en la segunda.
+
+**Variante: caja de 09:00 a 09:30** (se opera desde las 09:30;
+`--box 09:00-09:30`, y es la que trae por defecto el Pine). Índices: QQQ
+(Nasdaq 100), SPY (S&P 500), IWM (Russell 2000) y DIA (Dow), 5 años, costo
+0,01 % por lado:
+
+| Caja | Operaciones | Ganadoras | Promedio | Con costos | Al azar | Stop mediano |
+|---|---|---|---|---|---|---|
+| 09:00-09:30, tal cual | 4.415 | 34 % | +0,01R ± 0,02 | −0,07R | +0,05R | 0,30 % |
+| 09:00-09:30, solo largos | 2.410 | 37 % | +0,07R ± 0,03 | −0,02R | +0,05R | |
+| 09:00-09:30, solo cortos | 2.005 | 31 % | −0,06R ± 0,03 | −0,12R | +0,04R | |
+| 09:00-10:30, tal cual | 3.268 | 51 % | +0,03R ± 0,01 | +0,00R | +0,02R | 0,82 % |
+| 09:00-10:30, solo largos | 1.795 | 55 % | +0,07R ± 0,02 | +0,04R | +0,01R | |
+
+Con la caja corta el stop es casi tres veces más chico, el objetivo de 3R
+sí llega (638 veces de 4.415), pero el 59 % de las operaciones toca el
+stop: dos tercios entran entre 09:30 y 10:00, en el ruido de la apertura.
+Queda por debajo de entrar al azar, el costo pesa el triple en R, el filtro
+de medias resta (+0,06R sin él) y por índice solo QQQ sale positivo (+0,10R
+antes de costos, +0,04R después; SPY, IWM y DIA negativos). Ningún corte se
+sostiene en la segunda mitad. Con la caja de 09:00-10:30, en los cuatro
+índices, los largos siguen siendo lo mejor (+0,07R contra +0,01R al azar),
+pero IWM y DIA quedan en cero: lo positivo viene de QQQ y SPY.
+
+En futuros (60 días de Yahoo, NQ, ES, RTY y YM), la caja de 09:00-09:30
+dio +0,06R ± 0,11 y la de 09:00-10:30 +0,04R ± 0,05: demasiado poco tiempo
+para distinguir una de otra.
 
 ### 14. Límites que quedan
 
