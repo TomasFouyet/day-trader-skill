@@ -129,6 +129,13 @@ def summary_lines(trades, rnd, cost_pct):
                len(trades) / max(1.0, len(set(t["symbol"] for t in trades))) / max(1.0, len(years))),
            "  stop mediano %.2f%% del precio, costo de ida y vuelta %.3fR por operacion" % (
                sorted(t["risk_pct"] for t in trades)[len(trades) // 2], 2 * cost_pct / sorted(t["risk_pct"] for t in trades)[len(trades) // 2])]
+    for side, name in ((1, "largos"), (-1, "cortos")):
+        mine = [t for t in trades if t["dir"] == side]
+        theirs = [r["R"] for r in rnd if r["dir"] == side]
+        if mine and theirs:
+            sm, st = stats([t["R"] for t in mine]), stats(theirs)
+            out.append("  %s %s | con costos %+.3fR | azar %s | ventaja %+.3fR" % (
+                name, fmt(sm), stats([net(t, cost_pct) for t in mine])["mean"], fmt(st), sm["mean"] - st["mean"]))
     rby = {}
     for r in rnd:
         rby.setdefault(r["day"][:4], []).append(r["R"])
@@ -190,7 +197,7 @@ def fetch(sym, days, offline=None, now_utc=None):
         return None
     md = scan._marketdata()
     if md is not None and md.enabled() and not sym.endswith("=F"):
-        now_utc = now_utc or datetime.datetime.utcnow().replace(microsecond=0)
+        now_utc = now_utc or datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0, tzinfo=None)
         start = md._iso(now_utc - datetime.timedelta(days=days))
         end = md._iso(now_utc - datetime.timedelta(minutes=16))
         bs = md.bars_chunked(md._to_alpaca(sym), "5Min", start, end, "sip")
