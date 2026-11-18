@@ -98,7 +98,7 @@ CUTS = (
     ("la primera ruptura fue esta", lambda t: not t["features"]["first_against"]),
 )
 BUCKETS = (
-    ("hora NY de la entrada", "hour", (10.5, 11, 12, 14, 16)),
+    ("hora NY de la entrada", "hour", (9.5, 10, 10.5, 11, 12, 14, 16)),
     ("caja / rango diario medio", "box_vs_range", (0, 0.4, 0.6, 0.8, 99)),
     ("cierre mas alla de la caja, en cajas", "ext_box", (0, 0.05, 0.15, 0.3, 99)),
     ("distancia entre medias 50/200, % precio", "ema_gap_pct", (0, 0.1, 0.25, 0.5, 99)),
@@ -222,6 +222,8 @@ def main(argv=None):
     ap.add_argument("--offline", metavar="DIR", help="saved Yahoo-shaped charts, SYM.json or SYM.json.gz")
     ap.add_argument("--sides", choices=("both", "long", "short"), default="both",
                     help="the main rules on one side only (the variants keep their own)")
+    ap.add_argument("--box", default="09:00-10:30", help="the box, New York time, e.g. 09:00-09:30; trading starts at its end")
+    ap.add_argument("--min-box-bars", type=int, help="bars the box needs to count (default: half of its 5 minute bars)")
     ap.add_argument("--min-n", type=int, default=100)
     ap.add_argument("--debug", action="store_true")
     a = ap.parse_args(argv)
@@ -232,7 +234,10 @@ def main(argv=None):
         syms = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
     if a.limit:
         syms = syms[:a.limit]
-    base = {"target_r": a.target, "sides": a.sides}
+    box_start, box_end = [x.strip() for x in a.box.split("-")]
+    box_bars = (orb._minutes(box_end) - orb._minutes(box_start)) // 5
+    base = {"target_r": a.target, "sides": a.sides, "box_start": box_start, "box_end": box_end,
+            "min_box_bars": a.min_box_bars or max(2, box_bars // 2)}
     scan._marketdata()           # load it once here, before the download threads start
 
     def get(sym):
@@ -276,9 +281,10 @@ def main(argv=None):
     if not trades:
         print("Sin operaciones (%d simbolos sin datos: %s)." % (len(skipped), ", ".join(skipped[:10])))
         return 1
-    print("Caja 09:00-10:30 en velas de 5 min, ruptura con cierre, stop al otro lado de la caja, objetivo %gR, "
+    print("Caja %s-%s en velas de 5 min (al menos %d velas), ruptura con cierre, stop al otro lado de la caja, objetivo %gR, "
           "filtro EMA 50/200 de 15 min, fuera a las 16:00%s. Costo %.2f%% por lado." % (
-              a.target, {"both": "", "long": ", solo largos", "short": ", solo cortos"}[a.sides], a.cost_pct))
+              box_start, box_end, base["min_box_bars"], a.target,
+              {"both": "", "long": ", solo largos", "short": ", solo cortos"}[a.sides], a.cost_pct))
     print("%d simbolos (%d sin datos suficientes%s), %s a %s." % (
         used, len(skipped), (": " + ", ".join(skipped[:10])) if skipped else "", first.date(), last.date()))
     for line in summary_lines(trades, rnd, a.cost_pct):

@@ -30,6 +30,11 @@ DEFAULTS = {
 }
 
 
+def _minutes(text):
+    h, m = text.split(":")
+    return int(h) * 60 + int(m)
+
+
 def _hm(text):
     h, m = text.split(":")
     return datetime.time(int(h), int(m))

@@ -20,7 +20,7 @@ on:
         required: false
         default: "--interval 30m --range 5y --target 1.5"
       caja_args:
-        description: "Opciones del estudio caja 09:00-10:30 (por ejemplo: --symbols QQQ,SPY o --days 730 --cost-pct 0.05)"
+        description: "Opciones del estudio caja 09:00-10:30 (por ejemplo: --symbols QQQ,SPY,IWM,DIA --box 09:00-09:30, o --days 730 --cost-pct 0.05)"
         required: false
         default: "--symbols QQQ,SPY --days 1827 --cost-pct 0.01"
       robustness:

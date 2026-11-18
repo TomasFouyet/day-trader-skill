@@ -42,6 +42,14 @@ class Box(unittest.TestCase):
         self.assertEqual(bars[sess[0]]["t"].strftime("%H:%M"), "10:30")
         self.assertEqual(bars[sess[-1]]["t"].strftime("%H:%M"), "15:55")
 
+    def test_box_0900_to_0930_trades_from_0930(self):
+        bars = day(D, {"09:05": (100, 101, 99, 100), "09:30": (100, 102.5, 100, 102)})
+        p = {"box_start": "09:00", "box_end": "09:30", "min_box_bars": 3}
+        (d, hi, lo, sess), = orb.boxes(bars, p)
+        self.assertEqual((hi, lo, bars[sess[0]]["t"].strftime("%H:%M")), (101, 99, "09:30"))
+        t, = orb.run(bars, p, [UP] * len(bars))
+        self.assertEqual((t["entry_time"], t["entry"], t["stop"]), ("2026-11-17 09:30", 102, 99))
+
     def test_too_few_box_bars_no_day(self):
         self.assertEqual(orb.boxes(day(D, start="10:00")), [])
 
@@ -176,6 +184,12 @@ class StudyOffline(unittest.TestCase):
         self.assertIn("1 sin datos suficientes: NOPE", text)
         self.assertIn("Patrones: mitad de descubrimiento", text)
         self.assertIn("TEST", text)
+
+    def test_box_option(self):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = study.main(["--offline", tempfile.mkdtemp(), "--symbols", "NOPE", "--box", "09:00-09:30"])
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":
