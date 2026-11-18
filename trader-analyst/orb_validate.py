@@ -72,14 +72,15 @@ def label(cfg):
                                                    "dejar correr" if hold else "cierre 16:00")
 
 
-OPTS = {"entry": "close", "overlap": False}     # set for the whole run from --entry and --overlap
+OPTS = {"entry": "close", "overlap": False, "partial_r": None, "partial_frac": 0.7}     # set for the whole run from --entry and --overlap
 
 
 def params(cfg):
     b, s, f, t, last, hold = cfg
     bars = (orb._minutes(b) - orb._minutes("09:00")) // 5
     return {"box_start": "09:00", "box_end": b, "sides": s, "filter": f, "target_r": t, "last_entry": last,
-            "hold_days": hold, "min_box_bars": max(2, bars // 2), "entry": OPTS["entry"], "overlap": OPTS["overlap"]}
+            "hold_days": hold, "min_box_bars": max(2, bars // 2), "entry": OPTS["entry"], "overlap": OPTS["overlap"],
+            "partial_r": OPTS["partial_r"], "partial_frac": OPTS["partial_frac"]}
 
 
 def fast_random(d, boxes, cfg, rng, cost_pct):
@@ -106,7 +107,7 @@ def fast_random(d, boxes, cfg, rng, cost_pct):
             continue
         e = bars[i]["c"]
         end = orb.end_index(bars, days, pos[day], sess[-1], hold, flat)
-        r, _, held = orb.simulate(bars, i, k, e, e - k * (hi - lo), tgt, end)
+        r, _, held = orb.simulate(bars, i, k, e, e - k * (hi - lo), tgt, end, OPTS["partial_r"], OPTS["partial_frac"])
         if not OPTS["overlap"]:
             busy = i + held
         out.append((day.isoformat(), net_r(r, (hi - lo) / e * 100, cost_pct)))
@@ -188,9 +189,11 @@ def main(argv=None):
     ap.add_argument("--entry", choices=("close", "retest"), default="close",
                     help="close: at the breakout close; retest: limit order at the broken box edge")
     ap.add_argument("--overlap", action="store_true", help="allow a new trade while one on the same index is open")
+    ap.add_argument("--partial-r", type=float, help="close part of the trade at this R and move the stop to the entry")
+    ap.add_argument("--partial-frac", type=float, default=0.7, help="the part closed there (0.7 = 70%%)")
     ap.add_argument("--offline", metavar="DIR")
     a = ap.parse_args(argv)
-    OPTS.update(entry=a.entry, overlap=a.overlap)
+    OPTS.update(entry=a.entry, overlap=a.overlap, partial_r=a.partial_r, partial_frac=a.partial_frac)
     t0 = time.time()
     syms = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
     scan._marketdata()
@@ -215,6 +218,9 @@ def main(argv=None):
         ", ".join(sorted(data)), calendar[0], calendar[-1], len(calendar), a.cost_pct,
         "orden limite en el retesteo del borde de la caja" if a.entry == "retest" else "al cierre de la vela que rompe",
         "varias operaciones abiertas por indice" if a.overlap else "una operacion abierta por indice"))
+    if a.partial_r:
+        print("Parcial: %.0f%% a %gR y stop del resto a la entrada; el resto va al objetivo si es mayor que %gR, "
+              "si no al cierre." % (100 * a.partial_frac, a.partial_r, a.partial_r))
 
     # 1. the grid
     grid, gross = {}, {}

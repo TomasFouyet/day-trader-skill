@@ -22,6 +22,9 @@ Choices the rules leave open (switches in run()):
     broke. It fills on a later bar that trades back to that edge (at the edge, or at a better open), up to
     the last entry time, else it is cancelled. Same stop, target in R from the fill. In the fill bar only the
     stop is checked. overlap=True drops the one-position-at-a-time rule.
+  - partial_r=P: at P R, partial_frac (0.7) of the position is closed and the stop of the rest moves to the
+    entry. The rest runs to target_r if it is above P, else to the close (16:00, or the end of hold_days).
+    In the bar that takes the partial nothing else is counted.
 """
 
 import datetime
@@ -33,6 +36,8 @@ DEFAULTS = {
     "hold_days": 0,      # 0: out at the 16:00 close; N: keep it (overnight too) up to the 16:00 close N days later
     "entry": "close",    # close: at the close of the breakout bar | retest: limit order at the box edge after it
     "overlap": False,    # True: a new day's trade may open while an earlier one on the same symbol is still open
+    "partial_r": None,   # e.g. 1.7: at 1.7R close partial_frac of it and move the stop to the entry (breakeven)
+    "partial_frac": 0.7,
 }
 
 
@@ -129,8 +134,52 @@ def daily_ranges(bars, days):
     return out
 
 
-def simulate(bars, i, d, entry, stop, target_r, session_end_idx):
+def simulate_partial(bars, i, d, entry, stop, target_r, end, partial_r, frac):
+    """simulate() with a partial: frac of the position out at partial_r, the stop of the rest to the entry."""
+    risk = (entry - stop) * d
+    ptgt = entry + d * partial_r * risk
+    run_r = target_r if target_r and target_r > partial_r else None
+    rtgt = entry + d * run_r * risk if run_r else None
+
+    def rr(x):
+        return (x - entry) * d / risk
+
+    def past(x, level):                  # x reached level in the trade's favour
+        return (x - level) * d >= 0
+    took, first = None, None
+    for j in range(i + 1, end + 1):
+        b = bars[j]
+        o, hi, lo = b["o"], b["h"], b["l"]
+        fav, adv = (hi, lo) if d > 0 else (lo, hi)
+        if took is None:
+            if not past(o, stop) or o == stop:
+                return rr(o), "stop", j - i
+            if not past(adv, stop) or adv == stop:
+                return -1.0, "stop", j - i
+            if past(o, ptgt):
+                took, first = j, rr(o)
+            elif past(fav, ptgt):
+                took, first = j, partial_r
+            continue
+        if not past(o, entry) or o == entry:
+            return frac * first + (1 - frac) * rr(o), "parcial+breakeven", j - i
+        if not past(adv, entry) or adv == entry:
+            return frac * first, "parcial+breakeven", j - i
+        if rtgt is not None:
+            if past(o, rtgt):
+                return frac * first + (1 - frac) * rr(o), "parcial+objetivo", j - i
+            if past(fav, rtgt):
+                return frac * first + (1 - frac) * run_r, "parcial+objetivo", j - i
+    last = bars[end]
+    if took is None:
+        return rr(last["c"]), "close", end - i
+    return frac * first + (1 - frac) * rr(last["c"]), "parcial+cierre", end - i
+
+
+def simulate(bars, i, d, entry, stop, target_r, session_end_idx, partial_r=None, partial_frac=0.7):
     """Walk the bars after i up to session_end_idx (inclusive). -> (R, outcome, bars held)."""
+    if partial_r:
+        return simulate_partial(bars, i, d, entry, stop, target_r, session_end_idx, partial_r, partial_frac)
     risk = (entry - stop) * d
     tgt = entry + d * target_r * risk
     for j in range(i + 1, session_end_idx + 1):
@@ -248,10 +297,10 @@ def run(bars, p=None, ema=None):
             if (k > 0 and b["l"] <= stop) or (k < 0 and b["h"] >= stop):
                 r, outcome, held = -1.0, "stop", 0
             else:
-                r, outcome, held = simulate(bars, i, k, entry, stop, p["target_r"], end)
+                r, outcome, held = simulate(bars, i, k, entry, stop, p["target_r"], end, p["partial_r"], p["partial_frac"])
         else:
             entry = bars[i]["c"]
-            r, outcome, held = simulate(bars, i, k, entry, stop, p["target_r"], end)
+            r, outcome, held = simulate(bars, i, k, entry, stop, p["target_r"], end, p["partial_r"], p["partial_frac"])
         if not p["overlap"]:
             busy = i + held
         t = bars[i]["t"]

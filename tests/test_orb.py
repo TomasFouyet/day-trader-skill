@@ -196,6 +196,43 @@ class Retest(unittest.TestCase):
         self.assertEqual(len(orb.run(bars, {"entry": "retest"}, [UP] * len(bars))), 1)
 
 
+class Partial(unittest.TestCase):
+    BOX = {"09:00": (100, 101, 99, 100)}
+
+    def run_with(self, moves, **p):
+        bars = day(D, dict(self.BOX, **moves))
+        return orb.run(bars, dict({"partial_r": 1.7, "partial_frac": 0.7, "target_r": 3.0}, **p), [UP] * len(bars))
+
+    # entry 102, stop 99, risk 3: partial at 102 + 5.1 = 107.1, runner target 111
+
+    def test_partial_then_breakeven(self):
+        t, = self.run_with({"11:00": (100, 102.5, 100, 102), "12:00": (102, 107.5, 102, 107),
+                            "12:05": (107, 107, 101.5, 102)})
+        self.assertEqual(t["outcome"], "parcial+breakeven")
+        self.assertAlmostEqual(t["R"], 0.7 * 1.7)
+
+    def test_partial_then_runner_target(self):
+        t, = self.run_with({"11:00": (100, 102.5, 100, 102), "12:00": (102, 107.5, 102, 107),
+                            "12:05": (107, 111.5, 107, 111)})
+        self.assertEqual(t["outcome"], "parcial+objetivo")
+        self.assertAlmostEqual(t["R"], 0.7 * 1.7 + 0.3 * 3.0)
+
+    def test_partial_then_close(self):
+        t, = self.run_with({"11:00": (100, 102.5, 100, 102), "12:00": (102, 107.5, 102, 107)}, target_r=1.7)
+        # the next bar opens at 100, under the entry: the rest goes out at that open (-2/3 R on 30%)
+        self.assertEqual(t["outcome"], "parcial+breakeven")
+        self.assertAlmostEqual(t["R"], 0.7 * 1.7 + 0.3 * (100 - 102) / 3.0)
+
+    def test_stop_before_partial(self):
+        t, = self.run_with({"11:00": (100, 102.5, 100, 102), "11:05": (102, 102, 98.5, 99)})
+        self.assertEqual((t["outcome"], t["R"]), ("stop", -1.0))
+
+    def test_no_partial_then_close(self):
+        bars = day(D, dict(self.BOX, **{"11:00": (100, 102.5, 100, 102), "15:55": (103, 104, 103, 104)}))
+        t, = orb.run(bars, {"partial_r": 1.7}, [UP] * len(bars))
+        self.assertEqual(t["outcome"], "close")
+
+
 class Overlap(unittest.TestCase):
     def test_overlap_opens_while_one_is_open(self):
         box = {"09:00": (100, 101, 99, 100)}
