@@ -953,6 +953,22 @@ breakeven: +0,121R ± 0,048, Sharpe 0,96, +0,096 y +0,145 en cada mitad,
 lado, pero 2024 dio −0,07, IWM y SPY aportan poco y el Deflated Sharpe es
 0,04 (la suerte da 1,69 con 288 intentos).
 
+**Lo que sostiene ese resultado** (misma caja, ambos lados, hasta 13:00, 5
+años, después de costos):
+
+| Variante | Operaciones | R/op | Sharpe | Caída |
+|---|---|---|---|---|
+| Elegida: 70 % a 1,7R, resto en breakeven hasta 20 días, una a la vez | 1.098 | +0,120 ± 0,048 | 0,95 | 42R |
+| La misma, permitiendo otra abierta (`--overlap`) | 4.674 | +0,009 ± 0,023 | 0,12 | 130R |
+| 70 % a 1,7R y todo cerrado a las 16:00 | 4.674 | +0,010 ± 0,014 | 0,23 | 73R |
+| Todo a 1,7R, cierre a las 16:00 | 4.674 | +0,010 ± 0,014 | 0,23 | 75R |
+| Todo a 1,7R, dejar correr hasta 20 días | 3.051 | +0,001 ± 0,024 | 0,01 | 74R |
+
+La ganancia viene del 30 % que sigue varios días y de los días que se saltan
+mientras sigue abierto: esas ~3.600 rupturas saltadas promedian −0,025R. La
+regla solo mira el pasado (no hay trampa), pero que casi todo dependa de ella
+hace al resultado más frágil.
+
 ### 14. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
