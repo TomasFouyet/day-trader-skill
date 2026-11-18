@@ -45,7 +45,25 @@ def ny_bars(series, to_eastern):
             continue
         out.append({"t": to_eastern(t[k]), "o": o[k], "h": h[k], "l": l[k], "c": c[k], "v": v[k] or 0})
     out.sort(key=lambda b: b["t"])
-    return out
+    return clean_spikes(out)
+
+
+def clean_spikes(bars, limit=0.02):
+    """A lone bad tick (seen in Yahoo's futures: a 15:00 bar opening 4% away from the bars on both sides of
+    it): an open or extreme more than `limit` away from both the previous close and the bar's own close is
+    pulled back to the bar's other prices."""
+    for k in range(1, len(bars)):
+        b, pc = bars[k], bars[k - 1]["c"]
+
+        def far(x):
+            return abs(x - pc) / pc > limit and abs(x - b["c"]) / b["c"] > limit
+        if far(b["o"]):
+            b["o"] = pc
+        if far(b["h"]):
+            b["h"] = max(b["o"], b["c"])
+        if far(b["l"]):
+            b["l"] = min(b["o"], b["c"])
+    return bars
 
 
 def ema_15m(bars, fast=50, slow=200, bar_minutes=5, span=15):

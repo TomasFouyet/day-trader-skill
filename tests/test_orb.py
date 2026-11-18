@@ -113,6 +113,18 @@ class Trades(unittest.TestCase):
         self.assertEqual(orb.run(bars, {"hold_days": 1}, ema)[0]["outcome"], "target")
 
 
+class Spikes(unittest.TestCase):
+    def test_lone_bad_tick_is_pulled_back(self):
+        bars = day(D, {"15:00": (104.0, 104.0, 99.9, 100.0)}, start="14:50", end="15:10")
+        orb.clean_spikes(bars)
+        self.assertEqual((bars[2]["o"], bars[2]["h"]), (100.0, 100.0))
+
+    def test_a_real_gap_stays(self):
+        bars = day(D, {"09:30": (104.0, 104.5, 103.8, 104.2)}, start="09:20", end="09:40")
+        orb.clean_spikes(bars)
+        self.assertEqual(bars[2]["o"], 104.0)
+
+
 class Ema(unittest.TestCase):
     def test_15m_bar_counts_when_its_last_5m_bar_closes(self):
         bars = day(D, start="09:00", end="09:30")

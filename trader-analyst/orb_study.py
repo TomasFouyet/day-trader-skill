@@ -80,6 +80,7 @@ VARIANTS = (
     ("sin el filtro de medias", {"filter": "none"}),
     ("filtro al reves", {"filter": "counter"}),
     ("solo la primera ruptura del dia", {"first_only": True}),
+    ("ambos lados", {"sides": "both"}),
     ("solo largos", {"sides": "long"}),
     ("solo cortos", {"sides": "short"}),
     ("objetivo 1R", {"target_r": 1.0}),
@@ -214,6 +215,8 @@ def main(argv=None):
     ap.add_argument("--target", type=float, default=3.0)
     ap.add_argument("--cost-pct", type=float, default=0.01, help="cost per side, %% of the price (stocks: ~0.05)")
     ap.add_argument("--offline", metavar="DIR", help="saved Yahoo-shaped charts, SYM.json or SYM.json.gz")
+    ap.add_argument("--sides", choices=("both", "long", "short"), default="both",
+                    help="the main rules on one side only (the variants keep their own)")
     ap.add_argument("--min-n", type=int, default=100)
     ap.add_argument("--debug", action="store_true")
     a = ap.parse_args(argv)
@@ -224,7 +227,7 @@ def main(argv=None):
         syms = [s.strip().upper() for s in a.symbols.split(",") if s.strip()]
     if a.limit:
         syms = syms[:a.limit]
-    base = {"target_r": a.target}
+    base = {"target_r": a.target, "sides": a.sides}
     scan._marketdata()           # load it once here, before the download threads start
 
     def get(sym):
@@ -267,7 +270,8 @@ def main(argv=None):
         print("Sin operaciones (%d simbolos sin datos: %s)." % (len(skipped), ", ".join(skipped[:10])))
         return 1
     print("Caja 09:00-10:30 en velas de 5 min, ruptura con cierre, stop al otro lado de la caja, objetivo %gR, "
-          "filtro EMA 50/200 de 15 min, fuera a las 16:00. Costo %.2f%% por lado." % (a.target, a.cost_pct))
+          "filtro EMA 50/200 de 15 min, fuera a las 16:00%s. Costo %.2f%% por lado." % (
+              a.target, {"both": "", "long": ", solo largos", "short": ", solo cortos"}[a.sides], a.cost_pct))
     print("%d simbolos (%d sin datos suficientes%s), %s a %s." % (
         used, len(skipped), (": " + ", ".join(skipped[:10])) if skipped else "", first.date(), last.date()))
     for line in summary_lines(trades, rnd, a.cost_pct):
