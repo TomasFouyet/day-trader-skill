@@ -384,3 +384,9 @@ class CloseReport(Base):
         self.assertTrue(orb.close_report_once(self.acct, utc(datetime.date(2026, 11, 19), "16:01"), sent.append))
         self.assertFalse(orb.close_report_once(self.acct, utc(datetime.date(2026, 11, 19), "16:06"), sent.append))
         self.assertEqual(len(sent), 1)
+
+
+class PublicLog(unittest.TestCase):
+    def test_only_symbols_reach_the_ci_log(self):
+        line = orb.log_line([("QQQ", "corto 30 a mercado (cierre 667.56)"), ("SPY", "parcial cobrado +$325")])
+        self.assertEqual(line, "2 aviso(s) enviados a Telegram: QQQ, SPY")

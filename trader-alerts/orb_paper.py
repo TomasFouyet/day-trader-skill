@@ -758,12 +758,19 @@ def watch(acct, until, dry, send=None, clock=None, fetch=None, sleep=time.sleep,
             events = run_pass(acct, now, bars, dry_run=dry)
             if events:
                 text = events_text(now, events)
-                print(text)
                 if send and not dry:
                     send(text)
+                    print(log_line(events))
+                else:
+                    print(text)
         except (paper.PaperError, OSError, ValueError) as e:
             print("Pasada con error (sigue vigilando): %s" % e, file=sys.stderr)
         n += 1
+
+
+def log_line(events):
+    """What the public CI log may show of a pass: the symbols and how many messages, nothing else."""
+    return "%d aviso(s) enviados a Telegram: %s" % (len(events), ", ".join(sorted({e[0] for e in events})))
 
 
 def telegram(text):
@@ -791,9 +798,11 @@ def main(argv=None):
         acct = Account(paper.Paper())
         if a.cmd == "report":
             text = report_text(acct, now_utc)
-            print(text)
             if a.telegram:
                 telegram(text)
+                print("Resumen de la caja enviado a Telegram.")
+            else:
+                print(text)
             return 0
         if not (datetime.time(9, 55) <= now_et.time() <= datetime.time(16, 10)) and a.cmd == "run" and not a.now:
             print("Fuera del horario de la estrategia (%s NY): nada que hacer." % now_et.strftime("%H:%M"))
@@ -814,9 +823,11 @@ def main(argv=None):
             return 0
         events = run_pass(acct, now_utc, bars, dry_run=dry)
         text = events_text(now_utc, events) if events else ""
-        print(text or "Sin novedades.")
         if a.telegram and events and not dry:
             telegram(text)
+            print(log_line(events))
+        else:
+            print(text or "Sin novedades.")
         if a.telegram and not dry and close_report_once(acct, now_utc, telegram):
             print("Resumen de cierre de la caja enviado a Telegram.")
         return 0
