@@ -990,6 +990,26 @@ importa poco. Los largos aportan casi todo (la elegida: +0,19R los largos y
 +0,05R los cortos), en cinco años de alza, aunque 2022 fue positivo.
 Reoptimizar no mejoró a la elegida fuera de muestra, así que no se cambia.
 
+**Filtros de entrada** (`trader-analyst/orb_filters.py`, estudio
+`filtros-caja`): volatilidad (ATR diario y su rango de un año, caja/ATR),
+volumen relativo (sesión y vela de ruptura contra 20 días a la misma hora) y
+momentum (cuerpo, cierre, extensión, tamaño de la vela, VWAP, tendencia de 20
+días, gap, hora, y una "fuerza" combinada). Lado y umbral elegidos con la
+primera mitad (hasta mayo de 2024), medidos en la segunda, dentro del motor,
+y contra quitar al azar la misma parte de entradas.
+
+- Elegida: sin filtro, +0,141R en la segunda mitad. 25 de 26 filtros quedan
+  por debajo. Quitar entradas, con criterio o al azar, la empeora (al azar
+  queda en +0,03 a +0,07R), porque libera días que antes se saltaban. El
+  único mejor es caja ≥ 0,40 ATR (+0,199R), pero en la primera mitad era
+  peor que sin filtro y la diferencia cabe en el error (±0,077R): uno de 26,
+  lo esperable por azar.
+- Intradía (cierre 16:00, −0,017R en la segunda mitad): los que ayudan son
+  los contrarios a "ruptura fuerte" (no muy lejos del VWAP, contra la
+  tendencia de 20 días) y solo la llevan a +0,01 a +0,02R.
+- Volumen relativo, cuerpo y extensión de la vela ("rupturas fuertes") no
+  separan buenas de malas fuera de muestra en ninguna de las dos.
+
 ### 14. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
