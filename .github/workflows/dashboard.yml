@@ -28,14 +28,16 @@ permissions:
   pages: write
   id-token: write
 
-concurrency:
-  group: pages
-  cancel-in-progress: true
+# One at a time per job, not per workflow: a run whose build is skipped (after a cancelled pass) must not
+# cancel a build that is publishing.
 
 jobs:
   build:
     # after a pass that ran (not one cancelled while the 10:00-13:05 watcher held the line)
     if: github.event_name != 'workflow_run' || github.event.action == 'requested' || github.event.workflow_run.conclusion == 'success'
+    concurrency:
+      group: pages-build
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -67,6 +69,9 @@ jobs:
 
   deploy:
     needs: build
+    concurrency:
+      group: pages-deploy
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment:
       name: github-pages
