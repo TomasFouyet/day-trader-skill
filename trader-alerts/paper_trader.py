@@ -429,6 +429,82 @@ def sync(api, state, today, after_close=False):
     return out
 
 
+# ---------------------------------------------------------------- leftover orders
+
+OPEN_STATES = ("new", "accepted", "held", "pending_new", "partially_filled", "accepted_for_bidding",
+               "pending_replace", "pending_cancel")
+
+
+def origin(cid):
+    cid = cid or ""
+    return "swing" if cid.startswith("swing-") else "caja" if cid.startswith("orb-") else "otra"
+
+
+def is_entry(o):
+    """An order that opens a trade: a bracket/OTO parent, a swing entry, or a box entry (orb-...-in)."""
+    cid = o.get("client_order_id") or ""
+    return bool(o.get("legs")) or o.get("order_class") in ("bracket", "oto") or cid.startswith("swing-") or cid.endswith("-in")
+
+
+def leftover_orders(orders, positions):
+    """Open orders with nothing behind them. -> [(order, why, sure)].
+
+    sure=True (safe to cancel): an exit that no longer has a position to close: a sell with no long
+    position or a buy with no short position, when it is a leg of a filled entry, a box exit (orb-...),
+    or any sell (a sell with no shares would open a short). A pending entry is not a leftover (sync cancels
+    the stale ones); an unknown standalone buy is only reported."""
+    qty = {}
+    for p in positions or []:
+        try:
+            qty[str(p.get("symbol")).upper()] = float(p.get("qty") or 0)
+        except (TypeError, ValueError):
+            pass
+    out = []
+    for o in orders or []:
+        parent_open = o.get("status") in OPEN_STATES
+        if parent_open and is_entry(o):
+            continue                                       # a pending entry, its legs are held with it
+        for x in ([o] if parent_open else []) + list(o.get("legs") or []):
+            if x.get("status") not in OPEN_STATES:
+                continue
+            sym = str(x.get("symbol") or o.get("symbol") or "").upper()
+            q = qty.get(sym, 0.0)
+            side = x.get("side")
+            if side == "sell" and q > 0 or side == "buy" and q < 0:
+                continue                                   # closes an open position: fine
+            leg = x is not o
+            known = leg or origin(x.get("client_order_id")) == "caja"
+            if side == "sell":
+                out.append((x, "venta sin posicion comprada" + (" (pata de una entrada ya cerrada)" if leg else ""), True))
+            elif known:
+                out.append((x, "compra de cierre sin posicion vendida" + (" (pata)" if leg else ""), True))
+            else:
+                out.append((x, "compra suelta sin posicion (no es una salida conocida: no se toca)", False))
+    return out
+
+
+def orders_check(api, cancel=False):
+    """-> (lines without quantities or prices, counts)."""
+    orders = api.call("GET", "/v2/orders?status=open&limit=500&nested=true") or []
+    positions = api.positions() or []
+    found = leftover_orders(orders, positions)
+    lines, done = [], 0
+    for o, why, sure in found:
+        what = "%s %s %s (%s, %s): %s" % (str(o.get("symbol") or "").upper(), o.get("side"), o.get("type"),
+                                           origin(o.get("client_order_id")), o.get("status"), why)
+        if cancel and sure:
+            try:
+                api.cancel(o["id"])
+                done += 1
+                what += " -> cancelada"
+            except PaperError as e:
+                what += " -> no se pudo cancelar (%s)" % e
+        lines.append(what)
+    n_open = sum(1 for o in orders for x in [o] + list(o.get("legs") or []) if x.get("status") in OPEN_STATES)
+    return lines, {"open": n_open, "positions": len(positions), "leftover": len(found),
+                   "sure": sum(1 for f in found if f[2]), "cancelled": done}
+
+
 # ---------------------------------------------------------------- end of day
 
 NYSE_HOLIDAYS = {
@@ -693,7 +769,7 @@ def paper_on():
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Paper trading of the swing setups on Alpaca (simulated account).")
     sub = ap.add_subparsers(dest="cmd")
-    for name in ("account", "sync", "submit", "report", "daily"):
+    for name in ("account", "sync", "submit", "report", "daily", "orders"):
         p = sub.add_parser(name)
         p.add_argument("--state", default=STATE)
         p.add_argument("--now")
@@ -706,6 +782,9 @@ def main(argv=None):
             p.add_argument("--telegram", action="store_true")
         if name == "daily":
             p.add_argument("--force", action="store_true", help="send it now, whatever the clock says")
+        if name == "orders":
+            p.add_argument("--cancel-orphans", action="store_true",
+                           help="cancel the open exit orders that have no position behind them")
     a = ap.parse_args(argv)
     if not a.cmd:
         ap.print_help()
@@ -722,6 +801,16 @@ def main(argv=None):
             acc = api.account()
             print("Cuenta paper de Alpaca: estado %s%s." % (acc.get("status"),
                   "" if a.quiet else ", patrimonio $%s" % acc.get("equity")))
+            return 0
+        if a.cmd == "orders":
+            cancel = a.cancel_orphans and paper_on()
+            if a.cancel_orphans and not cancel:
+                print("PAPER_TRADING no es 1: solo se listan, no se cancela nada.")
+            lines, c = orders_check(api, cancel)
+            print("Ordenes abiertas: %d | posiciones: %d | sin posicion detras: %d (seguras de cancelar %d) | "
+                  "canceladas: %d" % (c["open"], c["positions"], c["leftover"], c["sure"], c["cancelled"]))
+            for line in lines:
+                print("  " + line)
             return 0
         if a.cmd == "daily":
             if not paper_on():

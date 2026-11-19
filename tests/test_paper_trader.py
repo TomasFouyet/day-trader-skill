@@ -340,3 +340,56 @@ class EveningWorkflow(unittest.TestCase):
         for bad in ("upload-artifact", "git push", "trader-broker"):
             self.assertNotIn(bad, wf)
         self.assertIsNone(re.search(r"(?<!paper-)api\.alpaca\.markets", wf))      # never the live trading API
+
+
+class LeftoverOrders(unittest.TestCase):
+    """Open orders with no position behind them (the stop or target of a trade that already closed)."""
+
+    def order(self, sym, side, typ, status="new", cid="", **kw):
+        return dict({"id": "%s-%s-%s" % (sym, side, typ), "symbol": sym, "side": side, "type": typ,
+                     "status": status, "client_order_id": cid}, **kw)
+
+    def test_what_is_a_leftover(self):
+        L = paper.leftover_orders
+        pos = [{"symbol": "KO", "qty": "10"}, {"symbol": "QQQ", "qty": "-20"}]
+        # a stop that still protects a long, and the buy stop of a short: fine
+        self.assertEqual(L([self.order("KO", "sell", "stop")], pos), [])
+        self.assertEqual(L([self.order("QQQ", "buy", "stop", cid="orb-QQQ-20261118-run")], pos), [])
+        # a pending bracket entry with its held legs: not a leftover (sync cancels stale entries)
+        entry = self.order("AAPL", "buy", "limit", cid="swing-AAPL-20261117-x", order_class="bracket",
+                           legs=[self.order("AAPL", "sell", "limit", "held"), self.order("AAPL", "sell", "stop", "held")])
+        self.assertEqual(L([entry], pos), [])
+        # the legs of a filled bracket whose position is gone: leftovers, safe to cancel
+        done = dict(entry, status="filled", legs=[self.order("AAPL", "sell", "stop", "new", id="leg1")])
+        (o, why, sure), = L([done], pos)
+        self.assertEqual((o["id"], sure), ("leg1", True))
+        # any sell with no shares would open a short: safe to cancel
+        (o, why, sure), = L([self.order("CMG", "sell", "limit")], pos)
+        self.assertTrue(sure)
+        # a box exit (buy to cover) with no short: safe; an unknown standalone buy: reported only
+        self.assertTrue(L([self.order("SPY", "buy", "stop", cid="orb-SPY-20261118-run-be")], pos)[0][2])
+        self.assertFalse(L([self.order("MRK", "buy", "limit", cid="manual-1")], pos)[0][2])
+
+    def test_check_cancels_only_the_sure_ones_and_logs_no_sizes(self):
+        calls = []
+
+        class Api(object):
+            def call(self, method, path, body=None):
+                return [{"id": "a", "symbol": "CMG", "side": "sell", "type": "limit", "status": "new",
+                         "client_order_id": "x", "qty": "37", "limit_price": "61.35"},
+                        {"id": "b", "symbol": "MRK", "side": "buy", "type": "limit", "status": "new",
+                         "client_order_id": "manual", "qty": "5", "limit_price": "99"}]
+
+            def positions(self):
+                return []
+
+            def cancel(self, oid):
+                calls.append(oid)
+        lines, c = paper.orders_check(Api(), cancel=True)
+        self.assertEqual(calls, ["a"])
+        self.assertEqual((c["leftover"], c["sure"], c["cancelled"]), (2, 1, 1))
+        text = " ".join(lines)
+        self.assertNotIn("61.35", text)
+        self.assertNotIn("37", text)
+        lines, c = paper.orders_check(Api(), cancel=False)
+        self.assertEqual((calls, c["cancelled"]), (["a"], 0))

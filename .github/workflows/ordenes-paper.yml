@@ -1,0 +1,46 @@
+# Ordenes abiertas sin posicion detras en la cuenta PAPER de Alpaca (simulada).
+#
+# Lista las ordenes abiertas (stop, limite) que ya no tienen una posicion que cerrar: la salida de una
+# operacion que ya termino. Una venta sin acciones podria abrir un corto sin querer. Por defecto solo lista;
+# con "cancelar" cancela las seguras (salidas sin posicion). Una compra suelta desconocida solo se informa.
+# El registro es publico: muestra simbolo, lado y tipo, nunca cantidades ni precios.
+# Solo con la Variable PAPER_TRADING=true para cancelar. Solo paper-api.alpaca.markets.
+
+name: Revisar ordenes (paper)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cancel:
+        description: "Cancelar las salidas que ya no tienen posicion"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orb-paper
+  cancel-in-progress: false
+
+jobs:
+  orders:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ordenes sin posicion (solo cuenta paper, nada real)
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          PAPER_TRADING: ${{ vars.PAPER_TRADING || secrets.PAPER_TRADING }}
+          CANCEL: ${{ inputs.cancel }}
+        run: |
+          ARGS=""
+          if [ "$CANCEL" = "true" ]; then ARGS="--cancel-orphans"; fi
+          python3 trader-alerts/paper_trader.py orders $ARGS
