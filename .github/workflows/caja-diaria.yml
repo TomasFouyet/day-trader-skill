@@ -37,7 +37,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: orb-paper
+  # the audit only reads: it does not wait behind the 10:00-13:05 watcher
+  group: ${{ (github.event_name == 'workflow_dispatch' && inputs.audit) && 'orb-audit' || 'orb-paper' }}
   cancel-in-progress: false
 
 jobs:

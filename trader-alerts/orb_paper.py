@@ -497,6 +497,17 @@ def audit_rows(acct, now_utc, bars_by_sym, day=None):
                        slip_R=(close - fill) * d / risk if risk else None, risk_ratio=abs(fill - edge) / risk if risk else None)
         tp = acct.get(cid(sym, day, "tp"))
         if tp is not None:
+            row["tp_status"] = tp.get("status")
+        filled_at = scan.to_eastern(_utc_of(o.get("filled_at")) or now_utc)
+        rec = (paper.read_json(STATE, {}) or {}).get("trades", {}).get(cid(sym, day, "in"), {})
+        stop0 = rec.get("stop") or ((box[1] if d > 0 else box[0]) if box else None)
+        after = [b for b in bars if b["t"] + datetime.timedelta(minutes=5) > filled_at]
+        if after and stop0 is not None and fill != stop0:
+            best = max(b["h"] for b in after) if d > 0 else min(b["l"] for b in after)
+            row["best_R_from_fill"] = (best - fill) * d / abs(fill - stop0)
+            if tp is not None and tp.get("limit_price"):
+                row["touched_tp"] = (best - float(tp["limit_price"])) * d >= 0
+        if tp is not None:
             lim = float(tp.get("limit_price") or 0)
             stp = None
             for leg in tp.get("legs") or []:
@@ -527,6 +538,9 @@ def audit_text(rows):
                          r["symbol"], "largo" if r["dir"] > 0 else "corto", r.get("bar", "-"), f("delay_s", "%d"),
                          f("slip_R", "%+.2f"), f("risk_ratio", "%.2f"), f("tp_R_from_fill", "%.2f"),
                          f("tp_R_from_close", "%.2f"), {True: "si", False: "NO"}.get(r.get("stop_is_box_edge"), "-")))
+        if r.get("best_R_from_fill") is not None:
+            lines.append("    desde la entrada llego hasta %+.2f R (velas IEX); toco el precio del 70%%: %s; orden del 70%%: %s" % (
+                r["best_R_from_fill"], {True: "si", False: "no"}.get(r.get("touched_tp"), "-"), r.get("tp_status", "-")))
     return "\n".join(lines)
 
 

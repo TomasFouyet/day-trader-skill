@@ -12,7 +12,7 @@ name: Panel (GitHub Pages)
 on:
   workflow_run:
     workflows: ["Caja diaria (paper)"]
-    types: [completed]
+    types: [requested, completed]     # requested: the 5 minute calls keep it fresh while the watcher runs
   push:
     branches: [main]
     paths:
@@ -35,7 +35,7 @@ concurrency:
 jobs:
   build:
     # after a pass that ran (not one cancelled while the 10:00-13:05 watcher held the line)
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name != 'workflow_run' || github.event.action == 'requested' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
