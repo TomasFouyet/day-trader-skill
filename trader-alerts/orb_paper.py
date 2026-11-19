@@ -348,6 +348,7 @@ def enter(acct, sym, now_et, bars, positions, equity, events, state, dry_run, sl
         return
     in_id = cid(sym, day, "in")
     state.setdefault("trades", {})[in_id] = {"stop": p["stop"], "box": [box[0], box[1]], "signal": bar["c"],
+                                             "bar": bar["t"].strftime("%H:%M"),
                                              "dir": direction, "qty": p["qty"], "at": now_et.isoformat()}
     paper.write_json(STATE, state)
     acct.submit({"symbol": sym, "qty": str(p["qty"]), "side": side, "type": "market", "time_in_force": "day",
@@ -448,6 +449,71 @@ def fetch_bars(now_utc, http=None):
 
 # ---------------------------------------------------------------- texts
 
+def _utc_of(stamp):
+    try:
+        return datetime.datetime.strptime(str(stamp)[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+
+
+def audit_rows(acct, now_utc, bars_by_sym, day=None):
+    """Each box entry of `day` against the rule: entry at the close of the breakout bar, stop at the other box
+    edge, 70% at 1.7R. -> list of dicts in R and seconds (no prices or sizes: the CI log is public)."""
+    day = day or scan.to_eastern(now_utc).date()
+    out = []
+    for sym in symbols():
+        o = acct.get(cid(sym, day, "in"))
+        if not _filled(o):
+            continue
+        bars = bars_by_sym.get(sym) or []
+        box = box_of(bars, day)
+        end = scan.to_eastern(_utc_of(o.get("filled_at")) or now_utc)
+        sig = first_signal(bars, day, box, end + datetime.timedelta(minutes=1)) if box else None
+        fill = float(o.get("filled_avg_price") or 0)
+        d = 1 if o.get("side") == "buy" else -1
+        row = {"symbol": sym, "dir": d}
+        if sig and box:
+            close = sig[0]["c"]
+            edge = box[1] if d > 0 else box[0]
+            risk = abs(close - edge)
+            closed_at = sig[0]["t"] + datetime.timedelta(minutes=5)
+            row.update(bar=sig[0]["t"].strftime("%H:%M"), delay_s=int((end - closed_at).total_seconds()),
+                       slip_R=(close - fill) * d / risk if risk else None, risk_ratio=abs(fill - edge) / risk if risk else None)
+        tp = acct.get(cid(sym, day, "tp"))
+        if tp is not None:
+            lim = float(tp.get("limit_price") or 0)
+            stp = None
+            for leg in tp.get("legs") or []:
+                if leg.get("stop_price"):
+                    stp = float(leg["stop_price"])
+            if stp is None:
+                rec = (paper.read_json(STATE, {}) or {}).get("trades", {}).get(cid(sym, day, "in"), {})
+                stp = rec.get("stop")
+            if stp is not None and fill != stp:
+                row["tp_R_from_fill"] = (lim - fill) * d / abs(fill - stp)
+                if sig and box:
+                    row["stop_is_box_edge"] = abs(stp - (box[1] if d > 0 else box[0])) < 0.011
+                    close = sig[0]["c"]
+                    row["tp_R_from_close"] = (lim - close) * d / abs(close - stp) if close != stp else None
+        out.append(row)
+    return out
+
+
+def audit_text(rows):
+    if not rows:
+        return "Sin entradas de la caja ese dia."
+    lines = ["Entradas de la caja contra la regla (entrar al cierre de la vela de ruptura, stop en el otro borde, 70% a 1,7R):"]
+    for r in rows:
+        f = lambda k, fmt: (fmt % r[k]) if r.get(k) is not None else "-"
+        lines.append("%s %s: vela %s, ejecutada %s s despues de su cierre; precio %s R respecto del cierre "
+                     "(negativo = peor); riesgo real %s veces el de la regla; 70%% a %s R desde la ejecucion "
+                     "(%s R desde el cierre de la vela); stop en el borde de la caja: %s" % (
+                         r["symbol"], "largo" if r["dir"] > 0 else "corto", r.get("bar", "-"), f("delay_s", "%d"),
+                         f("slip_R", "%+.2f"), f("risk_ratio", "%.2f"), f("tp_R_from_fill", "%.2f"),
+                         f("tp_R_from_close", "%.2f"), {True: "si", False: "NO"}.get(r.get("stop_is_box_edge"), "-")))
+    return "\n".join(lines)
+
+
 def status_text(acct, now_utc, bars_by_sym):
     now_et = scan.to_eastern(now_utc)
     day = now_et.date()
@@ -516,7 +582,7 @@ def telegram(text):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="The 09:00 box breakout on Alpaca PAPER.")
-    ap.add_argument("cmd", choices=("status", "run", "report"))
+    ap.add_argument("cmd", choices=("status", "run", "report", "audit"))
     ap.add_argument("--dry-run", action="store_true", help="say what it would do, place nothing")
     ap.add_argument("--telegram", action="store_true", help="send the events (run) or the report to Telegram")
     ap.add_argument("--now", help="New York time for tests, e.g. '2026-11-18 10:06'")
@@ -535,6 +601,9 @@ def main(argv=None):
             print("Fuera del horario de la estrategia (%s NY): nada que hacer." % now_et.strftime("%H:%M"))
             return 0
         bars = fetch_bars(now_utc)
+        if a.cmd == "audit":
+            print(audit_text(audit_rows(acct, now_utc, bars)))
+            return 0
         if a.cmd == "status":
             print(status_text(acct, now_utc, bars))
             return 0

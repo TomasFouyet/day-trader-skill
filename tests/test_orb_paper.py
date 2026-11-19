@@ -235,6 +235,19 @@ class Entry(Base):
         self.assertIsNone(orb.closed_today_at(self.acct, "QQQ", DAY + datetime.timedelta(days=1)))
 
 
+    def test_audit_measures_the_entry_against_the_rule(self):
+        # breakout bar 10:00-10:05 closes at 102 (box 99-101, stop 99, risk 3); the market order fills at 102.05
+        self.run_at("10:06", self.SIGNAL)
+        o = [x for x in self.fake.orders.values() if x["client_order_id"].endswith("-in")][0]
+        o["filled_at"] = "2026-11-18T15:06:30Z"                       # 10:06:30 New York
+        b = bars(DAY, dict(BOX, **self.SIGNAL), until="10:30")
+        r, = orb.audit_rows(self.acct, utc(DAY, "10:30"), {"QQQ": b}, DAY)
+        self.assertEqual((r["bar"], r["delay_s"]), ("10:00", 90))
+        self.assertAlmostEqual(r["slip_R"], -0.05 / 3)                 # bought 0.05 above the close: worse, in R
+        self.assertAlmostEqual(r["tp_R_from_fill"], 1.7, places=2)     # the 70% is 1.7R from the real fill
+        self.assertTrue(r["stop_is_box_edge"])
+        self.assertIn("ejecutada 90 s", orb.audit_text([r]))
+
 class Manage(Base):
     def open_trade(self, day="20261118", partial=False, runner_stop="99.00"):
         self.fake.positions["QQQ"] = {"symbol": "QQQ", "qty": "25" if partial else "83", "side": "long"}
