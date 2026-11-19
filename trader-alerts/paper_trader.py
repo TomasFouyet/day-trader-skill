@@ -549,6 +549,13 @@ def orders_check(api, cancel=False):
     for sym, share in naked:
         lines.append("%s: posicion abierta con %s" % (sym, "stop solo en el %.0f%% de ella" % (100 * share) if share
                                                      else "ningun stop abierto"))
+        # where the shares came from (no sizes): the filled orders of that symbol, newest first
+        for o in merged:
+            for x in [o] + list(o.get("legs") or []):
+                if str(x.get("symbol") or o.get("symbol") or "").upper() == sym and x.get("status") in ("filled", "partially_filled"):
+                    lines.append("    ejecutada: %s %s %s (%s) el %s%s" % (
+                        x.get("side"), x.get("type"), x.get("status"), origin(x.get("client_order_id") or o.get("client_order_id")),
+                        str(x.get("filled_at") or "")[:10], " (pata)" if x is not o else ""))
     n_open = sum(1 for o in orders for x in [o] + list(o.get("legs") or []) if x.get("status") in OPEN_STATES)
     return lines, {"open": n_open, "positions": len(positions), "leftover": len(found),
                    "sure": sum(1 for f in found if f[2]), "cancelled": done, "unprotected": len(naked)}
