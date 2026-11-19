@@ -53,6 +53,8 @@ class FakeAPI(object):
             return self.positions
         if method == "GET" and path.startswith("/v2/orders?status=open"):
             return [o for o in self.orders.values() if o.get("status") in ("new", "accepted", "held") and o.get("symbol")]
+        if method == "GET" and path.startswith("/v2/orders?status=all"):
+            return [o for o in self.orders.values() if o.get("symbol")]
         raise AssertionError(path)
 
 
@@ -456,3 +458,41 @@ class AlpacaIsTheTruth(unittest.TestCase):
                          ("GE", "sell", "stop", "10", "250.10"))
         self.assertEqual(c["protected"], 1)
         self.assertNotIn("250.10", " ".join(lines))
+
+
+class TimeStopClosesTheWholeSymbol(unittest.TestCase):
+    def test_two_entries_and_a_protective_stop(self):
+        # GE bought twice (two brackets) plus the stop put on the uncovered half: the time stop must cancel
+        # every open order in GE first, or Alpaca refuses to close a position whose shares are held
+        cancels, closes = [], []
+
+        class Api(object):
+            def call(self, method, path, body=None):
+                if "status=all" in path:
+                    return [{"id": "o1", "symbol": "GE", "status": "filled", "legs": [
+                                {"id": "o1tp", "status": "new"}, {"id": "o1sl", "status": "held"}]},
+                            {"id": "o2", "symbol": "GE", "status": "filled", "legs": [
+                                {"id": "o2tp", "status": "new"}, {"id": "o2sl", "status": "held"}]}]
+                if "status=open" in path:
+                    return [{"id": "prot", "symbol": "GE", "status": "new", "type": "stop"}]
+                raise AssertionError(path)
+
+            def order(self, oid):
+                if oid == "close1":
+                    return {"id": oid, "status": "accepted"}       # a market order after the close fills tomorrow
+                return {"id": oid, "status": "filled", "legs": []}
+
+            def cancel(self, oid):
+                cancels.append(oid)
+
+            def close_position(self, sym):
+                closes.append(sym)
+                return {"id": "close1"}
+        state = {"trades": {
+            "a": {"symbol": "GE", "status": "open", "order_id": "o1", "time_stop_date": "2026-11-18", "side": "buy"},
+            "b": {"symbol": "GE", "status": "open", "order_id": "o2", "time_stop_date": "2026-11-19", "side": "buy"}}}
+        paper.sync(Api(), state, "2026-11-20")
+        self.assertEqual(sorted(cancels), ["o1sl", "o1tp", "o2sl", "o2tp", "prot"])
+        self.assertEqual(closes, ["GE"])                       # once, for both
+        self.assertEqual({t["status"] for t in state["trades"].values()}, {"closing"})
+        self.assertEqual({t["close_order_id"] for t in state["trades"].values()}, {"close1"})

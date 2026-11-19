@@ -167,47 +167,8 @@ def _f(x):
         return None
 
 
-def trades_from_orders(orders):
-    """The box strategy's trades, rebuilt from the paper orders (client ids orb-SYMBOL-YYYYMMDD-part)."""
-    by = {}
-    for o in orders:
-        c = o.get("client_order_id") or ""
-        if not c.startswith("orb-"):
-            continue
-        parts = c.split("-")
-        if len(parts) < 4:
-            continue
-        key = "-".join(parts[:3])
-        by.setdefault(key, []).append(o)
-        for leg in o.get("legs") or []:
-            by[key].append(dict(leg, client_order_id=c + "-leg"))
-    trades = []
-    for key, os_ in sorted(by.items()):
-        _, sym, day = key.split("-")
-        entry = next((o for o in os_ if (o.get("client_order_id") or "").endswith("-in") and o.get("status") == "filled"), None)
-        if entry is None:
-            continue
-        side = 1 if entry.get("side") == "buy" else -1
-        px, qty = _f(entry.get("filled_avg_price")), _f(entry.get("filled_qty")) or _f(entry.get("qty"))
-        stops = [_f(o.get("stop_price")) for o in os_ if o.get("type") in ("stop",) and _f(o.get("stop_price"))]
-        stop = None
-        for s_ in stops:
-            if px and abs(s_ - px) > 0.005:
-                stop = s_
-                break
-        exits = [o for o in os_ if o is not entry and o.get("status") == "filled"]
-        out_qty = sum(_f(o.get("filled_qty")) or 0 for o in exits)
-        pnl = sum(((_f(o.get("filled_avg_price")) or 0) - px) * side * (_f(o.get("filled_qty")) or 0) for o in exits)
-        risk = abs(px - stop) * qty if (stop and px and qty) else None
-        partial = any((o.get("client_order_id") or "").endswith("-tp") and o.get("status") == "filled" for o in os_)
-        trades.append({
-            "id": key, "symbol": sym, "day": "%s-%s-%s" % (day[:4], day[4:6], day[6:]), "side": "largo" if side > 0 else "corto",
-            "dir": side, "qty": qty, "entry": px, "stop": stop, "entry_time": entry.get("filled_at"),
-            "partial_done": partial, "closed_qty": out_qty, "open": out_qty < (qty or 0) - 1e-9,
-            "realized_pnl": round(pnl, 2), "realized_R": round(pnl / risk, 3) if risk else None,
-            "exits": [{"time": o.get("filled_at"), "qty": _f(o.get("filled_qty")), "price": _f(o.get("filled_avg_price")),
-                       "kind": (o.get("client_order_id") or "").split("-", 3)[-1]} for o in exits]})
-    return trades
+# the box trades rebuilt from the paper orders live in orb_paper (the Telegram close report uses them too)
+trades_from_orders = orb.trades_from_orders
 
 
 def private_doc(acct, now_utc, state=None):

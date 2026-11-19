@@ -574,31 +574,150 @@ def events_text(now_utc, events):
                                                    "\n".join("%s: %s" % e for e in events))
 
 
-def report_text(acct, now_utc):
-    now_et = scan.to_eastern(now_utc)
-    lines = ["<b>Caja 09:00 (paper), cierre del %s</b>" % now_et.date().isoformat()]
-    positions = acct.positions()
-    any_open = False
-    for sym in symbols():
-        if sym not in positions:
+def _f(x):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def trades_from_orders(orders):
+    """The box strategy's trades, rebuilt from the paper orders (client ids orb-SYMBOL-YYYYMMDD-part)."""
+    by = {}
+    for o in orders:
+        c = o.get("client_order_id") or ""
+        if not c.startswith("orb-"):
             continue
-        entry = entry_of(acct, sym)
+        parts = c.split("-")
+        if len(parts) < 4:
+            continue
+        key = "-".join(parts[:3])
+        by.setdefault(key, []).append(o)
+        for leg in o.get("legs") or []:
+            by[key].append(dict(leg, client_order_id=c + "-leg"))
+    trades = []
+    for key, os_ in sorted(by.items()):
+        _, sym, day = key.split("-")
+        entry = next((o for o in os_ if (o.get("client_order_id") or "").endswith("-in") and o.get("status") == "filled"), None)
         if entry is None:
             continue
-        any_open = True
-        p = positions[sym]
-        st = paper.read_json(STATE, {}) or {}
-        rec = (st.get("trades") or {}).get(entry.get("client_order_id"), {})
-        fill = float(entry.get("filled_avg_price") or 0)
-        last = float(p.get("current_price") or fill)
-        stop = rec.get("stop")
-        r = ((last - fill) * (1 if entry.get("side") == "buy" else -1) / abs(fill - stop)) if stop else None
-        lines.append("%s %s %s desde %.2f, ahora %.2f%s" % (sym, "largo" if entry.get("side") == "buy" else "corto",
-                                                            p.get("qty"), fill, last, (", %+.2fR" % r) if r is not None else ""))
-    if not any_open:
-        lines.append("Sin operaciones abiertas.")
+        side = 1 if entry.get("side") == "buy" else -1
+        px, qty = _f(entry.get("filled_avg_price")), _f(entry.get("filled_qty")) or _f(entry.get("qty"))
+        stops = [_f(o.get("stop_price")) for o in os_ if o.get("type") in ("stop",) and _f(o.get("stop_price"))]
+        stop = None
+        for s_ in stops:
+            if px and abs(s_ - px) > 0.005:
+                stop = s_
+                break
+        exits = [o for o in os_ if o is not entry and o.get("status") == "filled"]
+        out_qty = sum(_f(o.get("filled_qty")) or 0 for o in exits)
+        pnl = sum(((_f(o.get("filled_avg_price")) or 0) - px) * side * (_f(o.get("filled_qty")) or 0) for o in exits)
+        risk = abs(px - stop) * qty if (stop and px and qty) else None
+        partial = any((o.get("client_order_id") or "").endswith("-tp") and o.get("status") == "filled" for o in os_)
+        trades.append({
+            "id": key, "symbol": sym, "day": "%s-%s-%s" % (day[:4], day[4:6], day[6:]), "side": "largo" if side > 0 else "corto",
+            "dir": side, "qty": qty, "entry": px, "stop": stop, "entry_time": entry.get("filled_at"),
+            "partial_done": partial, "closed_qty": out_qty, "open": out_qty < (qty or 0) - 1e-9,
+            "realized_pnl": round(pnl, 2), "realized_R": round(pnl / risk, 3) if risk else None,
+            "exits": [{"time": o.get("filled_at"), "qty": _f(o.get("filled_qty")), "price": _f(o.get("filled_avg_price")),
+                       "kind": (o.get("client_order_id") or "").split("-", 3)[-1]} for o in exits]})
+    return trades
+
+
+EXIT_ES = {"tp": "\u2705 70% a 1,7R", "tp-leg": "\u274c stop (70%)", "run": "\u274c stop (30%)",
+           "run-be": "\u2796 breakeven (30%)", "run-be2": "\u2796 breakeven (30%)"}
+
+
+def _usd(v):
+    return ("+" if v >= 0 else "-") + "$" + "{:,.0f}".format(abs(v))
+
+
+def _ny_day(stamp):
+    t = _utc_of(stamp)
+    return scan.to_eastern(t).date() if t else None
+
+
+def report_text(acct, now_utc):
+    """The box at the close: today's entries and exits, the open trades with what they banked and their stop
+    now, R and dollars. For Telegram (the swing summary is paper_trader.py's)."""
+    now_et = scan.to_eastern(now_utc)
+    day = now_et.date()
+    trades = trades_from_orders(acct.orders("all", None, 500))
+    positions = acct.positions()
+    open_orders = acct.orders("open", None, 200)
+    lines = ["\U0001F319 <b>Caja 09:00 \u00b7 cierre %s</b> (paper, Alpaca)" % day.strftime("%d-%m"), ""]
+    fresh = [t for t in trades if t["day"] == day.isoformat()]
+    if fresh:
+        lines.append("<b>Entradas de hoy (%d)</b>" % len(fresh))
+        for t in fresh:
+            lines.append("%s %s %s \u00b7 entrada $%.2f \u00b7 stop $%.2f" % (
+                "\U0001F7E2" if t["dir"] > 0 else "\U0001F534", t["symbol"], t["side"].upper(), t["entry"] or 0, t["stop"] or 0))
+    else:
+        lines.append("Hoy no hubo entradas.")
+    banked_R = banked_usd = 0.0
+    outs = []
+    for t in trades:
+        risk = abs(t["entry"] - t["stop"]) if t.get("entry") and t.get("stop") else None
+        for x in t.get("exits") or []:
+            if _ny_day(x.get("time")) != day or x.get("price") is None:
+                continue
+            part = (x.get("qty") or 0) / t["qty"] if t.get("qty") else 0
+            r = (x["price"] - t["entry"]) * t["dir"] / risk * part if risk else None
+            usd = (x["price"] - t["entry"]) * t["dir"] * (x.get("qty") or 0)
+            banked_R += r or 0
+            banked_usd += usd
+            outs.append("\u2022 %s \u00b7 %s \u00b7 %s \u00b7 %s" % (
+                t["symbol"], EXIT_ES.get(x.get("kind"), "salida"), ("%+.2fR" % r) if r is not None else "-", _usd(usd)))
+    if outs:
+        lines += ["", "<b>Salidas de hoy (%d)</b>" % len(outs)] + outs
+    live = [t for t in trades if t["open"] and t["symbol"] in positions]
+    if live:
+        lines += ["", "<b>Abiertas (%d)</b>" % len(live)]
+        open_R = open_usd = 0.0
+        for t in live:
+            p = positions[t["symbol"]]
+            last = _f(p.get("current_price")) or t["entry"]
+            risk = abs(t["entry"] - t["stop"]) if t.get("stop") else None
+            left = abs(_f(p.get("qty")) or 0)
+            r_now = (last - t["entry"]) * t["dir"] / risk if risk else None
+            usd = (last - t["entry"]) * t["dir"] * left
+            open_usd += usd
+            stop_now = None
+            for o in open_orders:
+                for x in [o] + list(o.get("legs") or []):
+                    if (x.get("symbol") or o.get("symbol")) == t["symbol"] and x.get("type") == "stop" and x.get("stop_price"):
+                        stop_now = _f(x["stop_price"])
+            got = t.get("realized_R")
+            age = trading_days_between(datetime.date.fromisoformat(t["day"]), day)
+            lines.append("%s %s %s \u00b7 entrada $%.2f \u2192 $%.2f \u00b7 %s ahora \u00b7 %s" % (
+                "\U0001F7E2" if t["dir"] > 0 else "\U0001F534", t["symbol"], t["side"].upper(), t["entry"], last,
+                ("%+.2fR" % r_now) if r_now is not None else "-", _usd(usd)))
+            lines.append("   %s \u00b7 stop %s \u00b7 d\u00eda %d de %d" % (
+                ("cobrado %+.2fR (70%%)" % got) if t.get("partial_done") and got is not None else "70% pendiente",
+                ("$%.2f%s" % (stop_now, " (breakeven)" if abs(stop_now - t["entry"]) < 0.011 else "")) if stop_now else "-",
+                age, STRATEGY["max_days"]))
+        lines += ["", "Resultado abierto: %s" % _usd(open_usd)]
+    else:
+        lines += ["", "Sin operaciones abiertas de la caja."]
+    if outs:
+        lines.append("Cobrado hoy: <b>%+.2fR</b> (%s)" % (banked_R, _usd(banked_usd)))
+    lines += ["", "<i>Cuenta simulada: sin dinero real. No es asesor\u00eda financiera.</i>"]
     return "\n".join(lines)
 
+
+def close_report_once(acct, now_utc, send):
+    """After 16:00 New York, the close report once a day (the passes run every 5 minutes)."""
+    now_et = scan.to_eastern(now_utc)
+    if now_et.time() < datetime.time(16, 0) or not scan.trading_day(now_et.date())[0]:
+        return False
+    state = paper.read_json(STATE, {}) or {}
+    said = state.setdefault("said", {}).setdefault(now_et.date().isoformat(), [])
+    if "close-report" in said:
+        return False
+    send(report_text(acct, now_utc))
+    said.append("close-report")
+    paper.write_json(STATE, state)
+    return True
 
 def _bar_ready(bars_by_sym, now_et):
     """Alpaca already has the 5 minute bar that just closed, for every symbol with bars today."""
@@ -698,6 +817,8 @@ def main(argv=None):
         print(text or "Sin novedades.")
         if a.telegram and events and not dry:
             telegram(text)
+        if a.telegram and not dry and close_report_once(acct, now_utc, telegram):
+            print("Resumen de cierre de la caja enviado a Telegram.")
         return 0
     except paper.PaperError as e:
         print("Error: %s" % e, file=sys.stderr)

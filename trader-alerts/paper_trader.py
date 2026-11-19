@@ -43,6 +43,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -212,6 +213,51 @@ def weakest(trades, positions):
     if not live:
         return None, None
     return min(live, key=lambda kv: (EDGE_R.get(kv[1].get("setup"), 0.0), current_R(kv[1], positions)))
+
+
+def clear_symbol(api, sym):
+    """Cancel every open order in sym (exit legs of any trade, a protective stop): Alpaca will not close a
+    position while open orders hold its shares."""
+    orders, q = [], urllib.parse.quote(sym)
+    # the open list, and the recent orders of every status: a filled bracket keeps its stop leg "held" under
+    # it, where the open list may not show it
+    for status in ("open", "all"):
+        try:
+            orders += api.call("GET", "/v2/orders?status=%s&limit=200&nested=true&symbols=%s" % (status, q)) or []
+        except PaperError:
+            pass
+    done = set()
+    for o in orders:
+        if str(o.get("symbol") or "").upper() != sym.upper():
+            continue
+        for x in [o] + list(o.get("legs") or []):
+            if x.get("status") in ("new", "accepted", "held", "pending_new", "partially_filled") and x.get("id") not in done:
+                done.add(x.get("id"))
+                try:
+                    api.cancel(x["id"])
+                except PaperError:
+                    pass
+
+
+def close_symbol(api, state, tr, reason, sleep=time.sleep):
+    """Close the whole position in tr's symbol at the market: its open orders first, then the position.
+    Every live trade in that symbol (a second entry, if one slipped in) is marked closing with it."""
+    sym = tr["symbol"]
+    clear_symbol(api, sym)
+    c, err = None, None
+    for _ in range(3):                                  # the cancels can take a moment to free the shares
+        try:
+            c = api.close_position(sym)
+            break
+        except PaperError as e:
+            err = e
+            sleep(1.0)
+    if c is None:
+        raise err
+    for other in (state.get("trades") or {}).values():
+        if other is tr or (str(other.get("symbol") or "").upper() == sym.upper() and other.get("status") in ("open", "submitted")):
+            other.update(status="closing", close_order_id=c.get("id"), close_reason=reason)
+    return c
 
 
 def retire(api, tr, why):
@@ -432,8 +478,7 @@ def sync(api, state, today, after_close=False):
                     except PaperError:
                         pass
             try:
-                c = api.close_position(tr["symbol"])
-                tr.update(status="closing", close_order_id=c.get("id"))
+                close_symbol(api, state, tr, "time")
                 out.append((tr["symbol"], "stop de tiempo: cierre a mercado enviado"))
             except PaperError as e:
                 out.append((tr["symbol"], "stop de tiempo: no se pudo cerrar (%s)" % e))

@@ -353,3 +353,34 @@ class Safety(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CloseReport(Base):
+    def fill_day(self):
+        day = "20261119"
+        self.fake.orders.update({
+            "e": {"id": "e", "n": 1, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-in" % day, "status": "filled",
+                  "side": "sell", "type": "market", "filled_avg_price": "667.56", "filled_qty": "30", "qty": "30",
+                  "filled_at": "2026-11-19T15:16:30Z"},
+            "t": {"id": "t", "n": 2, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-tp" % day, "status": "filled",
+                  "side": "buy", "type": "limit", "filled_avg_price": "654.57", "filled_qty": "21",
+                  "filled_at": "2026-11-19T16:52:10Z",
+                  "legs": [{"symbol": "QQQ", "status": "canceled", "type": "stop", "stop_price": "675.20", "side": "buy"}]},
+            "r": {"id": "r", "n": 3, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-run-be" % day, "status": "new",
+                  "side": "buy", "type": "stop", "stop_price": "667.56", "qty": "9"}})
+        self.fake.positions["QQQ"] = {"symbol": "QQQ", "qty": "-9", "side": "short", "current_price": "652.00"}
+
+    def test_the_report(self):
+        self.fill_day()
+        text = orb.report_text(self.acct, utc(datetime.date(2026, 11, 19), "16:06"))
+        for must in ("Entradas de hoy (1)", "QQQ CORTO", "Salidas de hoy (1)", "70% a 1,7R", "+1.19R",
+                     "Abiertas (1)", "cobrado +1.19R", "(breakeven)", "Cobrado hoy"):
+            self.assertIn(must, text)
+
+    def test_once_a_day_after_the_close(self):
+        self.fill_day()
+        sent = []
+        self.assertFalse(orb.close_report_once(self.acct, utc(datetime.date(2026, 11, 19), "15:56"), sent.append))
+        self.assertTrue(orb.close_report_once(self.acct, utc(datetime.date(2026, 11, 19), "16:01"), sent.append))
+        self.assertFalse(orb.close_report_once(self.acct, utc(datetime.date(2026, 11, 19), "16:06"), sent.append))
+        self.assertEqual(len(sent), 1)
