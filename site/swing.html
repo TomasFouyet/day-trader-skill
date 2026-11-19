@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Swing en paper</title>
+<meta name="description" content="Panel de los setups swing (ruptura de 20 días, pullback a la EMA20, RSI(2), momentum de resultados) en la cuenta paper de Alpaca.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1>Swing</h1>
+        <p class="sub">Setups diarios con entrada límite, objetivo, stop y salida por tiempo · cuenta paper de Alpaca</p>
+      </div>
+    </div>
+    <nav class="apps" aria-label="Estrategias"><a href="./">Caja 09:00</a><a href="swing.html" aria-current="page">Swing</a></nav>
+    <div class="status"><span id="updated" class="muted mono">-</span></div>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="Secciones">
+    <button role="tab" data-tab="trades" aria-selected="true">Operaciones</button>
+    <button role="tab" data-tab="how" aria-selected="false">Cómo funciona</button>
+  </nav>
+</header>
+
+<main>
+  <section id="tab-trades" class="tab" role="tabpanel">
+    <div id="lock" class="card lock">
+      <h2>Datos de la cuenta, cifrados</h2>
+      <p class="muted">Igual que en la caja: el repositorio y esta página son públicos, así que las operaciones swing se publican cifradas. Escribe la frase de <code>DASHBOARD_KEY</code>; se descifra solo en tu navegador. Si ya desbloqueaste la caja en esta pestaña, se abre sola.</p>
+      <form id="unlock-form" class="row">
+        <label for="pass" class="sr">Frase</label>
+        <input id="pass" type="password" autocomplete="current-password" placeholder="Frase de DASHBOARD_KEY" required>
+        <label class="check"><input id="remember" type="checkbox"> recordar en esta pestaña</label>
+        <button type="submit" class="btn primary">Desbloquear</button>
+      </form>
+      <p id="lock-msg" class="msg" role="status"></p>
+    </div>
+    <div id="trades-body" hidden>
+      <div class="row priv-head"><span id="priv-updated" class="muted small" role="status"></span><span class="row-btns"><button id="priv-refresh" class="btn small" type="button">Actualizar</button><button id="relock" class="btn ghost small" type="button">Bloquear</button></span></div>
+      <div class="kpis" id="sw-kpis"></div>
+      <div class="card">
+        <h3>Abiertas</h3>
+        <div class="table-wrap"><table id="sw-open"><thead><tr><th>Símbolo</th><th>Setup</th><th>Lado</th><th>Entrada</th><th>Stop</th><th>Objetivo</th><th>Ahora</th><th>R ahora</th><th>P&amp;L</th><th>Sale por tiempo</th></tr></thead><tbody></tbody></table></div>
+        <p id="sw-open-empty" class="muted" hidden>Sin operaciones swing abiertas.</p>
+      </div>
+      <div class="card">
+        <h3>Órdenes de entrada esperando</h3>
+        <p class="muted small">Órdenes límite enviadas que todavía no se ejecutan; si no entran en su día, se cancelan.</p>
+        <div class="table-wrap"><table id="sw-pending"><thead><tr><th>Símbolo</th><th>Setup</th><th>Lado</th><th>Límite</th><th>Stop</th><th>Objetivo</th><th>Señal</th></tr></thead><tbody></tbody></table></div>
+        <p id="sw-pending-empty" class="muted" hidden>Ninguna.</p>
+      </div>
+      <div class="grid-2">
+        <div class="card"><h3>R acumulado</h3><div id="sw-r-chart" class="chart-svg"></div></div>
+        <div class="card"><h3>Real contra el estudio, por setup</h3><div class="table-wrap"><table id="sw-setups"></table></div></div>
+      </div>
+      <div class="card">
+        <h3>Cerradas</h3>
+        <div class="table-wrap"><table id="sw-closed"><thead><tr><th>Señal</th><th>Símbolo</th><th>Setup</th><th>Lado</th><th>Entrada</th><th>Salida</th><th>Cómo salió</th><th>R</th></tr></thead><tbody></tbody></table></div>
+        <p id="sw-closed-empty" class="muted" hidden>Todavía no hay operaciones swing cerradas.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-how" class="tab" role="tabpanel" hidden>
+    <div class="grid-2">
+      <div class="card prose">
+        <h2>Cómo opera</h2>
+        <ol>
+          <li>Después del cierre, el escáner busca los setups en la lista de acciones (ruptura del máximo de 20 días, pullback a la EMA20, RSI(2) sobrevendido, momentum tras resultados) y el chequeo de riesgo decide cuáles pasan.</li>
+          <li>Cada uno que pasa se envía a la cuenta <b>paper</b> como orden bracket: entrada límite, objetivo y stop. Si la entrada no se ejecuta en su día, se cancela.</li>
+          <li>Una operación por símbolo y un máximo de operaciones abiertas a la vez; antes de entrar se pregunta a Alpaca si ya hay algo en ese símbolo.</li>
+          <li>Si no llega ni al objetivo ni al stop, se cierra al vencer su stop de tiempo.</li>
+          <li>Después del cierre, el resumen del día cancela salidas que quedaron sin posición y pone stop a lo que no lo tenga.</li>
+        </ol>
+      </div>
+      <div class="card prose">
+        <h2>Cómo leerlo</h2>
+        <p>"Real contra el estudio" compara el resultado de estas operaciones con lo que cada setup dio en la historia. Con menos de 30 operaciones cerradas la diferencia es casi todo ruido.</p>
+        <p>La cuenta paper es la misma que usa la caja de las 09:00: el capital incluye las dos estrategias.</p>
+        <p class="muted small">Investigación, no asesoría financiera.</p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="tip" class="tip" hidden></div>
+<script src="common.js"></script>
+<script src="swing.js"></script>
+</body>
+</html>

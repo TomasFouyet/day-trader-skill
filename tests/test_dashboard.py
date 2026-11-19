@@ -90,6 +90,37 @@ class Trades(unittest.TestCase):
         self.assertEqual(sorted(x["kind"] for x in t["exits"]), ["run-be", "tp"])   # what the site names each exit
 
 
+class Swing(unittest.TestCase):
+    def test_swing_doc(self):
+        class Api(object):
+            def account(self):
+                return {"equity": "100500", "last_equity": "100000", "cash": "40000"}
+
+            def positions(self):
+                return [{"symbol": "AAPL", "current_price": "360", "unrealized_pl": "55"}]
+        state = {"trades": {
+            "a": {"symbol": "AAPL", "side": "buy", "setup": "breakout20", "status": "open", "entry_fill": 354.65,
+                  "risk_per_share": 21.09, "stop": 333.56, "target": 541.35, "order_id": "secret-id"},
+            "b": {"symbol": "KO", "side": "buy", "setup": "rsi2", "status": "closed", "R": -1.0, "outcome": "stop"},
+            "c": {"symbol": "CMG", "side": "buy", "setup": "rsi2", "status": "closed", "R": 0.8, "outcome": "target"}}}
+        d = dash.swing_doc(Api(), datetime.datetime(2026, 11, 19, 17, 0), state)
+        a = next(t for t in d["trades"] if t["symbol"] == "AAPL")
+        self.assertAlmostEqual(a["unrealized_R"], round((360 - 354.65) / 21.09, 3))
+        self.assertNotIn("order_id", a)                        # only what the page shows
+        self.assertEqual(d["record"], {"closed": 2, "R": -0.2, "wins": 1})
+        self.assertIn("breakout20", d["study"])
+
+    def test_two_pages_one_switch(self):
+        read = lambda rel: open(os.path.join(ROOT, rel), encoding="utf-8").read()
+        for page in ("site/index.html", "site/swing.html"):
+            html = read(page)
+            self.assertIn('href="swing.html"', html)
+            self.assertLess(html.index("common.js"), html.index("app.js" if "index" in page else "swing.js"))
+        self.assertIn("private_swing.json", read("site/swing.js"))
+        self.assertIn("encrypt(swing_doc(", read("trader-alerts/dashboard_data.py"))
+        self.assertIn("swing-state-", read(".github/workflows/dashboard.yml"))
+
+
 class Safety(unittest.TestCase):
     def read(self, rel):
         with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
@@ -127,7 +158,7 @@ class Safety(unittest.TestCase):
         self.assertIn('integrity="sha384-', html)        # the chart library can't be swapped under the keys
 
     def test_site_decrypts_the_same_layout(self):
-        js = self.read("site/app.js")
+        js = self.read("site/common.js") + self.read("site/app.js")
         for must in ('"PBKDF2"', '"SHA-256"', "setUint32(nonce.length, i)", "doc.rounds", "Frase incorrecta"):
             self.assertIn(must, js)
 

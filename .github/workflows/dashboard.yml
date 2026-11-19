@@ -11,7 +11,7 @@ name: Panel (GitHub Pages)
 
 on:
   workflow_run:
-    workflows: ["Caja diaria (paper)"]
+    workflows: ["Caja diaria (paper)", "Swing diario", "Resumen del dia (paper)"]
     types: [requested, completed]     # requested: the 5 minute calls keep it fresh while the watcher runs
   push:
     branches: [main]
@@ -46,6 +46,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # the swing state first: the box bot's cache, restored after it, wins on any file both hold
+      - name: Leer el estado del swing (cache privado, solo lectura)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            trader/state
+            trader/alerts.json
+          key: swing-state-panel-${{ github.run_id }}
+          restore-keys: swing-state-
 
       - name: Leer el estado del bot (cache privado, solo lectura)
         uses: actions/cache/restore@v4

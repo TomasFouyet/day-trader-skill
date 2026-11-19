@@ -242,6 +242,44 @@ def private_doc(acct, now_utc, state=None):
     }
 
 
+SWING_FIELDS = ("symbol", "side", "qty", "setup", "signal_date", "time_stop_date", "limit_price", "entry_fill", "entry_at",
+                "stop", "target", "risk_per_share", "status", "outcome", "exit_fill", "exit_at", "R", "why", "predicted")
+
+
+def swing_doc(api, now_utc, state):
+    """The swing setups' paper trades (trader-alerts/paper_trader.py state) with the live prices of the open
+    ones, the study's expectations and the record. Never in clear: main() encrypts it."""
+    account = api.account() or {}
+    positions = {str(p.get("symbol") or "").upper(): p for p in (api.positions() or [])}
+    trades = []
+    for t in ((state or {}).get("trades") or {}).values():
+        row = {k: t.get(k) for k in SWING_FIELDS if t.get(k) is not None}
+        if t.get("status") in ("open", "closing"):
+            p = positions.get(str(t.get("symbol") or "").upper())
+            entry, risk = _f(t.get("entry_fill")), _f(t.get("risk_per_share"))
+            if p is not None:
+                last = _f(p.get("current_price"))
+                row["last"] = last
+                row["pnl"] = _f(p.get("unrealized_pl"))
+                if entry and risk and last:
+                    d = 1 if t.get("side") == "buy" else -1
+                    row["unrealized_R"] = round((last - entry) * d / risk, 3)
+        trades.append(row)
+    trades.sort(key=lambda r: (r.get("signal_date") or "", r.get("symbol") or ""))
+    closed = [t for t in trades if t.get("status") == "closed" and t.get("R") is not None]
+    return {
+        "updated": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "account": {"equity": _f(account.get("equity")), "cash": _f(account.get("cash")),
+                    "last_equity": _f(account.get("last_equity"))},
+        "trades": trades,
+        "study": {k: {"R": v[0], "win": v[1]} for k, v in paper.STUDY.items()},
+        "max_positions": paper.max_positions(),
+        "record": {"closed": len(closed), "R": round(sum(t["R"] for t in closed), 3),
+                   "wins": sum(1 for t in closed if t["R"] > 0)},
+        "last_sync": (state or {}).get("last_sync"), "last_submit": (state or {}).get("last_submit"),
+    }
+
+
 # ---------------------------------------------------------------- main
 
 def write(path, doc):
@@ -271,7 +309,8 @@ def main(argv=None):
     else:
         acct = orb.Account(paper.Paper())
         write(priv, encrypt(private_doc(acct, now_utc, paper.read_json(orb.STATE, {})), key))
-        print("private.json cifrado")
+        write(os.path.join(a.out, "private_swing.json"), encrypt(swing_doc(acct.api, now_utc, paper.read_json(paper.STATE, {})), key))
+        print("private.json y private_swing.json cifrados")
     print("datos en %s (%s)" % (a.out, now_utc.strftime("%Y-%m-%d %H:%M UTC")))
     return 0
 
