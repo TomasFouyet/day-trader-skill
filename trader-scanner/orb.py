@@ -38,6 +38,8 @@ DEFAULTS = {
     "overlap": False,    # True: a new day's trade may open while an earlier one on the same symbol is still open
     "partial_r": None,   # e.g. 1.7: at 1.7R close partial_frac of it and move the stop to the entry (breakeven)
     "partial_frac": 0.7,
+    "accept": None,      # optional entry filter: accept(i, direction, box_high, box_low, day) -> bool
+    "accept_mode": "skip",   # skip: a rejected breakout ends the day | wait: a later, stronger breakout may still enter
 }
 
 
@@ -277,6 +279,10 @@ def run(bars, p=None, ema=None):
             trend = (1 if f > s else -1 if f < s else 0) if n >= p["ema_slow"] else None
             ok = {"trend": trend == k, "counter": trend == -k, "none": True}[p["filter"]]
             if p["sides"] == "long" and k < 0 or p["sides"] == "short" and k > 0:
+                ok = False
+            if ok and p["accept"] is not None and not p["accept"](i, k, hi, lo, d):
+                if p["accept_mode"] == "skip":
+                    break
                 ok = False
             if ok:
                 pick = (i, k, trend, f, s)

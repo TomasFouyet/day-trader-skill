@@ -17,6 +17,7 @@ orb = load("trader-scanner", "orb")
 study = load("trader-analyst", "orb_study")
 validate = load("trader-analyst", "orb_validate")
 optimize = load("trader-analyst", "orb_optimize")
+filters = load("trader-analyst", "orb_filters")
 
 UP = (2.0, 1.0, 999)       # (ema 50, ema 200, completed 15m bars): trend up
 DOWN = (1.0, 2.0, 999)
@@ -69,6 +70,15 @@ class Trades(unittest.TestCase):
         t, = self.run_with({"11:00": (100, 102.5, 100, 102), "12:00": (102, 111.5, 102, 111)})
         self.assertEqual((t["dir"], t["entry"], t["stop"], t["outcome"], t["R"]), (1, 102, 99, "target", 3.0))
         self.assertEqual(t["entry_time"], "2026-11-17 11:00")
+
+    def test_entry_filter_skip_or_wait(self):
+        moves = {"11:00": (100, 102.5, 100, 102), "11:30": (102, 103.5, 102, 103), "12:00": (103, 111.5, 103, 111)}
+        weak = lambda i, k, hi, lo, d: self.bars[i]["c"] >= 103          # only a close of 103 or more is strong
+        self.bars = day(D, dict(self.BOX, **moves))
+        self.assertEqual(orb.run(self.bars, {"accept": weak}, [UP] * len(self.bars)), [])      # skip: day over
+        t, = orb.run(self.bars, {"accept": weak, "accept_mode": "wait"}, [UP] * len(self.bars))
+        self.assertEqual((t["entry_time"], t["entry"]), ("2026-11-17 11:30", 103))
+        self.assertEqual(len(orb.run(self.bars, {"accept": lambda *a: True}, [UP] * len(self.bars))), 1)
 
     def test_short_stopped_at_the_box_high(self):
         t, = self.run_with({"11:00": (100, 100, 97.5, 98), "11:30": (98, 101.2, 98, 100)}, ema=DOWN)
@@ -359,6 +369,44 @@ class Validate(unittest.TestCase):
         elig = [True] * len(real)
         self.assertLess(optimize.cscv(real, elig, near, months, days_in)["best"]["pbo"], 0.05)
         self.assertLess(optimize.reality_check(real, elig, months, 200, random.Random(1))["p_rc"], 0.05)
+
+    def test_filter_study_report(self):
+        tmp = tempfile.mkdtemp()
+        write_test_chart(tmp)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = filters.main(["--offline", tmp, "--symbols", "TEST", "--random", "2", "--workers", "1",
+                                 "--min-n", "3"])
+        text = out.getvalue()
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertIn("BASE ELEGIDA", text)
+        self.assertIn("BASE INTRADIA", text)
+        doc = json.loads(text.split("@@ORBFILTERS@@ ", 1)[1].splitlines()[0])
+        self.assertEqual(set(doc["bases"]), {"elegida", "intradia"})
+        self.assertGreater(len(doc["bases"]["intradia"]["filters"]), 0)
+        self.assertIn("contra quitar al azar", text)
+
+    def test_features_only_use_the_past(self):
+        b = []
+        for k in range(30):
+            d = datetime.date(2026, 9, 1) + datetime.timedelta(days=k)
+            if d.weekday() > 4:
+                continue
+            for x in day(d, {}, start="09:30", end="15:55", base=100.0 + k):
+                x["v"] = 1000
+                b.append(x)
+        fx = filters.symbol_features(b)
+        last = [i for i, x in enumerate(b) if x["t"].time() == datetime.time(10, 30)][-1]
+        self.assertAlmostEqual(fx["rv_bar"][last], 1.0)
+        self.assertAlmostEqual(fx["rv_ses"][last], 1.0)
+        # changing a later bar does not change what was known at this one
+        b2 = [dict(x) for x in b]
+        for x in b2[last + 1:]:
+            x["v"] = 99999
+            x["h"] += 5
+        fx2 = filters.symbol_features(b2)
+        self.assertEqual((fx["rv_bar"][last], fx["vwap"][last], fx["avg_rng"][last]),
+                         (fx2["rv_bar"][last], fx2["vwap"][last], fx2["avg_rng"][last]))
 
     def test_block_bootstrap(self):
         import random
