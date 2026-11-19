@@ -206,7 +206,7 @@ def trades_from_orders(orders):
             "partial_done": partial, "closed_qty": out_qty, "open": out_qty < (qty or 0) - 1e-9,
             "realized_pnl": round(pnl, 2), "realized_R": round(pnl / risk, 3) if risk else None,
             "exits": [{"time": o.get("filled_at"), "qty": _f(o.get("filled_qty")), "price": _f(o.get("filled_avg_price")),
-                       "kind": (o.get("client_order_id") or "").split("-", 4)[-1]} for o in exits]})
+                       "kind": (o.get("client_order_id") or "").split("-", 3)[-1]} for o in exits]})
     return trades
 
 

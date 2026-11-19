@@ -83,7 +83,7 @@
       <div class="kpis" id="acct-kpis"></div>
       <div class="card">
         <div class="card-head"><h3>Operaciones abiertas</h3><button id="relock" class="btn ghost">Bloquear</button></div>
-        <div class="table-wrap"><table id="open-table"><thead><tr><th>Índice</th><th>Lado</th><th>Entrada</th><th>Stop</th><th>Ahora</th><th>R ahora</th><th>Parcial</th><th>Días</th><th></th></tr></thead><tbody></tbody></table></div>
+        <div class="table-wrap"><table id="open-table"><thead><tr><th>Índice</th><th>Lado</th><th>Entrada</th><th>Stop</th><th>Ahora</th><th>R ahora</th><th>Parcial</th><th>Cobrado</th><th>Días</th><th></th></tr></thead><tbody></tbody></table></div>
         <p id="open-empty" class="muted" hidden>Sin operaciones abiertas.</p>
       </div>
       <div class="grid-2">
@@ -91,7 +91,13 @@
         <div class="card"><h3>R acumulado de la estrategia</h3><div id="r-chart" class="chart-svg"></div></div>
       </div>
       <div class="card">
-        <h3>Operaciones cerradas</h3>
+        <h3>Salidas ejecutadas</h3>
+        <p class="muted small">Cada parte que ya se cerró, aunque la operación siga abierta: el 70 % a 1,7R, los stops, el breakeven del resto.</p>
+        <div class="table-wrap"><table id="exits-table"><thead><tr><th>Fecha</th><th>Índice</th><th>Lado</th><th>Salida</th><th>Parte</th><th>Precio</th><th>P&amp;L</th><th>R aportado</th></tr></thead><tbody></tbody></table></div>
+        <p id="exits-empty" class="muted" hidden>Todavía no se cerró ninguna parte.</p>
+      </div>
+      <div class="card">
+        <h3>Operaciones cerradas (al 100 %)</h3>
         <div class="table-wrap"><table id="closed-table"><thead><tr><th>Día</th><th>Índice</th><th>Lado</th><th>Entrada</th><th>Stop</th><th>Parcial</th><th>P&amp;L</th><th>R</th></tr></thead><tbody></tbody></table></div>
         <p id="closed-empty" class="muted" hidden>Todavía no hay operaciones cerradas.</p>
       </div>

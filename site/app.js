@@ -271,7 +271,10 @@ function renderPrivate(p) {
   privateFreshness();
   const a = p.account || {};
   const closed = p.trades.filter((t) => !t.open && t.realized_R != null);
-  const totalR = closed.reduce((s, t) => s + t.realized_R, 0);
+  // R already in the pocket: closed trades and the parts of open ones (the 70% at 1.7R)
+  const banked = p.trades.filter((t) => t.realized_R != null && (t.exits || []).length);
+  const totalR = banked.reduce((s, t) => s + t.realized_R, 0);
+  const totalPnl = banked.reduce((s, t) => s + (t.realized_pnl || 0), 0);
   const wins = closed.filter((t) => t.realized_R > 0).length;
   const dayChg = a.equity != null && a.last_equity ? a.equity - a.last_equity : null;
   const k = $("#acct-kpis");
@@ -280,7 +283,8 @@ function renderPrivate(p) {
     kpi("Hoy", fmt.money(dayChg), "", cls(dayChg)),
     kpi("Abiertas", String(p.trades.filter((t) => t.open).length), "operaciones de la caja"),
     kpi("Cerradas", String(closed.length), closed.length ? fmt.pct(wins / closed.length) + " ganadoras" : ""),
-    kpi("R total", fmt.r(totalR, 2), closed.length ? fmt.r(totalR / closed.length, 3) + " por operación" : "", cls(totalR)));
+    kpi("R cobrado", fmt.r(totalR, 2), (banked.length ? fmt.money(totalPnl) + " en " + banked.length + (banked.length === 1 ? " operación" : " operaciones") : "nada cobrado todavía") +
+      (closed.length ? " · " + fmt.r(closed.reduce((s, t) => s + t.realized_R, 0) / closed.length, 3) + " por cerrada" : ""), cls(totalR)));
   const ob = $("#open-table tbody"); ob.replaceChildren();
   const open = p.trades.filter((t) => t.open);
   $("#open-empty").hidden = open.length > 0;
@@ -296,9 +300,25 @@ function renderPrivate(p) {
       fillSim({ sym: t.symbol, dir: t.dir, entry: t.entry, stop: t.stop, now: t.last, days, partial: t.partial_done });
       showTab("sim"); runSim();
     });
+    const got = (t.exits || []).length ? [fmt.r(t.realized_R, 2), cls(t.realized_R)] : "-";
     ob.append(row([t.symbol, t.side, fmt.px(t.entry), fmt.px(t.stop), fmt.px(t.last),
-      [fmt.r(t.unrealized_R), cls(t.unrealized_R)], t.partial_done ? "cobrado" : "pendiente", String(days), btn]));
+      [fmt.r(t.unrealized_R), cls(t.unrealized_R)], t.partial_done ? "cobrado" : "pendiente", got, String(days), btn]));
   });
+  // every exit that filled, open trades included
+  const KIND = { tp: "70 % a 1,7R", "tp-leg": "stop (70 %)", run: "stop (30 %)", "run-be": "breakeven (30 %)",
+    "run-be2": "breakeven (30 %)" };
+  const exits = [];
+  p.trades.forEach((t) => (t.exits || []).forEach((x) => {
+    const risk = t.stop && t.entry ? Math.abs(t.entry - t.stop) : null, part = t.qty ? x.qty / t.qty : null;
+    const pnl = x.price != null ? (x.price - t.entry) * t.dir * x.qty : null;
+    exits.push({ time: x.time || "", sym: t.symbol, side: t.side, kind: KIND[x.kind] || (x.kind === "close" ? "cierre" : x.kind || "salida"),
+      part, price: x.price, pnl, r: risk && part != null && x.price != null ? (x.price - t.entry) * t.dir / risk * part : null });
+  }));
+  exits.sort((a, b) => (a.time < b.time ? 1 : -1));
+  const eb = $("#exits-table tbody"); eb.replaceChildren();
+  $("#exits-empty").hidden = exits.length > 0;
+  exits.forEach((x) => eb.append(row([x.time ? new Date(nyWall(new Date(x.time)) * 1000).toISOString().slice(0, 16).replace("T", " ") : "-",
+    x.sym, x.side, x.kind, x.part != null ? fmt.pct(x.part) : "-", fmt.px(x.price), [fmt.money(x.pnl), cls(x.pnl)], [fmt.r(x.r, 2), cls(x.r)]])));
   const cb = $("#closed-table tbody"); cb.replaceChildren();
   $("#closed-empty").hidden = closed.length > 0;
   closed.slice().reverse().forEach((t) => cb.append(row([t.day, t.symbol, t.side, fmt.px(t.entry), fmt.px(t.stop),

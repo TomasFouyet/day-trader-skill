@@ -87,6 +87,7 @@ class Trades(unittest.TestCase):
         self.assertFalse(t["open"])
         # 42 x 4.93 + 18 x 0 over 60 x 2.90
         self.assertAlmostEqual(t["realized_R"], round(42 * 4.93 / (60 * 2.9), 3), places=3)
+        self.assertEqual(sorted(x["kind"] for x in t["exits"]), ["run-be", "tp"])   # what the site names each exit
 
 
 class Safety(unittest.TestCase):
