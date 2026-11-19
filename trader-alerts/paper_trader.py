@@ -532,7 +532,20 @@ def orders_check(api, cancel=False):
             except PaperError as e:
                 what += " -> no se pudo cancelar (%s)" % e
         lines.append(what)
-    naked = unprotected(orders, positions)
+    # the legs of a filled bracket can be missing from the open list (Alpaca keeps the stop leg "held"
+    # under its filled parent): read the recent orders too, every status, nested
+    recent = api.call("GET", "/v2/orders?status=all&limit=500&direction=desc&nested=true") or []
+    seen, merged = set(), []
+    for o in list(orders) + list(recent):
+        if o.get("id") not in seen:
+            seen.add(o.get("id"))
+            merged.append(o)
+    for o in merged:
+        for x in [o] + list(o.get("legs") or []):
+            if x.get("status") in OPEN_STATES:
+                lines.append("abierta: %s %s %s %s%s" % (str(x.get("symbol") or o.get("symbol") or "").upper(), x.get("side"),
+                                                         x.get("type"), x.get("status"), " (pata)" if x is not o else ""))
+    naked = unprotected(merged, positions)
     for sym, share in naked:
         lines.append("%s: posicion abierta con %s" % (sym, "stop solo en el %.0f%% de ella" % (100 * share) if share
                                                      else "ningun stop abierto"))
