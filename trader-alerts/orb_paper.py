@@ -220,10 +220,17 @@ def entry_of(acct, sym):
 
 
 def exit_bodies(sym, day, p, entry_px):
-    """The OCO for the 70% (target at partial_r, stop at the box edge) and the stop for the other 30%."""
+    """The OCO for the 70% (target at partial_r, stop at the box edge) and the stop for the other 30%.
+
+    The target is measured from the close of the breakout bar (p["partial_px"]), like the backtest and the
+    Pine strategy: a market order filled a little later does not move it. Without that close (exits put back
+    for a trade with no saved record) it is measured from the fill."""
     side = "sell" if p["dir"] > 0 else "buy"
-    risk = (entry_px - p["stop"]) * p["dir"]
-    target = round(entry_px + p["dir"] * STRATEGY["partial_r"] * risk, 2)
+    if p.get("partial_px"):
+        target = round(p["partial_px"], 2)
+    else:
+        risk = (entry_px - p["stop"]) * p["dir"]
+        target = round(entry_px + p["dir"] * STRATEGY["partial_r"] * risk, 2)
     oco = {"symbol": sym, "qty": str(p["partial_qty"]), "side": side, "type": "limit", "time_in_force": "gtc",
            "order_class": "oco", "limit_price": "%.2f" % target, "take_profit": {"limit_price": "%.2f" % target},
            "stop_loss": {"stop_price": "%.2f" % p["stop"]}, "client_order_id": cid(sym, day, "tp")}
@@ -264,7 +271,13 @@ def manage(acct, sym, pos, now_et, events, dry_run, state, bars):
             acct.close(sym)
         return
     tp = acct.get(cid(sym, day, "tp"))
-    partial_done = tp is not None and _filled(tp)
+    # the 70% is in when its order filled, or when the position is smaller than the entry (an order replaced
+    # by hand gets a new id, but the shares tell)
+    try:
+        bought = abs(float(entry.get("filled_qty") or 0))
+    except (TypeError, ValueError):
+        bought = 0.0
+    partial_done = (tp is not None and _filled(tp)) or (bought > 0 and held < bought)
     runner = [o for o in open_orders if (o.get("client_order_id") or "").startswith(cid(sym, day, "run"))]
     if partial_done:
         for o in runner:
@@ -287,6 +300,9 @@ def manage(acct, sym, pos, now_et, events, dry_run, state, bars):
             return
         part = max(1, min(int(held) - 1, int(round(held * STRATEGY["partial_frac"]))))
         p = {"dir": direction, "partial_qty": part, "runner_qty": int(held) - part, "stop": stop}
+        rec = (state.get("trades") or {}).get(entry.get("client_order_id") or "", {})
+        if rec.get("signal") is not None and rec.get("stop") is not None:
+            p["partial_px"] = rec["signal"] + direction * STRATEGY["partial_r"] * abs(rec["signal"] - rec["stop"])
         oco, run_body, target = exit_bodies(sym, day, p, fill)
         events.append((sym, "faltaban las salidas: stop %.2f, parcial %.2f" % (stop, target)))
         if not dry_run:
@@ -570,6 +586,53 @@ def report_text(acct, now_utc):
     return "\n".join(lines)
 
 
+def _bar_ready(bars_by_sym, now_et):
+    """Alpaca already has the 5 minute bar that just closed, for every symbol with bars today."""
+    start = (now_et.replace(second=0, microsecond=0) - datetime.timedelta(minutes=now_et.minute % 5 + 5))
+    for bars in bars_by_sym.values():
+        if bars and bars[-1]["t"].date() == now_et.date() and not any(b["t"] == start for b in bars[-3:]):
+            return False
+    return True
+
+
+def watch(acct, until, dry, send=None, clock=None, fetch=None, sleep=time.sleep, offset=6, retries=6):
+    """Stay up through the entry window: one pass a few seconds after each 5 minute bar closes (instead of
+    the next scheduled pass, a minute or two later), until `until` New York time. -> passes made."""
+    clock, fetch = clock or paper.utc_now, fetch or fetch_bars
+    end, n = _hm(until), 0
+    ok, why = scan.trading_day(scan.to_eastern(clock()).date())
+    if not ok:
+        print("Mercado cerrado (%s): sin vigia." % why)
+        return 0
+    while True:
+        et = scan.to_eastern(clock())
+        if et.time() >= end:
+            return n
+        if n:
+            nxt = et.replace(second=0, microsecond=0) + datetime.timedelta(minutes=5 - et.minute % 5, seconds=offset)
+            if nxt.time() >= end:
+                return n
+            sleep(max(0.0, (nxt - et).total_seconds()))
+        try:
+            now = clock()
+            bars = fetch(now)
+            for _ in range(retries):                    # the bar that just closed may take a few seconds to appear
+                if _bar_ready(bars, scan.to_eastern(now)):
+                    break
+                sleep(5)
+                now = clock()
+                bars = fetch(now)
+            events = run_pass(acct, now, bars, dry_run=dry)
+            if events:
+                text = events_text(now, events)
+                print(text)
+                if send and not dry:
+                    send(text)
+        except (paper.PaperError, OSError, ValueError) as e:
+            print("Pasada con error (sigue vigilando): %s" % e, file=sys.stderr)
+        n += 1
+
+
 def telegram(text):
     token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
     if not (token and chat):
@@ -586,6 +649,8 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true", help="say what it would do, place nothing")
     ap.add_argument("--telegram", action="store_true", help="send the events (run) or the report to Telegram")
     ap.add_argument("--now", help="New York time for tests, e.g. '2026-11-18 10:06'")
+    ap.add_argument("--watch-until", metavar="HH:MM",
+                    help="run: stay up until this New York time, one pass a few seconds after each 5 minute bar closes")
     a = ap.parse_args(argv)
     now_utc = scan.parse_now(a.now) if a.now else paper.utc_now()
     now_et = scan.to_eastern(now_utc)
@@ -610,6 +675,10 @@ def main(argv=None):
         dry = a.dry_run or not paper.paper_on()
         if dry and not a.dry_run:
             print("PAPER_TRADING no es 1: se muestra lo que haria, sin ordenes.")
+        if a.cmd == "run" and a.watch_until and not a.now:
+            n = watch(acct, a.watch_until, dry, telegram if a.telegram else None)
+            print("Vigia terminado a las %s NY: %d pasadas." % (scan.to_eastern(paper.utc_now()).strftime("%H:%M"), n))
+            return 0
         events = run_pass(acct, now_utc, bars, dry_run=dry)
         text = events_text(now_utc, events) if events else ""
         print(text or "Sin novedades.")

@@ -8,6 +8,10 @@
 # Disparo: cron-job.org cada 5 minutos de 09:55 a 16:05 de Nueva York, lunes a viernes (README, seccion 13),
 # porque el cron de GitHub se atrasa. El horario de abajo es solo un respaldo: si dos pasadas coinciden,
 # las ordenes llevan un id por dia y Alpaca no acepta la misma dos veces.
+#
+# Vigia: una pasada que empieza entre 09:50 y 12:50 se queda despierta hasta las 13:05 y revisa a los ~6
+# segundos de cada cierre de vela de 5 minutos, para entrar casi al precio de cierre de la vela de ruptura
+# (con pasadas sueltas entraba 1-2 minutos tarde). Mientras tanto las pasadas programadas esperan en fila.
 
 name: Caja diaria (paper)
 
@@ -39,7 +43,7 @@ concurrency:
 jobs:
   pass:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 200      # the watcher (10:00-13:05 New York) stays up; a normal pass takes seconds
     steps:
       - uses: actions/checkout@v4
 
@@ -77,6 +81,10 @@ jobs:
           fi
           ARGS="--telegram"
           if [ "$DRY_RUN" = "true" ]; then ARGS="--dry-run"; fi
+          # inside the entry window the pass stays up as a watcher: one pass a few seconds after each 5 minute
+          # bar closes, until 13:05 (the scheduled passes wait in line meanwhile)
+          NOW=$(TZ=America/New_York date +%H%M)
+          if (( 10#$NOW >= 950 && 10#$NOW < 1250 )); then ARGS="$ARGS --watch-until 13:05"; fi
           python3 trader-alerts/orb_paper.py run $ARGS
 
       - name: Guardar estado (cache privado)

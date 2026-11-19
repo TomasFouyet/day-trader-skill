@@ -166,7 +166,8 @@ class Entry(Base):
         self.assertEqual((entry["type"], entry["side"], entry["qty"]), ("market", "buy", "83"))
         # the OCO: 58 shares at fill + 1.7 x (fill - stop), or the stop at the box low
         self.assertEqual((oco["order_class"], oco["side"], oco["qty"]), ("oco", "sell", "58"))
-        self.assertEqual(oco["take_profit"]["limit_price"], "%.2f" % (102.05 + 1.7 * 3.05))
+        # measured from the close of the breakout bar (102, stop 99), like the backtest, not from the 102.05 fill
+        self.assertEqual(oco["take_profit"]["limit_price"], "%.2f" % (102 + 1.7 * 3))
         self.assertEqual(oco["stop_loss"]["stop_price"], "99.00")
         self.assertEqual((run["type"], run["qty"], run["stop_price"], run["time_in_force"]), ("stop", "25", "99.00", "gtc"))
         self.assertTrue(any("entro a 102.05" in e[1] for e in events))
@@ -244,9 +245,36 @@ class Entry(Base):
         r, = orb.audit_rows(self.acct, utc(DAY, "10:30"), {"QQQ": b}, DAY)
         self.assertEqual((r["bar"], r["delay_s"]), ("10:00", 90))
         self.assertAlmostEqual(r["slip_R"], -0.05 / 3)                 # bought 0.05 above the close: worse, in R
-        self.assertAlmostEqual(r["tp_R_from_fill"], 1.7, places=2)     # the 70% is 1.7R from the real fill
+        self.assertAlmostEqual(r["tp_R_from_close"], 1.7, places=2)    # the 70% is 1.7R from the bar close
         self.assertTrue(r["stop_is_box_edge"])
         self.assertIn("ejecutada 90 s", orb.audit_text([r]))
+
+    def test_the_watcher_enters_seconds_after_the_bar_closes(self):
+        # the 10:00 bar closes outside the box at 10:05:00; the watcher passes at 10:05:06, not at the next
+        # scheduled pass a minute or two later
+        clock = {"t": utc(DAY, "10:02")}
+        slept = []
+
+        def sleep(sec):
+            slept.append(sec)
+            clock["t"] += datetime.timedelta(seconds=sec)
+
+        def fetch(now):
+            et = orb.scan.to_eastern(now)
+            return {"QQQ": [b for b in bars(DAY, dict(BOX, **self.SIGNAL), until="10:30")
+                            if b["t"] + datetime.timedelta(minutes=5) <= et]}
+        sent = []
+        n = orb.watch(self.acct, "10:11", False, sent.append, clock=lambda: clock["t"], fetch=fetch, sleep=sleep)
+        entry = [x for x in self.fake.orders.values() if x["client_order_id"].endswith("-in")]
+        self.assertEqual(len(entry), 1)
+        self.assertEqual(slept[0], 3 * 60 + 6)                      # 10:02 -> 10:05:06
+        self.assertIn("largo", sent[0])
+        self.assertEqual(n, 3)                                      # 10:02, 10:05:06 and 10:10:06
+
+    def test_bar_ready(self):
+        b = bars(DAY, BOX, until="10:05")
+        self.assertTrue(orb._bar_ready({"QQQ": b}, ny(DAY, "10:10").replace(second=6)))
+        self.assertFalse(orb._bar_ready({"QQQ": b[:-1]}, ny(DAY, "10:10").replace(second=6)))
 
 class Manage(Base):
     def open_trade(self, day="20261118", partial=False, runner_stop="99.00"):
@@ -266,6 +294,13 @@ class Manage(Base):
         self.assertTrue(any("stop del resto a la entrada 102.05" in e[1] for e in events))
         self.run_at("12:36", {})                               # already at breakeven: nothing more
         self.assertEqual(len([1 for m, p, b in self.fake.calls if m == "PATCH"]), 1)
+
+    def test_partial_seen_by_the_shares_when_its_order_was_replaced(self):
+        self.open_trade(partial=True)
+        self.fake.orders["e"]["filled_qty"] = "83"
+        self.fake.orders["t"]["status"] = "replaced"              # edited by hand in Alpaca: a new id took over
+        self.run_at("12:31", {})
+        self.assertTrue([p for m, p, b in self.fake.calls if m == "PATCH"])
 
     def test_no_breakeven_before_the_partial(self):
         self.open_trade(partial=False)
