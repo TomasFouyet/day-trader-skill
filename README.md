@@ -1010,6 +1010,14 @@ y contra quitar al azar la misma parte de entradas.
 - Volumen relativo, cuerpo y extensión de la vela ("rupturas fuertes") no
   separan buenas de malas fuera de muestra en ninguna de las dos.
 
+**Otros ETF** (la elegida, mismas reglas, 5 años): en conjunto −0,012R por
+operación, no mejor que el azar (p = 0,30). Los internacionales pierden (EWJ
+Japón −0,14R, EEM −0,13R, FXI −0,13R, EWG −0,05R), y también TLT (−0,05R).
+Los de EE. UU. dan poco y con mucho error (MDY +0,06R, XLF +0,05R, XLK +0,08R,
+SMH +0,29R) y se mueven casi igual que QQQ y SPY. El Nikkei no se opera en
+Alpaca (solo valores de EE. UU.), y su mercado está cerrado a las 09:00 de
+Nueva York. No se agrega ninguno.
+
 ### 14. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
