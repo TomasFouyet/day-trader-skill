@@ -393,3 +393,19 @@ class LeftoverOrders(unittest.TestCase):
         self.assertNotIn("37", text)
         lines, c = paper.orders_check(Api(), cancel=False)
         self.assertEqual((calls, c["cancelled"]), (["a"], 0))
+
+
+class Unprotected(unittest.TestCase):
+    def test_positions_without_a_full_stop(self):
+        pos = [{"symbol": "KO", "qty": "10"}, {"symbol": "QQQ", "qty": "-20"}, {"symbol": "SPY", "qty": "30"}]
+        orders = [
+            {"symbol": "KO", "side": "buy", "type": "limit", "status": "filled", "order_class": "bracket",
+             "legs": [{"symbol": "KO", "side": "sell", "type": "stop", "status": "new", "qty": "10"},
+                      {"symbol": "KO", "side": "sell", "type": "limit", "status": "new", "qty": "10"}]},
+            {"symbol": "QQQ", "side": "buy", "type": "stop", "status": "new", "qty": "6"},       # the runner only
+            {"symbol": "SPY", "side": "sell", "type": "limit", "status": "new", "qty": "30"},    # a target, no stop
+        ]
+        got = dict(paper.unprotected(orders, pos))
+        self.assertNotIn("KO", got)
+        self.assertAlmostEqual(got["QQQ"], 0.3)
+        self.assertEqual(got["SPY"], 0.0)

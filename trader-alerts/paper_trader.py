@@ -483,6 +483,36 @@ def leftover_orders(orders, positions):
     return out
 
 
+def unprotected(orders, positions):
+    """Positions without a full stop: the shares (or the short) not covered by an open stop order on the
+    closing side. -> [(symbol, share of the position covered by stops 0..1)]."""
+    stops = {}
+    for o in orders or []:
+        for x in [o] + list(o.get("legs") or []):
+            if x.get("status") not in OPEN_STATES or x.get("type") not in ("stop", "stop_limit", "trailing_stop"):
+                continue
+            sym = str(x.get("symbol") or o.get("symbol") or "").upper()
+            try:
+                q = float(x.get("qty") or 0) - float(x.get("filled_qty") or 0)
+            except (TypeError, ValueError):
+                continue
+            stops.setdefault(sym, {"buy": 0.0, "sell": 0.0})[x.get("side")] = \
+                stops.setdefault(sym, {"buy": 0.0, "sell": 0.0}).get(x.get("side"), 0.0) + q
+    out = []
+    for p in positions or []:
+        sym = str(p.get("symbol") or "").upper()
+        try:
+            q = float(p.get("qty") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not q:
+            continue
+        cover = (stops.get(sym) or {}).get("sell" if q > 0 else "buy", 0.0)
+        if cover + 1e-9 < abs(q):
+            out.append((sym, cover / abs(q)))
+    return out
+
+
 def orders_check(api, cancel=False):
     """-> (lines without quantities or prices, counts)."""
     orders = api.call("GET", "/v2/orders?status=open&limit=500&nested=true") or []
@@ -500,9 +530,13 @@ def orders_check(api, cancel=False):
             except PaperError as e:
                 what += " -> no se pudo cancelar (%s)" % e
         lines.append(what)
+    naked = unprotected(orders, positions)
+    for sym, share in naked:
+        lines.append("%s: posicion abierta con %s" % (sym, "stop solo en el %.0f%% de ella" % (100 * share) if share
+                                                     else "ningun stop abierto"))
     n_open = sum(1 for o in orders for x in [o] + list(o.get("legs") or []) if x.get("status") in OPEN_STATES)
     return lines, {"open": n_open, "positions": len(positions), "leftover": len(found),
-                   "sure": sum(1 for f in found if f[2]), "cancelled": done}
+                   "sure": sum(1 for f in found if f[2]), "cancelled": done, "unprotected": len(naked)}
 
 
 # ---------------------------------------------------------------- end of day
@@ -808,7 +842,8 @@ def main(argv=None):
                 print("PAPER_TRADING no es 1: solo se listan, no se cancela nada.")
             lines, c = orders_check(api, cancel)
             print("Ordenes abiertas: %d | posiciones: %d | sin posicion detras: %d (seguras de cancelar %d) | "
-                  "canceladas: %d" % (c["open"], c["positions"], c["leftover"], c["sure"], c["cancelled"]))
+                  "canceladas: %d | posiciones sin stop completo: %d" % (
+                      c["open"], c["positions"], c["leftover"], c["sure"], c["cancelled"], c["unprotected"]))
             for line in lines:
                 print("  " + line)
             return 0
