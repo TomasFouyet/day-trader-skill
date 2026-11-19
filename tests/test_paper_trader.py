@@ -25,6 +25,7 @@ SHORT = dict(TICKET, symbol="USO", side="sell", qty=4.139, entry=142.66, stop=15
 class FakeAPI(object):
     def __init__(self):
         self.calls, self.orders, self.n = [], {}, 0
+        self.positions = []          # what Alpaca holds (the swing bot asks before entering)
 
     def __call__(self, method, url, body=None):
         paper._check_url(url)
@@ -48,6 +49,10 @@ class FakeAPI(object):
             return {}
         if path == "/v2/account":
             return {"status": "ACTIVE", "equity": "5012.34"}
+        if path == "/v2/positions":
+            return self.positions
+        if method == "GET" and path.startswith("/v2/orders?status=open"):
+            return [o for o in self.orders.values() if o.get("status") in ("new", "accepted", "held") and o.get("symbol")]
         raise AssertionError(path)
 
 
@@ -415,3 +420,39 @@ class Unprotected(unittest.TestCase):
                "client_order_id": "orb-SPY-20261118-tp", "legs": [{"symbol": "SPY", "side": "sell", "type": "stop", "status": "new"}]}
         self.assertEqual(len(paper.leftover_orders([oco], [])), 2)                 # both sides, no shares behind
         self.assertEqual(paper.leftover_orders([oco], [{"symbol": "SPY", "qty": "10"}]), [])
+
+
+class AlpacaIsTheTruth(unittest.TestCase):
+    def test_no_second_entry_when_alpaca_already_holds_it(self):
+        # the saved state was lost (no trades in it), but Alpaca still holds WMT: no second entry
+        os.environ["ALPACA_API_KEY_ID"], os.environ["ALPACA_API_SECRET_KEY"] = "k", "s"
+        fake = FakeAPI()
+        fake.positions = [{"symbol": "WMT", "qty": "9"}]
+        api = paper.Paper(http=fake)
+        state = {}
+        res = paper.submit(api, {"tickets": [TICKET]}, risk_doc([TICKET]), state, "2026-11-10")
+        self.assertIn("Alpaca ya tiene", dict(res)["WMT"])
+        self.assertFalse([c for c in fake.calls if c[0] == "POST"])
+
+    def test_protect_copies_the_existing_stop_for_the_uncovered_shares(self):
+        posted = []
+
+        class Api(object):
+            def call(self, method, path, body=None):
+                return [{"id": "p", "symbol": "GE", "side": "buy", "type": "limit", "status": "filled",
+                         "order_class": "bracket", "client_order_id": "swing-GE-20261111-x",
+                         "legs": [{"id": "s", "symbol": "GE", "side": "sell", "type": "stop", "status": "held",
+                                   "qty": "10", "stop_price": "250.10"}]}]
+
+            def positions(self):
+                return [{"symbol": "GE", "qty": "20"}]
+
+            def submit(self, body):
+                posted.append(body)
+                return {"id": "new"}
+        lines, c = paper.orders_check(Api(), protect=True, today="2026-11-19")
+        body, = posted
+        self.assertEqual((body["symbol"], body["side"], body["type"], body["qty"], body["stop_price"]),
+                         ("GE", "sell", "stop", "10", "250.10"))
+        self.assertEqual(c["protected"], 1)
+        self.assertNotIn("250.10", " ".join(lines))

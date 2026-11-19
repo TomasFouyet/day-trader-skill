@@ -271,6 +271,14 @@ def submit(api, tickets_doc, risk_doc, state, today, dry_run=False, now=None):
     trades = state.setdefault("trades", {})
     out = []
     positions = None
+    live = None                       # what Alpaca has (positions and open orders): the source of truth
+    if api is not None:
+        try:
+            live = {str(p.get("symbol") or "").upper() for p in (api.positions() or [])}
+            for o in api.call("GET", "/v2/orders?status=open&limit=500&nested=true") or []:
+                live.add(str(o.get("symbol") or "").upper())
+        except PaperError as e:
+            return [("*", "no se pudo leer la cuenta (%s): nada que operar" % e)]
     for t in (tickets_doc or {}).get("tickets") or []:
         if notify.swing_fingerprint(t) not in passed:
             continue
@@ -281,6 +289,9 @@ def submit(api, tickets_doc, risk_doc, state, today, dry_run=False, now=None):
         sym = str(t.get("symbol") or "").upper()
         if any(str(v.get("symbol") or "").upper() == sym and v.get("status") in LIVE for v in trades.values()):
             out.append((t["symbol"], "omitido: ya hay una operacion viva en %s" % sym))
+            continue
+        if live is not None and sym in live:
+            out.append((t["symbol"], "omitido: Alpaca ya tiene una posicion u orden abierta en %s" % sym))
             continue
         body, why = planned(t)
         if body is None:
@@ -515,7 +526,17 @@ def unprotected(orders, positions):
     return out
 
 
-def orders_check(api, cancel=False):
+def stop_price_of(orders, sym, side):
+    """The price of an open stop on the closing side of sym (the one the trade already has), or None."""
+    for o in orders or []:
+        for x in [o] + list(o.get("legs") or []):
+            if (str(x.get("symbol") or o.get("symbol") or "").upper() == sym and x.get("status") in OPEN_STATES
+                    and x.get("type") == "stop" and x.get("side") == side and x.get("stop_price")):
+                return float(x["stop_price"])
+    return None
+
+
+def orders_check(api, cancel=False, protect=False, today=None):
     """-> (lines without quantities or prices, counts)."""
     orders = api.call("GET", "/v2/orders?status=open&limit=500&nested=true") or []
     positions = api.positions() or []
@@ -546,6 +567,25 @@ def orders_check(api, cancel=False):
                 lines.append("abierta: %s %s %s %s%s" % (str(x.get("symbol") or o.get("symbol") or "").upper(), x.get("side"),
                                                          x.get("type"), x.get("status"), " (pata)" if x is not o else ""))
     naked = unprotected(merged, positions)
+    protected = 0
+    if protect:
+        qty = {str(p.get("symbol") or "").upper(): float(p.get("qty") or 0) for p in positions}
+        for sym, share in naked:
+            q = qty.get(sym, 0.0)
+            side = "sell" if q > 0 else "buy"
+            px = stop_price_of(merged, sym, side)
+            miss = int(abs(q) * (1 - share) + 1e-9)            # whole shares: Alpaca has no fractional stops
+            if px is None or miss < 1:
+                lines.append("%s: sin stop que copiar o menos de 1 accion: no se protege, revisar a mano" % sym)
+                continue
+            try:
+                api.submit({"symbol": sym, "qty": str(miss), "side": side, "type": "stop", "time_in_force": "gtc",
+                            "stop_price": "%.2f" % px,
+                            "client_order_id": "protect-%s-%s" % (sym, (today or "").replace("-", ""))})
+                protected += 1
+                lines.append("%s: stop puesto para la parte sin proteger, al mismo precio que el stop que ya tenia" % sym)
+            except PaperError as e:
+                lines.append("%s: no se pudo poner el stop (%s)" % (sym, e))
     for sym, share in naked:
         lines.append("%s: posicion abierta con %s" % (sym, "stop solo en el %.0f%% de ella" % (100 * share) if share
                                                      else "ningun stop abierto"))
@@ -558,7 +598,8 @@ def orders_check(api, cancel=False):
                         str(x.get("filled_at") or "")[:10], " (pata)" if x is not o else ""))
     n_open = sum(1 for o in orders for x in [o] + list(o.get("legs") or []) if x.get("status") in OPEN_STATES)
     return lines, {"open": n_open, "positions": len(positions), "leftover": len(found),
-                   "sure": sum(1 for f in found if f[2]), "cancelled": done, "unprotected": len(naked)}
+                   "sure": sum(1 for f in found if f[2]), "cancelled": done, "unprotected": len(naked),
+                   "protected": protected}
 
 
 # ---------------------------------------------------------------- end of day
@@ -841,6 +882,8 @@ def main(argv=None):
         if name == "orders":
             p.add_argument("--cancel-orphans", action="store_true",
                            help="cancel the open exit orders that have no position behind them")
+            p.add_argument("--protect", action="store_true",
+                           help="put a stop on the part of a position no stop covers, at the price of its existing stop")
     a = ap.parse_args(argv)
     if not a.cmd:
         ap.print_help()
@@ -860,12 +903,13 @@ def main(argv=None):
             return 0
         if a.cmd == "orders":
             cancel = a.cancel_orphans and paper_on()
-            if a.cancel_orphans and not cancel:
-                print("PAPER_TRADING no es 1: solo se listan, no se cancela nada.")
-            lines, c = orders_check(api, cancel)
+            protect = a.protect and paper_on()
+            if (a.cancel_orphans or a.protect) and not paper_on():
+                print("PAPER_TRADING no es 1: solo se listan, no se cambia nada.")
+            lines, c = orders_check(api, cancel, protect, today)
             print("Ordenes abiertas: %d | posiciones: %d | sin posicion detras: %d (seguras de cancelar %d) | "
-                  "canceladas: %d | posiciones sin stop completo: %d" % (
-                      c["open"], c["positions"], c["leftover"], c["sure"], c["cancelled"], c["unprotected"]))
+                  "canceladas: %d | posiciones sin stop completo: %d (protegidas ahora %d)" % (
+                      c["open"], c["positions"], c["leftover"], c["sure"], c["cancelled"], c["unprotected"], c["protected"]))
             for line in lines:
                 print("  " + line)
             return 0

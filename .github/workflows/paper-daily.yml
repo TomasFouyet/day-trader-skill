@@ -64,6 +64,8 @@ jobs:
           ARGS="--telegram --quiet"
           if [ "$FORCE" = "true" ]; then ARGS="$ARGS --force"; fi
           python3 trader-alerts/paper_trader.py daily $ARGS
+          # salidas que quedaron sin posicion, y posiciones sin stop completo (solo simbolo y tipo en el registro)
+          python3 trader-alerts/paper_trader.py orders --cancel-orphans --protect
 
       - name: Guardar estado (cache privado)
         if: ${{ always() }}

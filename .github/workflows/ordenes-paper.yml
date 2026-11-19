@@ -3,6 +3,7 @@
 # Lista las ordenes abiertas (stop, limite) que ya no tienen una posicion que cerrar: la salida de una
 # operacion que ya termino. Una venta sin acciones podria abrir un corto sin querer. Por defecto solo lista;
 # con "cancelar" cancela las seguras (salidas sin posicion). Una compra suelta desconocida solo se informa.
+# Tambien avisa de posiciones sin stop completo; con "protect" les pone uno al precio del stop que ya tienen.
 # El registro es publico: muestra simbolo, lado y tipo, nunca cantidades ni precios.
 # Solo con la Variable PAPER_TRADING=true para cancelar. Solo paper-api.alpaca.markets.
 
@@ -13,6 +14,10 @@ on:
     inputs:
       cancel:
         description: "Cancelar las salidas que ya no tienen posicion"
+        type: boolean
+        default: false
+      protect:
+        description: "Poner stop a la parte de una posicion que no tiene (al precio del stop que ya tiene)"
         type: boolean
         default: false
 
@@ -40,7 +45,9 @@ jobs:
           ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
           PAPER_TRADING: ${{ vars.PAPER_TRADING || secrets.PAPER_TRADING }}
           CANCEL: ${{ inputs.cancel }}
+          PROTECT: ${{ inputs.protect }}
         run: |
           ARGS=""
           if [ "$CANCEL" = "true" ]; then ARGS="--cancel-orphans"; fi
+          if [ "$PROTECT" = "true" ]; then ARGS="$ARGS --protect"; fi
           python3 trader-alerts/paper_trader.py orders $ARGS
