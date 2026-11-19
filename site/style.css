@@ -83,6 +83,15 @@ main { padding-block: 22px 60px; }
 .candles { height: 280px; position: relative; overflow: hidden; width: 100%; }
 .grid-live { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr)); }
 .grid-live > * { min-width: 0; }
+.live-form { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; align-items: center; margin-top: 10px; }
+@media (max-width: 760px) { .live-form { grid-template-columns: 1fr; } }
+.live-conn .row { margin-top: 10px; justify-content: space-between; }
+.pill.live { background: color-mix(in srgb, var(--long) 18%, transparent); color: var(--long); }
+.pill.live::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; }
+@media (prefers-reduced-motion: no-preference) { .pill.live::before { animation: blink 1.6s ease-in-out infinite; } }
+@keyframes blink { 50% { opacity: .25; } }
+.pill.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.mt { margin-top: 16px; }
 .levels { display: flex; gap: 12px; flex-wrap: wrap; font: 0.8rem var(--mono); color: var(--muted); }
 
 .table-wrap { overflow-x: auto; }

@@ -38,7 +38,29 @@
   <section id="tab-live" class="tab" role="tabpanel">
     <div class="section-head">
       <h2>Sesión <span id="session-day" class="mono">-</span></h2>
-      <p class="muted">Velas de 5 minutos con pre-mercado. La caja es el máximo y el mínimo de 09:00 a 10:00 (Nueva York). La primera vela que cierra fuera, hasta las 13:00, es la señal. Se actualiza con cada pasada del bot (cada 5 minutos).</p>
+      <p class="muted">Velas de 5 minutos con pre-mercado. La caja es el máximo y el mínimo de 09:00 a 10:00 (Nueva York). La primera vela que cierra fuera, hasta las 13:00, es la señal. Sin conexión se actualiza con cada pasada del bot (cada 5 minutos); conectado a Alpaca, al segundo.</p>
+    </div>
+    <div class="card live-conn" id="live-conn">
+      <div class="card-head"><h3>Conexión en vivo con Alpaca</h3><span id="live-status" class="pill">cada 5 min</span></div>
+      <p class="muted small">Con las claves de tu cuenta <b>paper</b>, esta página se conecta directo a Alpaca desde tu navegador: velas y precio al segundo (feed IEX), la caja y la señal recalculadas al momento, y tu cuenta y sus ejecuciones al instante. Las claves quedan solo en este navegador y viajan solo a Alpaca; nunca se publican.</p>
+      <form id="live-form" class="live-form">
+        <label for="lk-id" class="sr">API Key ID</label>
+        <input id="lk-id" autocomplete="username" spellcheck="false" placeholder="API Key ID (paper, empieza con PK)" required>
+        <label for="lk-secret" class="sr">Secret Key</label>
+        <input id="lk-secret" type="password" autocomplete="current-password" spellcheck="false" placeholder="Secret Key" required>
+        <label class="check"><input id="lk-remember" type="checkbox"> recordar en este navegador</label>
+        <button class="btn primary" type="submit">Conectar</button>
+      </form>
+      <div id="live-on" class="row" hidden><span id="live-info" class="muted small"></span><button id="live-off" class="btn ghost small" type="button">Desconectar</button></div>
+      <p id="live-msg" class="msg" role="status"></p>
+    </div>
+    <div id="acct-live" class="card" hidden>
+      <div class="card-head"><h3>Cuenta paper en vivo</h3><span id="acct-live-time" class="muted mono small"></span></div>
+      <div class="kpis" id="acct-live-kpis"></div>
+      <div class="table-wrap"><table id="pos-live"><thead><tr><th>Símbolo</th><th>Lado</th><th>Cantidad</th><th>Entrada</th><th>Ahora</th><th>P&amp;L</th><th>R</th><th></th></tr></thead><tbody></tbody></table></div>
+      <p id="pos-live-empty" class="muted" hidden>Sin posiciones abiertas.</p>
+      <h3 class="mt">Ejecuciones (al instante)</h3>
+      <ul id="fills-live" class="notes"><li class="muted">Sin ejecuciones desde que te conectaste.</li></ul>
     </div>
     <div id="live-grid" class="grid-live"></div>
   </section>
@@ -144,7 +166,7 @@
         <p>El repositorio es público. Esta página publica precios de mercado y resultados de investigación, que son públicos, y la cuenta solo cifrada (PBKDF2 + HMAC-SHA256, encrypt-then-MAC). Sin la frase, <code>data/private.json</code> es ilegible. Usa una frase larga y al azar: el archivo cifrado está a la vista de cualquiera.</p>
         <h2>Límites</h2>
         <ul>
-          <li>Se actualiza cada 5 minutos, no tick a tick.</li>
+          <li>Sin conectar, se actualiza cada 5 minutos. Conectado con tus claves paper, al segundo (feed IEX de Alpaca, el gratuito; el plan gratis permite una sola conexión de datos a la vez).</li>
           <li>En vivo usa datos de IEX (el feed gratuito de Alpaca); el backtest usó la cinta consolidada.</li>
           <li>El simulador re-muestrea días reales recientes: muestra el rango de caminos posibles, no predice el precio.</li>
           <li>El resultado del backtest fue elegido entre muchas versiones; el real probablemente sea menor.</li>
@@ -157,7 +179,7 @@
 </main>
 
 <div id="tip" class="tip" hidden></div>
-<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js" integrity="sha384-JZigAjwiaZtkUbA44CWkPaT3iBb/mU5pO6QOANp+OqHd4q+1+7MG1kzp2OOP9ZfP" crossorigin="anonymous"></script>
 <script src="app.js"></script>
 </body>
 </html>

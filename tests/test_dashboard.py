@@ -113,6 +113,18 @@ class Safety(unittest.TestCase):
         for bad in ("git push", "git commit", "orb_paper.py run", "actions/cache/save"):
             self.assertNotIn(bad, wf)
 
+    def test_live_link_is_paper_only_and_keys_stay_local(self):
+        js = self.read("site/app.js")
+        for must in ("wss://stream.data.alpaca.markets/v2/iex", "wss://paper-api.alpaca.markets/stream",
+                     "https://paper-api.alpaca.markets", "/^PK/", "alpaca-paper-keys"):
+            self.assertIn(must, js)
+        for bad in ('method: "POST"', 'method: "DELETE"', 'method: "PATCH"', "https://api.alpaca.markets"):
+            self.assertNotIn(bad, js)                     # the page only reads, and never the live (real) account
+        hosts = set(re.findall(r"(?:https|wss)://([a-z0-9.-]+)", js))
+        self.assertEqual(hosts, {"data.alpaca.markets", "stream.data.alpaca.markets", "paper-api.alpaca.markets"})
+        html = self.read("site/index.html")
+        self.assertIn('integrity="sha384-', html)        # the chart library can't be swapped under the keys
+
     def test_site_decrypts_the_same_layout(self):
         js = self.read("site/app.js")
         for must in ('"PBKDF2"', '"SHA-256"', "setUint32(nonce.length, i)", "doc.rounds", "Frase incorrecta"):

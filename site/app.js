@@ -189,6 +189,7 @@ function renderLive(today) {
     const st = $(".sym-state", card);
     st.replaceChildren();
     if (!d.box) st.append(el("span", { class: "muted", text: "La caja todavía no está completa (termina a las 10:00)." }));
+    else if (d.box.forming) st.append(el("span", { class: "muted", text: "Caja formándose hasta las 10:00." }));
     else if (!d.signal) st.append(el("span", { class: "muted", text: "Caja lista. Sin cierre fuera de la caja todavía." }));
     else {
       const long = d.signal.dir > 0;
@@ -219,7 +220,7 @@ function renderLive(today) {
     if (d.signal) { add(d.signal.partial, c.up, "70 %", 0); add(d.signal.stop, c.down, "stop", 0); }
     ch.series.setMarkers(d.signal ? [{ time: d.signal.time - 300, position: d.signal.dir > 0 ? "belowBar" : "aboveBar",
       color: d.signal.dir > 0 ? c.up : c.down, shape: d.signal.dir > 0 ? "arrowUp" : "arrowDown", text: d.signal.dir > 0 ? "largo" : "corto" }] : []);
-    ch.chart.timeScale().fitContent();
+    if (ch.fittedFor !== today.session) { ch.chart.timeScale().fitContent(); ch.fittedFor = today.session; }
   });
 }
 
@@ -480,8 +481,247 @@ function renderBacktest(bt) {
     top.findIndex((r) => r.n === c.n && r.mean === c.mean));
 }
 
+/* ---------------------------------------------------------------- live link to Alpaca (browser only) */
+// With the user's PAPER keys the page talks straight to Alpaca: the IEX market data stream (1 minute bars and
+// trades, folded into 5 minute candles here), the paper account (REST every 10 s) and its trade updates
+// stream. The keys stay in this browser (sessionStorage, or localStorage if asked) and go only to Alpaca.
+const ALPACA = { data: "https://data.alpaca.markets", stream: "wss://stream.data.alpaca.markets/v2/iex",
+  paper: "https://paper-api.alpaca.markets", trades: "wss://paper-api.alpaca.markets/stream" };
+const live = { on: false, keys: null, bars: {}, last: {}, ws: null, tws: null, timer: null, poll: null, dirty: false,
+  session: null, fills: [], stops: {}, retry: 0 };
+const NYF = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hourCycle: "h23", year: "numeric",
+  month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+function nyWall(date) {
+  // New York wall-clock time as a Unix epoch (the charts' clock, like today.json)
+  const p = {}; NYF.formatToParts(date).forEach((x) => { p[x.type] = x.value; });
+  return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) / 1000;
+}
+const wallDay = (w) => new Date(w * 1000).toISOString().slice(0, 10);
+const wallMin = (w) => Math.floor((w % 86400) / 60);
+function foldBar(sym, w, o, h, l, c) {
+  const k = Math.floor(w / 300) * 300, m = live.bars[sym] || (live.bars[sym] = new Map());
+  const b = m.get(k);
+  if (!b) m.set(k, [k, o, h, l, c]);
+  else { b[2] = Math.max(b[2], h); b[3] = Math.min(b[3], l); b[4] = c; }
+}
+function boxAndSignal(bars, nowW) {
+  // same rules as the bot (orb_paper.box_of / first_signal): box 09:00-10:00 with at least 3 bars, the first
+  // completed bar from 10:00 to 12:55 that closes outside it
+  const inside = bars.filter((b) => wallMin(b[0]) >= 540 && wallMin(b[0]) < 600);
+  if (inside.length < 3) return { box: null, signal: null };
+  const hi = Math.max(...inside.map((b) => b[2])), lo = Math.min(...inside.map((b) => b[3]));
+  const box = { high: hi, low: lo, bars: inside.length, forming: wallMin(nowW) < 600 };
+  let signal = null;
+  for (const b of bars) {
+    const m = wallMin(b[0]);
+    if (m < 600 || m > 775) continue;
+    if (b[0] + 300 > nowW) break;
+    const dir = b[4] > hi ? 1 : b[4] < lo ? -1 : 0;
+    if (dir) {
+      const stop = dir > 0 ? lo : hi;
+      signal = { time: b[0] + 300, dir, close: b[4], stop, partial: Math.round((b[4] + dir * PARTIAL_R * Math.abs(b[4] - stop)) * 100) / 100 };
+      break;
+    }
+  }
+  return { box, signal };
+}
+function liveModel() {
+  const nowW = nyWall(new Date()), day = wallDay(nowW), wd = new Date(nowW * 1000).getUTCDay(), m = wallMin(nowW);
+  const model = { session: day, now_ny: new Date(nowW * 1000).toISOString().slice(0, 19).replace("T", " "),
+    market_open: wd > 0 && wd < 6 && m >= 570 && m < 960, symbols: {}, live: true };
+  SYMS.forEach((sym) => {
+    const bars = Array.from((live.bars[sym] || new Map()).values()).filter((b) => wallDay(b[0]) === day).sort((a, b) => a[0] - b[0]);
+    const { box, signal } = boxAndSignal(bars, nowW);
+    model.symbols[sym] = { bars, box, signal, last: live.last[sym] != null ? live.last[sym] : bars.length ? bars[bars.length - 1][4] : null };
+  });
+  return model;
+}
+function liveRender() {
+  if (!live.on) return;
+  live.dirty = false;
+  state.today = liveModel();
+  renderLive(state.today);
+  $("#updated").textContent = "en vivo " + state.today.now_ny.slice(11) + " NY";
+  renderPositions();
+}
+const scheduleRender = () => { if (!live.dirty) { live.dirty = true; setTimeout(liveRender, 1000); } };
+function setStatus(text, kind) {
+  const p = $("#live-status"); p.textContent = text; p.className = "pill " + (kind || "");
+}
+function seedFromToday(today) {
+  // the published bars (up to ~5 minutes old) are the start; the stream adds to them
+  if (!today || !today.symbols) return;
+  SYMS.forEach((sym) => (today.symbols[sym] && today.symbols[sym].bars || []).forEach((b) => foldBar(sym, b[0], b[1], b[2], b[3], b[4])));
+}
+async function alpaca(base, path) {
+  const r = await fetch(base + path, { headers: { "APCA-API-KEY-ID": live.keys.id, "APCA-API-SECRET-KEY": live.keys.secret } });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+async function backfill() {
+  // today's 5 minute bars from 08:30 New York, so the chart has no gap before the stream started
+  const nowW = nyWall(new Date()), start = new Date((Math.floor(nowW / 86400) * 86400 + 510 * 60) * 1000);
+  const offset = (nowW - Date.now() / 1000);                 // wall clock minus UTC, in seconds
+  const iso = new Date(start.getTime() - offset * 1000).toISOString();
+  try {
+    const d = await alpaca(ALPACA.data, "/v2/stocks/bars?symbols=" + SYMS.join(",") + "&timeframe=5Min&feed=iex&limit=1000&start=" + encodeURIComponent(iso));
+    Object.entries(d.bars || {}).forEach(([sym, bs]) => bs.forEach((b) => foldBar(sym, nyWall(new Date(b.t)), b.o, b.h, b.l, b.c)));
+    return true;
+  } catch (e) { return false; }
+}
+function openMarketStream() {
+  const ws = live.ws = new WebSocket(ALPACA.stream);
+  ws.onopen = () => ws.send(JSON.stringify({ action: "auth", key: live.keys.id, secret: live.keys.secret }));
+  ws.onmessage = async (ev) => {
+    const text = typeof ev.data === "string" ? ev.data : await new Response(ev.data).text();
+    let msgs; try { msgs = JSON.parse(text); } catch (e) { return; }
+    (Array.isArray(msgs) ? msgs : [msgs]).forEach((m) => {
+      if (m.T === "success" && m.msg === "authenticated") {
+        ws.send(JSON.stringify({ action: "subscribe", bars: SYMS, updatedBars: SYMS, trades: SYMS }));
+        live.retry = 0;
+        setStatus("en vivo", "live");
+      } else if (m.T === "error") {
+        $("#live-msg").textContent = m.code === 406 ? "Alpaca permite una sola conexión de datos a la vez en el plan gratis: cierra la otra pestaña o programa que la use."
+          : m.code === 402 || m.code === 401 ? "Alpaca rechazó las claves (¿son las de la cuenta paper?)." : "Alpaca: " + (m.msg || m.code);
+        if (m.code === 402 || m.code === 401) disconnect(true);
+      } else if ((m.T === "b" || m.T === "u") && SYMS.includes(m.S)) {
+        foldBar(m.S, nyWall(new Date(m.t)), m.o, m.h, m.l, m.c); live.last[m.S] = m.c; scheduleRender();
+      } else if (m.T === "t" && SYMS.includes(m.S)) {
+        const w = nyWall(new Date(m.t)); foldBar(m.S, w, m.p, m.p, m.p, m.p); live.last[m.S] = m.p; scheduleRender();
+      }
+    });
+  };
+  ws.onclose = () => {
+    if (!live.on || live.ws !== ws) return;
+    setStatus("reconectando", "warn");
+    live.retry = Math.min(live.retry + 1, 6);
+    setTimeout(() => { if (live.on) openMarketStream(); }, 1000 * Math.pow(2, live.retry));
+  };
+}
+function openTradeStream() {
+  const ws = live.tws = new WebSocket(ALPACA.trades);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => ws.send(JSON.stringify({ action: "auth", key: live.keys.id, secret: live.keys.secret }));
+  ws.onmessage = async (ev) => {
+    const text = typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data instanceof ArrayBuffer ? ev.data : await new Response(ev.data).arrayBuffer());
+    let m; try { m = JSON.parse(text); } catch (e) { return; }
+    if (m.stream === "authorization" && m.data && m.data.status === "authorized") ws.send(JSON.stringify({ action: "listen", data: { streams: ["trade_updates"] } }));
+    if (m.stream === "trade_updates" && m.data && m.data.order) {
+      const o = m.data.order, ev2 = m.data.event;
+      if (["fill", "partial_fill", "canceled", "rejected", "expired"].includes(ev2)) {
+        const t = new Date(m.data.timestamp || Date.now());
+        live.fills.unshift(new Date(nyWall(t) * 1000).toISOString().slice(11, 19) + " · " + o.symbol + " " +
+          ({ fill: "ejecutada", partial_fill: "ejecución parcial", canceled: "cancelada", rejected: "rechazada", expired: "vencida" })[ev2] +
+          ": " + (o.side === "buy" ? "compra" : "venta") + " " + (m.data.qty || o.filled_qty || o.qty || "") + " " + o.type +
+          (m.data.price ? " a " + fmt.px(+m.data.price) : ""));
+        live.fills = live.fills.slice(0, 30);
+        pollAccount();
+      }
+    }
+  };
+  ws.onclose = () => { if (live.on && live.tws === ws) setTimeout(() => { if (live.on) openTradeStream(); }, 5000); };
+}
+function stopOf(sym, entry, dir, orders) {
+  // the trade's original stop: today's signal, the decrypted record, or the open stop order on the closing side
+  // (not a runner already moved to breakeven)
+  if (state.priv) { const t = state.priv.trades.find((x) => x.open && x.symbol === sym); if (t && t.stop) return t.stop; }
+  for (const o of orders) for (const x of [o].concat(o.legs || [])) {
+    const side = dir > 0 ? "sell" : "buy", cid = x.client_order_id || o.client_order_id || "";
+    if ((x.symbol || o.symbol) === sym && x.type === "stop" && x.side === side && x.stop_price && !/run-be/.test(cid)
+        && Math.abs(+x.stop_price - entry) > entry * 1e-4) return +x.stop_price;
+  }
+  const d = state.today && state.today.symbols && state.today.symbols[sym];
+  if (d && d.signal && d.signal.dir === dir) return d.signal.stop;
+  return null;
+}
+async function pollAccount() {
+  if (!live.on) return;
+  try {
+    const [acct, pos, orders] = await Promise.all([alpaca(ALPACA.paper, "/v2/account"), alpaca(ALPACA.paper, "/v2/positions"),
+      alpaca(ALPACA.paper, "/v2/orders?status=open&limit=500&nested=true")]);
+    live.acct = acct; live.positions = pos; live.orders = orders;
+    $("#acct-live").hidden = false;
+    $("#acct-live-time").textContent = "actualizada " + new Date(nyWall(new Date()) * 1000).toISOString().slice(11, 19) + " NY";
+    renderPositions();
+  } catch (e) {
+    $("#live-msg").textContent = "No se pudo leer la cuenta paper desde el navegador (" + e.message + "). Las velas en vivo siguen; la cuenta se ve en Mis operaciones.";
+  }
+}
+function renderPositions() {
+  if (!live.acct) return;
+  const a = live.acct, eq = +a.equity, day = a.last_equity ? eq - +a.last_equity : null;
+  const pos = live.positions || [];
+  let upl = 0;
+  const rows = pos.map((p) => {
+    const q = +p.qty, dir = q > 0 ? 1 : -1, entry = +p.avg_entry_price;
+    const now = live.last[p.symbol] != null ? live.last[p.symbol] : +p.current_price;
+    const pnl = (now - entry) * q; upl += pnl;
+    const stop = stopOf(p.symbol, entry, dir, live.orders || []);
+    const r = stop != null && stop !== entry ? (now - entry) * dir / Math.abs(entry - stop) : null;
+    const btn = SYMS.includes(p.symbol) && stop != null ? el("button", { class: "btn small", type: "button", text: "Simular" }) : "";
+    if (btn) btn.addEventListener("click", () => {
+      const t = state.priv && state.priv.trades.find((x) => x.open && x.symbol === p.symbol);
+      fillSim({ sym: p.symbol, dir, entry, stop, now, days: t ? businessDaysBetween(t.day, state.today.session) : 0, partial: t ? t.partial_done : false });
+      showTab("sim"); runSim();
+    });
+    return row([p.symbol, dir > 0 ? "largo" : "corto", String(Math.abs(q)), fmt.px(entry), fmt.px(now), [fmt.money(pnl), cls(pnl)],
+      r == null ? "-" : [fmt.r(r, 2), cls(r)], btn]);
+  });
+  $("#acct-live-kpis").replaceChildren(kpi("Capital (paper)", fmt.money(eq), "efectivo " + fmt.money(+a.cash)),
+    kpi("Hoy", fmt.money(day), "", cls(day)), kpi("Abiertas", String(pos.length), "todas las de la cuenta"),
+    kpi("P&L abierto", fmt.money(upl), "con el último precio", cls(upl)));
+  $("#pos-live tbody").replaceChildren(...rows);
+  $("#pos-live-empty").hidden = pos.length > 0;
+  const f = $("#fills-live");
+  f.replaceChildren(...(live.fills.length ? live.fills.map((t) => el("li", { text: t })) : [el("li", { class: "muted", text: "Sin ejecuciones desde que te conectaste." })]));
+}
+function loadKeys() {
+  for (const store of [sessionStorage, localStorage]) {
+    try { const k = JSON.parse(store.getItem("alpaca-paper-keys") || "null"); if (k && k.id && k.secret) return k; } catch (e) { /* storage blocked */ }
+  }
+  return null;
+}
+async function connect(keys, remember) {
+  if (!/^PK/.test(keys.id)) { $("#live-msg").textContent = "Esa no parece una clave paper (las de paper empiezan con PK). Por seguridad este panel solo usa la cuenta paper."; return; }
+  disconnect(false);
+  live.on = true; live.keys = keys; live.bars = {}; live.last = {}; live.fills = [];
+  try {
+    sessionStorage.setItem("alpaca-paper-keys", JSON.stringify(keys));
+    if (remember) localStorage.setItem("alpaca-paper-keys", JSON.stringify(keys)); else localStorage.removeItem("alpaca-paper-keys");
+  } catch (e) { /* storage blocked: works for this visit only */ }
+  $("#live-form").hidden = true; $("#live-on").hidden = false; $("#live-msg").textContent = "";
+  $("#live-info").textContent = "Conectado con la clave " + keys.id.slice(0, 4) + "…" + keys.id.slice(-3) + (remember ? " (recordada en este navegador)" : " (solo esta pestaña)");
+  setStatus("conectando", "warn");
+  seedFromToday(state.today && !state.today.live ? state.today : null);
+  const filled = await backfill();
+  if (!filled) $("#live-msg").textContent = "Sin historial de Alpaca desde el navegador: se parte de los datos publicados y se completa en vivo.";
+  liveRender();
+  openMarketStream();
+  openTradeStream();
+  pollAccount();
+  live.poll = setInterval(pollAccount, 10000);
+  live.timer = setInterval(scheduleRender, 15000);   // close forming bars and move the clock even when nothing trades
+}
+function disconnect(forget) {
+  live.on = false;
+  [live.ws, live.tws].forEach((w) => { if (w) try { w.close(); } catch (e) { /* closed */ } });
+  live.ws = live.tws = null;
+  clearInterval(live.poll); clearInterval(live.timer);
+  live.acct = null;
+  if (forget) try { sessionStorage.removeItem("alpaca-paper-keys"); localStorage.removeItem("alpaca-paper-keys"); } catch (e) { /* ignore */ }
+  $("#live-form").hidden = false; $("#live-on").hidden = true; $("#acct-live").hidden = true;
+  setStatus("cada 5 min", "");
+}
+$("#live-form").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  connect({ id: $("#lk-id").value.trim(), secret: $("#lk-secret").value.trim() }, $("#lk-remember").checked);
+  $("#lk-secret").value = "";
+});
+$("#live-off").addEventListener("click", () => { disconnect(true); refreshLive(); });
+
 /* ---------------------------------------------------------------- boot */
 async function refreshLive() {
+  if (live.on) return;                       // the stream is fresher than the published file
   try { state.today = await getJSON("data/today.json"); renderLive(state.today); }
   catch (e) { $("#updated").textContent = "sin datos en vivo todavía"; }
 }
@@ -493,6 +733,8 @@ async function boot() {
   let saved = null;
   try { saved = sessionStorage.getItem("dash-pass"); } catch (e) { /* ignore */ }
   if (saved) { $("#remember").checked = true; unlock(saved, true); }
+  const keys = loadKeys();
+  if (keys) connect(keys, (() => { try { return !!localStorage.getItem("alpaca-paper-keys"); } catch (e) { return false; } })());
   setInterval(async () => {
     await refreshLive();
     if (state.pass) unlock(state.pass, true);
