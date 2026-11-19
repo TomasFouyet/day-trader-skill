@@ -409,3 +409,9 @@ class Unprotected(unittest.TestCase):
         self.assertNotIn("KO", got)
         self.assertAlmostEqual(got["QQQ"], 0.3)
         self.assertEqual(got["SPY"], 0.0)
+
+    def test_an_oco_exit_is_not_an_entry(self):
+        oco = {"symbol": "SPY", "side": "sell", "type": "limit", "status": "new", "order_class": "oco",
+               "client_order_id": "orb-SPY-20261118-tp", "legs": [{"symbol": "SPY", "side": "sell", "type": "stop", "status": "new"}]}
+        self.assertEqual(len(paper.leftover_orders([oco], [])), 2)                 # both sides, no shares behind
+        self.assertEqual(paper.leftover_orders([oco], [{"symbol": "SPY", "qty": "10"}]), [])

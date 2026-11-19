@@ -443,6 +443,8 @@ def origin(cid):
 def is_entry(o):
     """An order that opens a trade: a bracket/OTO parent, a swing entry, or a box entry (orb-...-in)."""
     cid = o.get("client_order_id") or ""
+    if o.get("order_class") == "oco" or cid.startswith("orb-") and not cid.endswith("-in"):
+        return False                                   # an OCO (limit + stop) closes a position
     return bool(o.get("legs")) or o.get("order_class") in ("bracket", "oto") or cid.startswith("swing-") or cid.endswith("-in")
 
 
