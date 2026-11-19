@@ -92,6 +92,7 @@ main { padding-block: 22px 60px; }
 @keyframes blink { 50% { opacity: .25; } }
 .pill.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
 .mt { margin-top: 16px; }
+.priv-head { justify-content: space-between; }
 .levels { display: flex; gap: 12px; flex-wrap: wrap; font: 0.8rem var(--mono); color: var(--muted); }
 
 .table-wrap { overflow-x: auto; }

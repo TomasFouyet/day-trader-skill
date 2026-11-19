@@ -39,6 +39,7 @@ function showTab(name) {
   $$(".tab").forEach((t) => { t.hidden = t.id !== "tab-" + name; });
   if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
   if (name === "backtest" && state.backtest) renderBacktest(state.backtest);
+  if (name === "trades" && state.priv) renderPrivate(state.priv);
 }
 $$(".tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
 window.addEventListener("hashchange", () => showTab((location.hash || "#live").slice(1)));
@@ -254,9 +255,20 @@ function businessDaysBetween(a, b) {
   while (d < end) { d.setUTCDate(d.getUTCDate() + 1); const w = d.getUTCDay(); if (w !== 0 && w !== 6) n++; }
   return n;
 }
+function ageText(iso) {
+  if (!iso) return "";
+  const t = new Date(iso), min = Math.round((Date.now() - t.getTime()) / 60000);
+  const ny = new Date(nyWall(t) * 1000).toISOString().slice(11, 16);
+  return "Cuenta leída a las " + ny + " NY (" + (min < 1 ? "hace menos de 1 min" : "hace " + min + " min") + ")";
+}
+function privateFreshness() {
+  if (!state.priv) return;
+  $("#priv-updated").textContent = ageText(state.priv.updated) + (live.on && live.last ? " · precios y R en vivo" : " · se revisa cada minuto");
+}
 function renderPrivate(p) {
   $("#trades-body").hidden = false;
   $("#lock").hidden = true;
+  privateFreshness();
   const a = p.account || {};
   const closed = p.trades.filter((t) => !t.open && t.realized_R != null);
   const totalR = closed.reduce((s, t) => s + t.realized_R, 0);
@@ -275,6 +287,10 @@ function renderPrivate(p) {
   const today = (state.today && state.today.session) || new Date().toISOString().slice(0, 10);
   open.forEach((t) => {
     const days = businessDaysBetween(t.day, today);
+    if (live.on && live.last[t.symbol] != null) {          // connected: the price and R of this second
+      t.last = live.last[t.symbol];
+      if (t.stop && t.entry !== t.stop) t.unrealized_R = (t.last - t.entry) * t.dir / Math.abs(t.entry - t.stop);
+    }
     const btn = el("button", { class: "btn small", type: "button", text: "Simular" });
     btn.addEventListener("click", () => {
       fillSim({ sym: t.symbol, dir: t.dir, entry: t.entry, stop: t.stop, now: t.last, days, partial: t.partial_done });
@@ -330,6 +346,12 @@ async function unlock(pass, quiet) {
   }
 }
 $("#unlock-form").addEventListener("submit", (ev) => { ev.preventDefault(); unlock($("#pass").value); });
+$("#priv-refresh").addEventListener("click", async () => {
+  if (!state.pass) return;
+  $("#priv-updated").textContent = "Leyendo...";
+  await unlock(state.pass, true);
+  privateFreshness();
+});
 $("#relock").addEventListener("click", () => {
   state.priv = null; state.pass = null;
   try { sessionStorage.removeItem("dash-pass"); } catch (e) { /* ignore */ }
@@ -543,6 +565,7 @@ function liveRender() {
   renderLive(state.today);
   $("#updated").textContent = "en vivo " + state.today.now_ny.slice(11) + " NY";
   renderPositions();
+  if (state.priv && !$("#tab-trades").hidden) renderPrivate(state.priv);
 }
 const scheduleRender = () => { if (!live.dirty) { live.dirty = true; setTimeout(liveRender, 1000); } };
 function setStatus(text, kind) {
@@ -739,6 +762,13 @@ async function boot() {
     await refreshLive();
     if (state.pass) unlock(state.pass, true);
   }, 60000);
+  setInterval(privateFreshness, 20000);
+  // a phone puts background tabs to sleep: catch up as soon as the page is visible again
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    refreshLive();
+    if (state.pass) unlock(state.pass, true);
+  });
 }
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => location.reload());
 boot();
