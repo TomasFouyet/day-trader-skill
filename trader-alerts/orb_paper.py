@@ -327,7 +327,7 @@ def enter(acct, sym, now_et, bars, positions, equity, events, state, dry_run, sl
         if now_et.time() >= _hm(STRATEGY["box_end"]):
             once(state, day, "box-" + sym, events, (sym, "caja con menos de %d velas: hoy no opera" % STRATEGY["min_box_bars"]))
         return
-    since = _since(state, sym, day)
+    since = _since(state, sym, day, acct)
     sig = first_signal(bars, day, box, now_et, since)
     if sig is None:
         return
@@ -364,11 +364,36 @@ def enter(acct, sym, now_et, bars, positions, equity, events, state, dry_run, sl
     events.append((sym, "entro a %.2f; salidas puestas (parcial %.2f, stop %.2f)" % (fill, target, p["stop"])))
 
 
-def _since(state, sym, day):
+def _since(state, sym, day, acct=None):
     """A trade from an earlier day that closed during today's session: only bars after it may signal (the
-    backtest's one-position-at-a-time rule)."""
+    backtest's one-position-at-a-time rule). Two sources, the later wins: the pass that first saw the
+    position gone (saved state), and Alpaca's own fill time of that closing order, which does not depend on
+    the saved state (a lost cache cannot make an earlier breakout look tradable)."""
     t = (state.get("closed_today") or {}).get("%s-%s" % (sym, day.isoformat()))
-    return _hm(t) if t else None
+    since = _hm(t) if t else None
+    if acct is not None:
+        f = closed_today_at(acct, sym, day)
+        if f is not None and (since is None or f > since):
+            since = f
+    return since
+
+
+def closed_today_at(acct, sym, day):
+    """New York time of the latest fill today of an order in sym that is not today's entry: the stop, the
+    partial or the day-limit close of a trade from an earlier day. -> time or None."""
+    today = cid(sym, day, "")
+    last = None
+    for o in acct.orders("closed", sym, 100):
+        for x in [o] + list(o.get("legs") or []):
+            if not _filled(x) or (x.get("client_order_id") or "").startswith(today) or not x.get("filled_at"):
+                continue
+            try:
+                at = scan.to_eastern(datetime.datetime.strptime(x["filled_at"][:19], "%Y-%m-%dT%H:%M:%S"))
+            except ValueError:
+                continue
+            if at.date() == day and (last is None or at > last):
+                last = at
+    return last.time().replace(second=0, microsecond=0) if last else None
 
 
 def track_open(state, positions, now_et):

@@ -215,6 +215,26 @@ class Entry(Base):
         self.assertEqual(self.fake.posts()[0]["side"], "sell")
 
 
+    def test_a_lost_state_still_waits_for_the_runner_to_close(self):
+        # yesterday's runner stopped out at 11:01 (Alpaca's fill time); the saved state was lost, so only
+        # Alpaca says when. The 10:55 break (closed 11:00, inside the 10 minute grace) came while it was open.
+        self.fake.orders["y"] = {"id": "y", "n": 0, "symbol": "QQQ", "client_order_id": "orb-QQQ-20261117-run-be",
+                                 "status": "filled", "type": "stop", "side": "sell", "filled_at": "2026-11-18T16:01:30Z"}
+        moves = {"10:55": (100, 102.5, 100, 102)}
+        self.run_at("11:05", moves, state={})
+        self.assertEqual(self.fake.posts(), [])
+        moves["11:00"] = (102, 102.6, 101.5, 102.4)            # a close outside after the runner closed
+        self.run_at("11:06", moves, state={})
+        self.assertEqual(self.fake.posts()[0]["side"], "buy")
+
+    def test_the_stop_leg_of_the_oco_counts_too(self):
+        leg = {"client_order_id": "x-leg", "status": "filled", "type": "stop", "filled_at": "2026-11-18T16:01:00Z"}
+        self.fake.orders["y"] = {"id": "y", "n": 0, "symbol": "QQQ", "client_order_id": "orb-QQQ-20261117-tp",
+                                 "status": "canceled", "type": "limit", "legs": [leg]}
+        self.assertEqual(orb.closed_today_at(self.acct, "QQQ", DAY), datetime.time(11, 1))
+        self.assertIsNone(orb.closed_today_at(self.acct, "QQQ", DAY + datetime.timedelta(days=1)))
+
+
 class Manage(Base):
     def open_trade(self, day="20261118", partial=False, runner_stop="99.00"):
         self.fake.positions["QQQ"] = {"symbol": "QQQ", "qty": "25" if partial else "83", "side": "long"}
