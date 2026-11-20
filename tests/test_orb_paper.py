@@ -87,8 +87,13 @@ class FakePaper(object):
         self.n += 1
         o["id"], o["n"] = "id%d" % self.n, self.n
         o.setdefault("status", "new")
-        if o.get("type") == "market":
-            o["status"], o["filled_avg_price"] = "filled", str(self.fill)
+        ioc_ok = o.get("time_in_force") == "ioc" and o.get("type") == "limit" and (
+            (o["side"] == "buy" and self.fill <= float(o["limit_price"])) or
+            (o["side"] == "sell" and self.fill >= float(o["limit_price"])))
+        if o.get("time_in_force") == "ioc" and not ioc_ok:
+            o["status"], o["filled_qty"] = "canceled", "0"       # the price already ran past the cap
+        elif o.get("type") == "market" or ioc_ok:
+            o["status"], o["filled_avg_price"], o["filled_qty"] = "filled", str(self.fill), o["qty"]
             q = float(o["qty"]) * (1 if o["side"] == "buy" else -1)
             self.positions[o["symbol"]] = {"symbol": o["symbol"], "qty": str(q),
                                            "side": "long" if q > 0 else "short", "current_price": str(self.fill)}
@@ -163,7 +168,9 @@ class Entry(Base):
         self.assertEqual([p["client_order_id"] for p in posts], ["orb-QQQ-20261118-in", "orb-QQQ-20261118-tp",
                                                                  "orb-QQQ-20261118-run"])
         entry, oco, run = posts
-        self.assertEqual((entry["type"], entry["side"], entry["qty"]), ("market", "buy", "83"))
+        # a limit at the bar close (102) plus 0.15R of the 3.00 risk, immediate-or-cancel
+        self.assertEqual((entry["type"], entry["side"], entry["qty"], entry["time_in_force"], entry["limit_price"]),
+                         ("limit", "buy", "83", "ioc", "102.45"))
         # the OCO: 58 shares at fill + 1.7 x (fill - stop), or the stop at the box low
         self.assertEqual((oco["order_class"], oco["side"], oco["qty"]), ("oco", "sell", "58"))
         # measured from the close of the breakout bar (102, stop 99), like the backtest, not from the 102.05 fill
@@ -267,9 +274,9 @@ class Entry(Base):
         n = orb.watch(self.acct, "10:11", False, sent.append, clock=lambda: clock["t"], fetch=fetch, sleep=sleep)
         entry = [x for x in self.fake.orders.values() if x["client_order_id"].endswith("-in")]
         self.assertEqual(len(entry), 1)
-        self.assertEqual(slept[0], 3 * 60 + 6)                      # 10:02 -> 10:05:06
+        self.assertEqual(slept[0], 3 * 60 + 2)                      # 10:02 -> 10:05:02
         self.assertIn("largo", sent[0])
-        self.assertEqual(n, 3)                                      # 10:02, 10:05:06 and 10:10:06
+        self.assertEqual(n, 3)                                      # 10:02, 10:05:02 and 10:10:02
 
     def test_bar_ready(self):
         b = bars(DAY, BOX, until="10:05")
@@ -407,3 +414,30 @@ class ClosedMessage(CloseReport):
         again = orb.run_pass(self.acct, utc(datetime.date(2026, 11, 20), "10:46"), {"QQQ": []}, state=state,
                              sleep=lambda s: None)
         self.assertFalse([e for e in again if "cerrada" in e[1]])   # said once
+
+
+class PreciseEntry(Base):
+    SIGNAL = {"10:00": (100, 102.5, 100, 102)}             # closes at 102 above the box 99-101: risk 3
+
+    def test_no_entry_when_the_price_already_ran(self):
+        self.fake.fill = 102.60                             # past the 102.45 cap
+        events = self.run_at("10:06", self.SIGNAL)
+        self.assertTrue(any("no entro" in e[1] for e in events))
+        self.assertEqual([b for b in self.fake.posts() if b.get("order_class") == "oco"], [])
+        self.run_at("10:11", self.SIGNAL)                   # and not later the same day
+        self.assertEqual(len([b for b in self.fake.posts() if b["client_order_id"].endswith("-in")]), 1)
+
+    def test_a_partial_fill_gets_exits_for_its_shares(self):
+        real = self.fake.add
+
+        def half(o):
+            o = real(o)
+            if o["client_order_id"].endswith("-in"):
+                o["status"], o["filled_qty"] = "canceled", "10"     # IOC: 10 of 83, the rest cancelled
+                self.fake.positions["QQQ"]["qty"] = "10"
+            return o
+        self.fake.add = half
+        self.run_at("10:06", self.SIGNAL)
+        oco = [b for b in self.fake.posts() if b.get("order_class") == "oco"][0]
+        run = [b for b in self.fake.posts() if b["client_order_id"].endswith("-run")][0]
+        self.assertEqual((oco["qty"], run["qty"]), ("7", "3"))

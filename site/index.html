@@ -162,7 +162,7 @@
         <ol>
           <li>Caja: máximo y mínimo de las velas de 5 minutos de <b>09:00 a 10:00</b> de Nueva York, pre-mercado incluido.</li>
           <li>Desde las 10:00, la primera vela que <b>cierra</b> fuera de la caja: arriba largo, abajo corto. Ambos lados, sin filtro de medias, solo velas que cierran hasta las <b>13:00</b>. Una operación al día por índice y ninguna mientras otra siga abierta.</li>
-          <li>Entrada a mercado al cierre de esa vela. Stop en el otro borde de la caja.</li>
+          <li>Entrada al cierre de esa vela: una orden límite inmediata (cierre + 0,15R como máximo; si el precio ya se fue, ese día no entra). Stop en el otro borde de la caja.</li>
           <li>A <b>1,7R</b> se vende el <b>70 %</b> y el stop del 30 % restante pasa a la entrada. El resto no tiene objetivo.</li>
           <li>Lo que siga abierto a los 20 días de mercado se cierra.</li>
         </ol>

@@ -88,6 +88,12 @@ def max_notional_pct():
     return env_float("ORB_MAX_NOTIONAL_PCT", 50.0)
 
 
+def max_slip_r():
+    """How far past the breakout bar's close the entry may fill, in R (ORB_MAX_SLIP_R, default 0.15). The entry
+    is a limit order at that price, immediate-or-cancel: never worse, and no entry if the price already ran."""
+    return env_float("ORB_MAX_SLIP_R", 0.15)
+
+
 def symbols():
     raw = os.environ.get("ORB_SYMBOLS")
     return [s.strip().upper() for s in raw.split(",") if s.strip()] if raw else list(STRATEGY["symbols"])
@@ -210,11 +216,19 @@ def _filled(o):
     return o is not None and o.get("status") == "filled"
 
 
+def _got(o):
+    """Shares an order actually got (an immediate-or-cancel entry can fill in part, then show "canceled")."""
+    try:
+        return abs(float((o or {}).get("filled_qty") or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def entry_of(acct, sym):
     """The filled orb entry order behind the open position in sym (newest first), or None."""
     for o in acct.orders("closed", sym, 100):
         c = o.get("client_order_id") or ""
-        if c.startswith("orb-%s-" % sym) and c.endswith("-in") and _filled(o):
+        if c.startswith("orb-%s-" % sym) and c.endswith("-in") and (_filled(o) or _got(o) > 0):
             return o
     return None
 
@@ -307,7 +321,8 @@ def manage(acct, sym, pos, now_et, events, dry_run, state, bars):
         events.append((sym, "faltaban las salidas: stop %.2f, parcial %.2f" % (stop, target)))
         if not dry_run:
             acct.submit(oco)
-            acct.submit(run_body)
+            if p["runner_qty"] > 0:
+                acct.submit(run_body)
 
 
 def stop_of(state, entry, bars, day):
@@ -367,16 +382,30 @@ def enter(acct, sym, now_et, bars, positions, equity, events, state, dry_run, sl
                                              "bar": bar["t"].strftime("%H:%M"),
                                              "dir": direction, "qty": p["qty"], "at": now_et.isoformat()}
     paper.write_json(STATE, state)
-    acct.submit({"symbol": sym, "qty": str(p["qty"]), "side": side, "type": "market", "time_in_force": "day",
-                 "client_order_id": in_id})
+    # a limit at the bar's close plus a small allowance, immediate-or-cancel: the fill is never further from
+    # the close than max_slip_r(), so the 1.7R target stays where the rule puts it
+    cap = round(bar["c"] + direction * max_slip_r() * p["risk"], 2)
+    state["trades"][in_id]["limit"] = cap
+    acct.submit({"symbol": sym, "qty": str(p["qty"]), "side": side, "type": "limit", "limit_price": "%.2f" % cap,
+                 "time_in_force": "ioc", "client_order_id": in_id})
     o = wait_fill(acct, in_id, sleep=sleep)
-    if not _filled(o):
-        events.append((sym, "la entrada no se lleno todavia: la proxima pasada pone las salidas"))
+    got = int(_got(o))
+    if got < 1:
+        if o is not None and o.get("status") in ("canceled", "expired", "rejected"):
+            events.append((sym, "no entro: el precio ya estaba mas alla de %.2f (cierre %.2f + %.2fR)" % (
+                cap, bar["c"], max_slip_r())))
+        else:
+            events.append((sym, "la entrada no se lleno todavia: la proxima pasada pone las salidas"))
         return
+    if got < p["qty"]:                                    # filled in part: the exits follow the shares it got
+        part = max(1, min(got - 1, int(round(got * STRATEGY["partial_frac"])))) if got > 1 else 1
+        p = dict(p, qty=got, partial_qty=part, runner_qty=got - part)
+        state["trades"][in_id]["qty"] = got
     fill = float(o.get("filled_avg_price") or bar["c"])
     oco, run_body, target = exit_bodies(sym, day, p, fill)
     acct.submit(oco)
-    acct.submit(run_body)
+    if p["runner_qty"] > 0:
+        acct.submit(run_body)
     state["trades"][in_id]["fill"] = fill
     events.append((sym, "entro a %.2f; salidas puestas (parcial %.2f, stop %.2f)" % (fill, target, p["stop"])))
 
@@ -627,7 +656,8 @@ def trades_from_orders(orders):
     trades = []
     for key, os_ in sorted(by.items()):
         _, sym, day = key.split("-")
-        entry = next((o for o in os_ if (o.get("client_order_id") or "").endswith("-in") and o.get("status") == "filled"), None)
+        entry = next((o for o in os_ if (o.get("client_order_id") or "").endswith("-in")
+                      and (o.get("status") == "filled" or (_f(o.get("filled_qty")) or 0) > 0)), None)
         if entry is None:
             continue
         side = 1 if entry.get("side") == "buy" else -1
@@ -757,7 +787,7 @@ def _bar_ready(bars_by_sym, now_et):
     return True
 
 
-def watch(acct, until, dry, send=None, clock=None, fetch=None, sleep=time.sleep, offset=6, retries=6):
+def watch(acct, until, dry, send=None, clock=None, fetch=None, sleep=time.sleep, offset=2, retries=15):
     """Stay up through the entry window: one pass a few seconds after each 5 minute bar closes (instead of
     the next scheduled pass, a minute or two later), until `until` New York time. -> passes made."""
     clock, fetch = clock or paper.utc_now, fetch or fetch_bars
@@ -781,7 +811,7 @@ def watch(acct, until, dry, send=None, clock=None, fetch=None, sleep=time.sleep,
             for _ in range(retries):                    # the bar that just closed may take a few seconds to appear
                 if _bar_ready(bars, scan.to_eastern(now)):
                     break
-                sleep(5)
+                sleep(1)
                 now = clock()
                 bars = fetch(now)
             events = run_pass(acct, now, bars, dry_run=dry)
