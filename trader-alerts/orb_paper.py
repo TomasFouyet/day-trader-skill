@@ -304,8 +304,9 @@ def manage(acct, sym, pos, now_et, events, dry_run, state, bars):
         bought = abs(float(entry.get("filled_qty") or 0))
     except (TypeError, ValueError):
         bought = 0.0
+    # (a "replaced" 70% order was edited by hand: its new copy, not this one, carries on, so the shares decide)
     tp_open = tp is not None and tp.get("status") in ("new", "accepted", "held", "pending_new", "partially_filled",
-                                                      "pending_replace", "replaced")
+                                                      "pending_replace")
     partial_done = (tp is not None and _filled(tp)) or (bought > 0 and held < bought and not tp_open)
     runner = [o for o in open_orders if (o.get("client_order_id") or "").startswith(cid(sym, day, "run"))]
     if partial_done:
