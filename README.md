@@ -1028,6 +1028,27 @@ SMH +0,29R) y se mueven casi igual que QQQ y SPY. El Nikkei no se opera en
 Alpaca (solo valores de EE. UU.), y su mercado está cerrado a las 09:00 de
 Nueva York. No se agrega ninguno.
 
+**Otras entradas** (`trader-analyst/orb_entries.py`, estudio `entradas-caja`):
+al cierre de la vela +0,116R; límite al cierre + 0,15R esperando hasta las
+13:00 (el bot en vivo) +0,093R; pullback a la mitad del camino al borde
++0,032R; pullback hasta el borde −0,012R; stop en el medio de la caja +0,085R
+(más R total, peor Sharpe); reversal el mismo día tras un stop +0,129R (los
+giros dan ~0R). Las rupturas que vuelven hacia la caja son las débiles.
+
+**Con una operación de días anteriores abierta** (`trader-analyst/orb_layers.py`,
+estudio `capas-caja`, simulado vela a vela con todas las capas):
+
+| Qué hacer con la señal del día | R por capa | Sharpe | R total | Caída |
+|---|---|---|---|---|
+| Saltarla (la elegida) | +0,117 | 0,92 | +128 | 42R |
+| Reversal: cerrar y dar vuelta | +0,017 | 0,25 | +60 | 82R |
+| Recargar y subir el stop de todo a su equilibrio | +0,015 | 0,25 | +60 | 67R |
+| Las dos | +0,020 | 0,35 | +92 | 87R |
+
+Las dos cortan el 30 % que corre varios días (el reversal lo cierra, la recarga
+le ajusta el stop), que es de donde sale la ventaja, y las capas nuevas de esos
+días pierden (giros −0,06R, recargas −0,02R). Se mantiene una a la vez.
+
 ### 14. Límites que quedan
 
 - Las fechas de resultados son **estimaciones** a partir de los 8-K 2.02 del
