@@ -44,6 +44,7 @@ DEFAULTS = {
     "stop_mode": "box",  # box: the other edge of the box | mid: the middle of the box (closer: a cheaper R)
     "reverse": False,    # after a stop, a close past the other edge of the box (until last_entry) trades that way
     "cap_r": 0.15,       # entry "cap" (the live bot's): a limit at the close plus this many R, filled when price is inside
+    "cap_wait": True,    # cap: the limit waits until last_entry | False: only the next bar's open can fill it (no wait)
 }
 
 
@@ -260,7 +261,21 @@ def _take(bars, p, i, k, hi, lo, d, sess, days, pos, flat, last_entry, mode, avg
     edge = hi if k > 0 else lo
     stop = (lo if k > 0 else hi) if p["stop_mode"] == "box" else (hi + lo) / 2.0
     end = end_index(bars, days, pos[d], sess[-1], p["hold_days"], flat)
-    if mode in ("retest", "pullback", "cap"):
+    if mode == "next_open" or (mode == "cap" and not p["cap_wait"]):
+        # seconds after the close: the next bar's open. A market order takes it; a capped limit only if it is inside
+        j = i + 1
+        if j >= len(bars) or bars[j]["t"].date() != bars[i]["t"].date():
+            return None
+        entry = bars[j]["o"]
+        if mode == "cap":
+            c = bars[i]["c"]
+            cap = c + k * p["cap_r"] * abs(c - stop)
+            if (entry - cap) * k > 0:
+                return None                               # already past the cap: no entry that day
+        if (entry - stop) * k <= 0:
+            return None
+        r, outcome, held = simulate(bars, i, k, entry, stop, p["target_r"], end, p["partial_r"], p["partial_frac"])
+    elif mode in ("retest", "pullback", "cap"):
         c = bars[i]["c"]
         if mode == "retest":
             level = edge

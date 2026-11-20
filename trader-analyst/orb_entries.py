@@ -3,7 +3,9 @@
 13:00, 70% at 1.7R and the rest at breakeven up to 20 days, one position at a time per index) with other ways in:
 
     close       the backtest's entry: the close of the breakout bar
-    cap         the live bot's: a limit at that close + 0.15R, waiting until 13:00 if the price already ran
+    cap         the live bot's: a limit at that close + 0.15R, waiting until 13:00 if the price already ran, or
+                with no wait: only if the next bar opens inside it (0.10, 0.15, 0.25R)
+    next_open   a market order seconds after the close: the next bar's open, with no cap
     pullback    a limit back toward the box after the breakout: half way to the edge, or the edge itself
     mid stop    the stop in the middle of the box instead of its other edge (a cheaper R, more stops)
     reversal    after a stop, a close past the other edge of the box (until 13:00) is traded that way
@@ -40,6 +42,10 @@ BASE = ("10:00", "both", "none", "12:55", 1.7, 0.7, 20)
 VARIANTS = [
     ("Al cierre de la vela (la elegida)", {}),
     ("Limite al cierre + 0,15R hasta las 13:00 (el bot en vivo)", {"entry": "cap", "cap_r": 0.15}),
+    ("Limite al cierre + 0,15R sin espera", {"entry": "cap", "cap_r": 0.15, "cap_wait": False}),
+    ("Limite al cierre + 0,10R sin espera", {"entry": "cap", "cap_r": 0.10, "cap_wait": False}),
+    ("Limite al cierre + 0,25R sin espera", {"entry": "cap", "cap_r": 0.25, "cap_wait": False}),
+    ("A mercado al abrir la vela siguiente (sin tope)", {"entry": "next_open"}),
     ("Pullback a la mitad del camino al borde", {"entry": "pullback", "pull_frac": 0.5}),
     ("Pullback hasta el borde de la caja", {"entry": "pullback", "pull_frac": 1.0}),
     ("Al cierre, stop en el medio de la caja", {"stop_mode": "mid"}),

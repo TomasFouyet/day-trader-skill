@@ -81,6 +81,18 @@ class Trades(unittest.TestCase):
         t, = self.run_with(moves, entry="pullback", pull_frac=0.5, stop_mode="mid")
         self.assertEqual((t["entry"], t["stop"]), (101.5, 100.0))          # the middle of the box: a cheaper R
 
+    def test_cap_without_wait_and_next_open(self):
+        # close 102 (box 99-101, risk 3): the cap at +0.15R is 102.45
+        inside = {"11:00": (100, 102.5, 100, 102), "11:05": (102.3, 102.6, 102.2, 102.4)}
+        t, = self.run_with(inside, entry="cap", cap_wait=False)
+        self.assertEqual(t["entry"], 102.3)                                # filled at the next open
+        ran = {"11:00": (100, 102.5, 100, 102), "11:05": (102.8, 103, 102.0, 102.1)}
+        self.assertEqual(self.run_with(ran, entry="cap", cap_wait=False), [])      # opened past it: no entry
+        t, = self.run_with(ran, entry="cap")                               # waiting: it comes back to 102.45
+        self.assertEqual(t["entry"], 102.45)
+        t, = self.run_with(ran, entry="next_open")                         # a market order takes the open
+        self.assertEqual(t["entry"], 102.8)
+
     def test_reversal_after_a_failed_breakout(self):
         # long at 102, stopped at the box low 99 by a bar that closes at 98.8 below the box: short from there
         moves = {"11:00": (100, 102.5, 100, 102), "11:30": (102, 102, 98.5, 98.8)}
