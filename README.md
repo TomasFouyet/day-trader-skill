@@ -737,11 +737,14 @@ versiones, así que el resultado real puede ser bastante menor. 2024 dio −0,07
    operaciones abiertas.
 
 Qué hace cada pasada: arma la caja con las velas de IEX (el feed en tiempo
-real gratis de Alpaca), busca la señal y entra con una orden límite
-"inmediata o cancelar" al cierre de la vela más 0,15R como máximo
-(`ORB_MAX_SLIP_R`): nunca entra peor que eso, y si el precio ya se fue, ese
-día no entra. De 09:50 a 13:05 una sola pasada queda despierta (el vigía) y
-revisa a los ~2 segundos de cada cierre de vela. El objetivo del 70 % se mide
+real gratis de Alpaca), busca la señal y entra con una orden límite al
+cierre de la vela más 0,15R como máximo (`ORB_MAX_SLIP_R`): nunca entra peor
+que eso. Si el precio ya se fue, la orden queda esperando hasta las 13:00 (si
+vuelve y se llena, se ponen las salidas al momento; si se llena en parte, se
+cancela el resto y se protege lo que entró) y a las 13:00 se cancela: ese día
+no opera ese índice. De 09:50 a 13:05 una sola pasada queda despierta (el
+vigía), revisa a los ~2 segundos de cada cierre de vela y, mientras haya una
+orden de entrada esperando, cada 10 segundos. El objetivo del 70 % se mide
 desde el cierre de la vela (1,7R, como el backtest), el stop en el otro borde
 de la caja, y cuando el 70 % se cobra el stop del resto pasa a la entrada.
 Avisa por Telegram cada entrada, parcial, breakeven y cierre, y manda un
@@ -758,7 +761,8 @@ python3 trader-alerts/orb_paper.py run --dry-run
 Diferencias con el backtest: IEX en vez de la cinta consolidada (puede mover
 un poco la caja, sobre todo en el pre-mercado de DIA e IWM, por eso pide solo
 3 velas en la caja), la entrada llega unos segundos después del cierre de la
-vela y con un tope de 0,15R (las rupturas que corren más que eso se pierden),
+vela y con un tope de 0,15R (si el precio corre más, solo entra si vuelve
+antes de las 13:00, que no es lo que midió el backtest),
 y Alpaca dispara los stops solo en horario regular. Para medirlo:
 Actions, "Caja diaria (paper)", casilla audit.
 

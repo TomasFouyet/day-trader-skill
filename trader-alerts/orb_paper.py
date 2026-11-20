@@ -55,6 +55,12 @@ STRATEGY = {
 }
 
 
+# Entries rest until 13:00 New York. The last signal bar (12:55-13:00) closes at 13:00, so the cut falls a
+# moment later: its order gets its try, and whatever still waits is cancelled for the day.
+ENTRY_CANCEL = datetime.time(13, 2, 30)
+ENTRY_CANCEL_TEXT = "13:00"
+
+
 def _load(name, rel):
     spec = importlib.util.spec_from_file_location(name, os.path.join(ROOT, rel))
     m = importlib.util.module_from_spec(spec)
@@ -275,7 +281,14 @@ def manage(acct, sym, pos, now_et, events, dry_run, state, bars):
     fill = float(entry.get("filled_avg_price") or 0)
     direction = 1 if entry.get("side") == "buy" else -1
     held = abs(float(pos.get("qty") or 0))
-    open_orders = [o for o in acct.orders("open", sym, 100) if (o.get("client_order_id") or "").startswith(cid(sym, day, ""))]
+    mine = [o for o in acct.orders("open", sym, 100) if (o.get("client_order_id") or "").startswith(cid(sym, day, ""))]
+    for o in [o for o in mine if (o.get("client_order_id") or "").endswith("-in")]:
+        if not dry_run:                                   # a resting entry filled in part: keep what it got
+            try:
+                acct.cancel(o["id"])
+            except paper.PaperError:
+                pass
+    open_orders = [o for o in mine if not (o.get("client_order_id") or "").endswith("-in")]
     age = trading_days_between(day, now_et.date())
     if age >= STRATEGY["max_days"] and now_et.time() >= datetime.time(15, 30):
         events.append((sym, "%d dias abierta: se cierra a mercado" % age))
@@ -318,7 +331,12 @@ def manage(acct, sym, pos, now_et, events, dry_run, state, bars):
         if rec.get("signal") is not None and rec.get("stop") is not None:
             p["partial_px"] = rec["signal"] + direction * STRATEGY["partial_r"] * abs(rec["signal"] - rec["stop"])
         oco, run_body, target = exit_bodies(sym, day, p, fill)
-        events.append((sym, "faltaban las salidas: stop %.2f, parcial %.2f" % (stop, target)))
+        if rec.get("limit") is not None and rec.get("fill") is None:
+            rec["fill"] = fill
+            events.append((sym, "se lleno la orden limite: entro %d a %.2f; salidas puestas (parcial %.2f, stop %.2f)" % (
+                int(held), fill, target, stop)))
+        else:
+            events.append((sym, "faltaban las salidas: stop %.2f, parcial %.2f" % (stop, target)))
         if not dry_run:
             acct.submit(oco)
             if p["runner_qty"] > 0:
@@ -387,17 +405,25 @@ def enter(acct, sym, now_et, bars, positions, equity, events, state, dry_run, sl
     cap = round(bar["c"] + direction * max_slip_r() * p["risk"], 2)
     state["trades"][in_id]["limit"] = cap
     acct.submit({"symbol": sym, "qty": str(p["qty"]), "side": side, "type": "limit", "limit_price": "%.2f" % cap,
-                 "time_in_force": "ioc", "client_order_id": in_id})
-    o = wait_fill(acct, in_id, sleep=sleep)
+                 "time_in_force": "day", "client_order_id": in_id})
+    o = wait_fill(acct, in_id, tries=3, sleep=sleep)
     got = int(_got(o))
     if got < 1:
         if o is not None and o.get("status") in ("canceled", "expired", "rejected"):
-            events.append((sym, "no entro: el precio ya estaba mas alla de %.2f (cierre %.2f + %.2fR)" % (
-                cap, bar["c"], max_slip_r())))
+            events.append((sym, "la orden de entrada fue %s" % o.get("status")))
         else:
-            events.append((sym, "la entrada no se lleno todavia: la proxima pasada pone las salidas"))
+            events.append((sym, "el precio ya paso %.2f (cierre %.2f + %.2fR): la orden limite queda esperando hasta "
+                                "las %s; si se llena, se ponen las salidas" % (cap, bar["c"], max_slip_r(),
+                                                                              ENTRY_CANCEL_TEXT)))
         return
-    if got < p["qty"]:                                    # filled in part: the exits follow the shares it got
+    if not _filled(o):                                    # filled in part: keep those shares, drop the rest
+        try:
+            acct.cancel(o["id"])
+        except paper.PaperError:
+            pass
+        o = acct.get(in_id) or o
+        got = int(_got(o))
+    if got < p["qty"]:                                    # the exits follow the shares it got
         part = max(1, min(got - 1, int(round(got * STRATEGY["partial_frac"])))) if got > 1 else 1
         p = dict(p, qty=got, partial_qty=part, runner_qty=got - part)
         state["trades"][in_id]["qty"] = got
@@ -468,7 +494,9 @@ def run_pass(acct, now_utc, bars_by_sym, dry_run=False, state=None, sleep=time.s
     for sym, pos in positions.items():
         if sym in symbols():
             manage(acct, sym, pos, now_et, events, dry_run, state, bars_by_sym.get(sym) or [])
-    if _hm(STRATEGY["box_end"]) <= now_et.time() <= datetime.time(13, 15):
+    if now_et.time() >= ENTRY_CANCEL:
+        cancel_resting_entries(acct, now_et, events, state, dry_run)
+    if _hm(STRATEGY["box_end"]) <= now_et.time() < ENTRY_CANCEL:
         equity = acct.equity()
         for sym in symbols():
             enter(acct, sym, now_et, bars_by_sym.get(sym) or [], positions, equity, events, state, dry_run, sleep)
@@ -476,6 +504,25 @@ def run_pass(acct, now_utc, bars_by_sym, dry_run=False, state=None, sleep=time.s
     if not dry_run:
         paper.write_json(STATE, state)
     return events
+
+
+def resting_entries(acct, day):
+    """Today's box entry orders still waiting (a limit that did not fill at once)."""
+    tag = "-%s-in" % day.strftime("%Y%m%d")
+    return [o for o in acct.orders("open", None, 100) if (o.get("client_order_id") or "").startswith("orb-")
+            and (o.get("client_order_id") or "").endswith(tag)]
+
+
+def cancel_resting_entries(acct, now_et, events, state, dry_run):
+    for o in resting_entries(acct, now_et.date()):
+        sym = (o.get("client_order_id") or "").split("-")[1]
+        if not dry_run:
+            try:
+                acct.cancel(o["id"])
+            except paper.PaperError:
+                continue
+        once(state, now_et.date(), "cancel-in-" + sym, events,
+             (sym, "la orden limite de entrada no se lleno antes de las %s: cancelada, hoy no opera" % ENTRY_CANCEL_TEXT))
 
 
 def closed_event(acct, sym, now_et, events, state):
@@ -787,7 +834,21 @@ def _bar_ready(bars_by_sym, now_et):
     return True
 
 
-def watch(acct, until, dry, send=None, clock=None, fetch=None, sleep=time.sleep, offset=2, retries=15):
+def _one_pass(acct, now, fetch, dry, send, sleep=time.sleep):
+    try:
+        events = run_pass(acct, now, fetch(now), dry_run=dry, sleep=sleep)
+        if events:
+            text = events_text(now, events)
+            if send and not dry:
+                send(text)
+                print(log_line(events))
+            else:
+                print(text)
+    except (paper.PaperError, OSError, ValueError) as e:
+        print("Pasada con error (sigue vigilando): %s" % e, file=sys.stderr)
+
+
+def watch(acct, until, dry, send=None, clock=None, fetch=None, sleep=time.sleep, offset=2, retries=15, quick=10):
     """Stay up through the entry window: one pass a few seconds after each 5 minute bar closes (instead of
     the next scheduled pass, a minute or two later), until `until` New York time. -> passes made."""
     clock, fetch = clock or paper.utc_now, fetch or fetch_bars
@@ -804,7 +865,19 @@ def watch(acct, until, dry, send=None, clock=None, fetch=None, sleep=time.sleep,
             nxt = et.replace(second=0, microsecond=0) + datetime.timedelta(minutes=5 - et.minute % 5, seconds=offset)
             if nxt.time() >= end:
                 return n
-            sleep(max(0.0, (nxt - et).total_seconds()))
+            gap = (nxt - et).total_seconds()
+            waiting = False
+            if gap > quick + 2 and et.time() < ENTRY_CANCEL:
+                try:
+                    waiting = bool(resting_entries(acct, et.date()))
+                except paper.PaperError:
+                    waiting = False
+            if waiting:                                     # a limit entry is resting: check it again soon
+                sleep(quick)
+                _one_pass(acct, clock(), fetch, dry, send, sleep)
+                n += 1
+                continue
+            sleep(max(0.0, gap))
         try:
             now = clock()
             bars = fetch(now)
@@ -814,7 +887,7 @@ def watch(acct, until, dry, send=None, clock=None, fetch=None, sleep=time.sleep,
                 sleep(1)
                 now = clock()
                 bars = fetch(now)
-            events = run_pass(acct, now, bars, dry_run=dry)
+            events = run_pass(acct, now, bars, dry_run=dry, sleep=sleep)
             if events:
                 text = events_text(now, events)
                 if send and not dry:
