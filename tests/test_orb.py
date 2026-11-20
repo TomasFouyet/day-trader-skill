@@ -19,6 +19,7 @@ validate = load("trader-analyst", "orb_validate")
 optimize = load("trader-analyst", "orb_optimize")
 filters = load("trader-analyst", "orb_filters")
 entries = load("trader-analyst", "orb_entries")
+layers = load("trader-analyst", "orb_layers")
 
 UP = (2.0, 1.0, 999)       # (ema 50, ema 200, completed 15m bars): trend up
 DOWN = (1.0, 2.0, 999)
@@ -435,6 +436,41 @@ class Validate(unittest.TestCase):
         doc = json.loads(out.getvalue().split("@@ORBENTRIES@@ ", 1)[1].splitlines()[0])
         self.assertEqual(len(doc["rows"]), len(entries.VARIANTS))
         self.assertIn("Pullback hasta el borde", out.getvalue())
+
+    def test_layers_reproduce_the_engine_and_add_reversals_and_reloads(self):
+        # a random walk over many days: with both off, the same trades and R as orb.run
+        rnd = random.Random(2)
+        bars, px, d = [], 400.0, datetime.date(2024, 1, 2)
+        while len(bars) < 20000:
+            if d.weekday() < 5:
+                t = datetime.datetime.combine(d, datetime.time(4, 0))
+                while t.time() < datetime.time(20, 0):
+                    o = px
+                    px *= 1 + rnd.gauss(0, 0.0013)
+                    bars.append({"t": t, "o": o, "h": max(o, px) * 1.0003, "l": min(o, px) * 0.9997, "c": px, "v": 1})
+                    t += datetime.timedelta(minutes=5)
+            d += datetime.timedelta(days=1)
+        ema = orb.ema_15m(bars)
+        p = layers.optimize.params(layers.BASE)
+        p["last_entry"] = "12:55"
+        engine = sorted((t["day"], round(validate.net_r(t["R"], t["risk_pct"], 0.01), 9)) for t in orb.run(bars, p, ema))
+        sim = sorted((day, round(r, 9)) for day, r, _ in layers.simulate_symbol(bars, ema, p, False, False, 0.01))
+        self.assertEqual(engine, sim)
+        kinds = {k for _, _, k in layers.simulate_symbol(bars, ema, p, True, True, 0.01)}
+        self.assertTrue({"reversal", "recarga"} & kinds)
+
+    def test_reload_moves_the_whole_stop_to_breakeven(self):
+        a = layers.Leg(-1, 700.0, 710.0, 10 ** 9, "d1", "nueva", 1.7, 0.7)      # a short from 700, risk 10
+        a.took, a.first, a.stop = True, 1.7, 700.0                                # 70% taken, rest at breakeven
+        b = layers.Leg(-1, 650.0, 655.0, 10 ** 9, "d2", "recarga", 1.7, 0.7)    # today's short at 650, risk 5
+        w = a.shares() + b.shares()
+        be = (a.shares() * a.entry + b.shares() * b.entry) / w
+        self.assertAlmostEqual(be, (0.03 * 700 + 0.2 * 650) / 0.23)
+        self.assertGreater(be, 655)                     # the position's breakeven (656.52) is past today's box edge
+        b.stop = b.more_protective(be)
+        a.stop = a.more_protective(be)
+        self.assertEqual(b.stop, 655.0)                                            # the box edge was closer still
+        self.assertAlmostEqual(a.stop, be)                                         # the old rest now locks profit
 
     def test_block_bootstrap(self):
         import random
