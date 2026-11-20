@@ -390,3 +390,20 @@ class PublicLog(unittest.TestCase):
     def test_only_symbols_reach_the_ci_log(self):
         line = orb.log_line([("QQQ", "corto 30 a mercado (cierre 667.56)"), ("SPY", "parcial cobrado +$325")])
         self.assertEqual(line, "2 aviso(s) enviados a Telegram: QQQ, SPY")
+
+
+class ClosedMessage(CloseReport):
+    def test_the_rest_stopped_at_breakeven_is_announced(self):
+        self.fill_day()
+        self.fake.orders["r"].update(status="filled", filled_avg_price="667.56", filled_qty="9",
+                                     filled_at="2026-11-20T15:40:00Z")
+        self.fake.positions.pop("QQQ")
+        state = {"open": {"QQQ": True}}                       # open on the last pass, gone now
+        events = orb.run_pass(self.acct, utc(datetime.date(2026, 11, 20), "10:41"), {"QQQ": []}, state=state,
+                              sleep=lambda s: None)
+        (sym, text), = [e for e in events if "cerrada" in e[1]]
+        for must in ("70% a 1,7R +1.19R", "breakeven (30%) +0.00R", "total +1.19R", "+$273"):
+            self.assertIn(must, text)
+        again = orb.run_pass(self.acct, utc(datetime.date(2026, 11, 20), "10:46"), {"QQQ": []}, state=state,
+                             sleep=lambda s: None)
+        self.assertFalse([e for e in again if "cerrada" in e[1]])   # said once

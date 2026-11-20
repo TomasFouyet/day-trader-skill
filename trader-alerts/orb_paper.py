@@ -432,7 +432,10 @@ def run_pass(acct, now_utc, bars_by_sym, dry_run=False, state=None, sleep=time.s
     if not ok:
         return [("-", "mercado cerrado (%s)" % why)]
     positions = acct.positions()
+    gone = [sym for sym in symbols() if (state.get("open") or {}).get(sym) and sym not in positions]
     track_open(state, positions, now_et)
+    for sym in gone:
+        closed_event(acct, sym, now_et, events, state)
     for sym, pos in positions.items():
         if sym in symbols():
             manage(acct, sym, pos, now_et, events, dry_run, state, bars_by_sym.get(sym) or [])
@@ -444,6 +447,32 @@ def run_pass(acct, now_utc, bars_by_sym, dry_run=False, state=None, sleep=time.s
     if not dry_run:
         paper.write_json(STATE, state)
     return events
+
+
+def closed_event(acct, sym, now_et, events, state):
+    """A box trade that was open on the last pass and is gone now: say how it ended (the rest at breakeven,
+    a stop, the day-20 close) with its R and dollars, once."""
+    try:
+        trades = trades_from_orders(acct.orders("closed", sym, 100))
+    except paper.PaperError:
+        trades = []
+    done = [t for t in trades if t["symbol"] == sym and not t["open"]]
+    if not done:
+        once(state, now_et.date(), "closed-" + sym, events, (sym, "posicion cerrada"))
+        return
+    t = max(done, key=lambda x: (x["day"], x["entry_time"] or ""))
+    risk = abs(t["entry"] - t["stop"]) if t.get("entry") and t.get("stop") else None
+    parts = []
+    for x in sorted(t.get("exits") or [], key=lambda x: x.get("time") or ""):
+        part = (x.get("qty") or 0) / t["qty"] if t.get("qty") else 0
+        r = (x["price"] - t["entry"]) * t["dir"] / risk * part if risk and x.get("price") is not None else None
+        if r is not None and abs(r) < 0.005:
+            r = 0.0                                            # breakeven: no "-0.00R"
+        parts.append("%s %s" % (EXIT_ES.get(x.get("kind"), "salida"), ("%+.2fR" % r) if r is not None else ""))
+    text = "operacion %s del %s cerrada: %s \u00b7 total %s (%s)" % (
+        t["side"], t["day"], ", ".join(parts) or "salida",
+        ("%+.2fR" % t["realized_R"]) if t.get("realized_R") is not None else "-", _usd(t.get("realized_pnl") or 0))
+    once(state, now_et.date(), "closed-" + t["id"], events, (sym, text))
 
 
 def prune(state, now_et):
