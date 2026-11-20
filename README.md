@@ -1034,6 +1034,11 @@ al cierre de la vela +0,116R; límite al cierre + 0,15R esperando hasta las
 +0,032R; pullback hasta el borde −0,012R; stop en el medio de la caja +0,085R
 (más R total, peor Sharpe); reversal el mismo día tras un stop +0,129R (los
 giros dan ~0R). Las rupturas que vuelven hacia la caja son las débiles.
+Lo que se puede ejecutar de verdad (entrar segundos después, al abrir la vela
+siguiente) da +0,093R: a mercado, con tope de 0,10 a 0,25R sin espera, o con
+la orden esperando hasta las 13:00, todas igual (el tope casi nunca actúa).
+Los 0,023R de diferencia con el backtest son el salto entre el cierre de la
+vela y el precio siguiente, sobre todo en QQQ: es el resultado esperable real.
 
 **Con una operación de días anteriores abierta** (`trader-analyst/orb_layers.py`,
 estudio `capas-caja`, simulado vela a vela con todas las capas):
