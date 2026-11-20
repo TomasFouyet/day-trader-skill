@@ -18,6 +18,7 @@ study = load("trader-analyst", "orb_study")
 validate = load("trader-analyst", "orb_validate")
 optimize = load("trader-analyst", "orb_optimize")
 filters = load("trader-analyst", "orb_filters")
+entries = load("trader-analyst", "orb_entries")
 
 UP = (2.0, 1.0, 999)       # (ema 50, ema 200, completed 15m bars): trend up
 DOWN = (1.0, 2.0, 999)
@@ -70,6 +71,22 @@ class Trades(unittest.TestCase):
         t, = self.run_with({"11:00": (100, 102.5, 100, 102), "12:00": (102, 111.5, 102, 111)})
         self.assertEqual((t["dir"], t["entry"], t["stop"], t["outcome"], t["R"]), (1, 102, 99, "target", 3.0))
         self.assertEqual(t["entry_time"], "2026-11-17 11:00")
+
+    def test_pullback_entry_half_way_back(self):
+        # breakout close 102 above the box (99-101): the limit waits half way back to the edge, 101.5
+        moves = {"11:00": (100, 102.5, 100, 102), "11:05": (102, 102, 101.4, 101.6)}
+        t, = self.run_with(moves, entry="pullback", pull_frac=0.5)
+        self.assertEqual((t["entry"], t["stop"], t["entry_time"]), (101.5, 99, "2026-11-17 11:05"))
+        t, = self.run_with(moves, entry="pullback", pull_frac=0.5, stop_mode="mid")
+        self.assertEqual((t["entry"], t["stop"]), (101.5, 100.0))          # the middle of the box: a cheaper R
+
+    def test_reversal_after_a_failed_breakout(self):
+        # long at 102, stopped at the box low 99 by a bar that closes at 98.8 below the box: short from there
+        moves = {"11:00": (100, 102.5, 100, 102), "11:30": (102, 102, 98.5, 98.8)}
+        a, b = self.run_with(moves, reverse=True, filter="none")
+        self.assertEqual((a["dir"], a["outcome"], a["R"]), (1, "stop", -1.0))
+        self.assertEqual((b["dir"], b["entry"], b["stop"], b.get("reversal")), (-1, 98.8, 101, True))
+        self.assertEqual(len(self.run_with(moves, filter="none")), 1)      # off by default
 
     def test_entry_filter_skip_or_wait(self):
         moves = {"11:00": (100, 102.5, 100, 102), "11:30": (102, 103.5, 102, 103), "12:00": (103, 111.5, 103, 111)}
@@ -407,6 +424,17 @@ class Validate(unittest.TestCase):
         fx2 = filters.symbol_features(b2)
         self.assertEqual((fx["rv_bar"][last], fx["vwap"][last], fx["avg_rng"][last]),
                          (fx2["rv_bar"][last], fx2["vwap"][last], fx2["avg_rng"][last]))
+
+    def test_entries_study_report(self):
+        tmp = tempfile.mkdtemp()
+        write_test_chart(tmp)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = entries.main(["--offline", tmp, "--symbols", "TEST"])
+        self.assertEqual(code, 0, err.getvalue())
+        doc = json.loads(out.getvalue().split("@@ORBENTRIES@@ ", 1)[1].splitlines()[0])
+        self.assertEqual(len(doc["rows"]), len(entries.VARIANTS))
+        self.assertIn("Pullback hasta el borde", out.getvalue())
 
     def test_block_bootstrap(self):
         import random

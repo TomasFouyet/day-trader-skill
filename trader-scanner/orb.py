@@ -40,6 +40,10 @@ DEFAULTS = {
     "partial_frac": 0.7,
     "accept": None,      # optional entry filter: accept(i, direction, box_high, box_low, day) -> bool
     "accept_mode": "skip",   # skip: a rejected breakout ends the day | wait: a later, stronger breakout may still enter
+    "pull_frac": 0.5,    # entry "pullback": a limit back toward the box, this share of the way from the close to the edge
+    "stop_mode": "box",  # box: the other edge of the box | mid: the middle of the box (closer: a cheaper R)
+    "reverse": False,    # after a stop, a close past the other edge of the box (until last_entry) trades that way
+    "cap_r": 0.15,       # entry "cap" (the live bot's): a limit at the close plus this many R, filled when price is inside
 }
 
 
@@ -251,6 +255,49 @@ def retest_fill(bars, i, k, level, stop, sess, last_entry):
     return None
 
 
+def _take(bars, p, i, k, hi, lo, d, sess, days, pos, flat, last_entry, mode, avg_rng, first_dir, f, s):
+    """One trade from the signal bar i in direction k. -> (trade dict, bars held) or None (a limit not filled)."""
+    edge = hi if k > 0 else lo
+    stop = (lo if k > 0 else hi) if p["stop_mode"] == "box" else (hi + lo) / 2.0
+    end = end_index(bars, days, pos[d], sess[-1], p["hold_days"], flat)
+    if mode in ("retest", "pullback", "cap"):
+        c = bars[i]["c"]
+        if mode == "retest":
+            level = edge
+        elif mode == "pullback":
+            level = c + p["pull_frac"] * (edge - c)
+        else:
+            level = c + k * p["cap_r"] * abs(c - stop)
+        got = retest_fill(bars, i, k, level, stop, sess, last_entry)
+        if got is None:
+            return None
+        i, entry = got
+        b = bars[i]
+        if (k > 0 and b["l"] <= stop) or (k < 0 and b["h"] >= stop):
+            r, outcome, held = -1.0, "stop", 0
+        else:
+            r, outcome, held = simulate(bars, i, k, entry, stop, p["target_r"], end, p["partial_r"], p["partial_frac"])
+    else:
+        entry = bars[i]["c"]
+        if (entry - stop) * k <= 0:
+            return None
+        r, outcome, held = simulate(bars, i, k, entry, stop, p["target_r"], end, p["partial_r"], p["partial_frac"])
+    t = bars[i]["t"]
+    box_h = hi - lo
+    return {
+        "_i": i, "day": d.isoformat(), "entry_time": t.strftime("%Y-%m-%d %H:%M"), "dir": k, "entry": entry,
+        "exit_time": bars[i + held]["t"].strftime("%Y-%m-%d %H:%M"),
+        "stop": stop, "R": r, "outcome": outcome, "bars": held,
+        "risk_pct": abs(entry - stop) / entry * 100, "box_pct": box_h / entry * 100,
+        "features": {
+            "hour": t.hour + t.minute / 60.0, "dow": t.weekday(),
+            "ext_box": (entry - hi if k > 0 else lo - entry) / box_h if box_h else 0.0,
+            "box_vs_range": box_h / avg_rng[d] if avg_rng.get(d) else None,
+            "first_against": first_dir == -k,
+            "ema_gap_pct": abs(f - s) / entry * 100 if f is not None and s is not None else None,
+        }}, held
+
+
 def run(bars, p=None, ema=None):
     """All trades of the rules on these bars. -> list of trade dicts (R before costs)."""
     p = dict(DEFAULTS, **(p or {}))
@@ -292,37 +339,33 @@ def run(bars, p=None, ema=None):
         if pick is None:
             continue
         i, k, trend, f, s = pick
-        stop = lo if k > 0 else hi
-        end = end_index(bars, days, pos[d], sess[-1], p["hold_days"], flat)
-        if p["entry"] == "retest":
-            got = retest_fill(bars, i, k, hi if k > 0 else lo, stop, sess, last_entry)
-            if got is None:
-                continue
-            i, entry = got
-            b = bars[i]
-            if (k > 0 and b["l"] <= stop) or (k < 0 and b["h"] >= stop):
-                r, outcome, held = -1.0, "stop", 0
-            else:
-                r, outcome, held = simulate(bars, i, k, entry, stop, p["target_r"], end, p["partial_r"], p["partial_frac"])
-        else:
-            entry = bars[i]["c"]
-            r, outcome, held = simulate(bars, i, k, entry, stop, p["target_r"], end, p["partial_r"], p["partial_frac"])
+        got = _take(bars, p, i, k, hi, lo, d, sess, days, pos, flat, last_entry, p["entry"], avg_rng, first_dir, f, s)
+        if got is None:
+            continue
+        t, held = got
+        trades.append(t)
+        end_i = t["_i"] + held
         if not p["overlap"]:
-            busy = i + held
-        t = bars[i]["t"]
-        box_h = hi - lo
-        trades.append({
-            "day": d.isoformat(), "entry_time": t.strftime("%Y-%m-%d %H:%M"), "dir": k, "entry": entry,
-            "exit_time": bars[i + held]["t"].strftime("%Y-%m-%d %H:%M"),
-            "stop": stop, "R": r, "outcome": outcome, "bars": held,
-            "risk_pct": abs(entry - stop) / entry * 100, "box_pct": box_h / entry * 100,
-            "features": {
-                "hour": t.hour + t.minute / 60.0, "dow": t.weekday(),
-                "ext_box": (entry - hi if k > 0 else lo - entry) / box_h if box_h else 0.0,
-                "box_vs_range": box_h / avg_rng[d] if avg_rng.get(d) else None,
-                "first_against": first_dir == -k,
-                "ema_gap_pct": abs(f - s) / entry * 100 if f is not None and s is not None else None,
-            }})
+            busy = end_i
+        if p["reverse"] and t["outcome"] == "stop":
+            # the breakout failed: a close past the other edge of the box, still in the entry window, goes that way
+            for m in sess:
+                if m < end_i:
+                    continue
+                if bars[m]["t"].time() > last_entry:
+                    break
+                c2 = bars[m]["c"]
+                if (k > 0 and c2 < lo) or (k < 0 and c2 > hi):
+                    got2 = _take(bars, p, m, -k, hi, lo, d, sess, days, pos, flat, last_entry, "close", avg_rng, first_dir, f, s)
+                    if got2 is not None:
+                        t2, held2 = got2
+                        t2["reversal"] = True
+                        trades.append(t2)
+                        if not p["overlap"]:
+                            busy = t2["_i"] + held2
+                    break
+    for t in trades:
+        t.pop("_i", None)
     return trades
 
 
