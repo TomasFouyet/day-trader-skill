@@ -482,3 +482,65 @@ class WatcherWithARestingLimit(Base):
         orb.watch(self.acct, "10:12", False, None, clock=lambda: clock["t"], fetch=fetch, sleep=sleep)
         self.assertGreaterEqual(slept.count(10), 20)                # checked every 10 s from 10:05 to 10:10
         self.assertTrue(all(x <= 10 for x in slept))                # never a 5 minute wait while it rests
+
+
+class HandAdjust(Base):
+    """Close part of the open box trades and pull every stop to just past today's high (shorts)."""
+    T = datetime.date(2026, 11, 20)
+
+    def setUp(self):
+        Base.setUp(self)
+        os.environ["ORB_SYMBOLS"] = "QQQ,IWM"
+        day = "20261119"
+        self.fake.orders.update({
+            # QQQ: short of 30, the 70% taken, the rest (9) at breakeven 667.56
+            "qe": {"id": "qe", "n": 1, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-in" % day, "status": "filled",
+                   "side": "sell", "type": "limit", "filled_avg_price": "667.56", "filled_qty": "30", "qty": "30"},
+            "qt": {"id": "qt", "n": 2, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-tp" % day, "status": "filled",
+                   "side": "buy", "type": "limit", "filled_qty": "21", "filled_avg_price": "654.57"},
+            "qr": {"id": "qr", "n": 3, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-run-be" % day, "status": "new",
+                   "side": "buy", "type": "stop", "stop_price": "667.56", "qty": "9"},
+            # IWM: short of 30, the 70% still waiting (OCO), the rest's stop at the box edge
+            "ie": {"id": "ie", "n": 4, "symbol": "IWM", "client_order_id": "orb-IWM-%s-in" % day, "status": "filled",
+                   "side": "sell", "type": "limit", "filled_avg_price": "268.90", "filled_qty": "30", "qty": "30"},
+            "it": {"id": "it", "n": 5, "symbol": "IWM", "client_order_id": "orb-IWM-%s-tp" % day, "status": "new",
+                   "side": "buy", "type": "limit", "limit_price": "264.00", "qty": "21", "order_class": "oco",
+                   "legs": [{"id": "itsl", "symbol": "IWM", "status": "held", "type": "stop", "stop_price": "271.79",
+                             "side": "buy", "qty": "21"}]},
+            "itsl": {"id": "itsl", "n": 6, "symbol": "IWM", "client_order_id": "orb-IWM-%s-tp-leg" % day, "status": "held",
+                     "side": "buy", "type": "stop", "stop_price": "271.79", "qty": "21"},
+            "ir": {"id": "ir", "n": 7, "symbol": "IWM", "client_order_id": "orb-IWM-%s-run" % day, "status": "new",
+                   "side": "buy", "type": "stop", "stop_price": "271.79", "qty": "9"}})
+        self.fake.positions.update({"QQQ": {"symbol": "QQQ", "qty": "-9", "side": "short"},
+                                    "IWM": {"symbol": "IWM", "qty": "-30", "side": "short"}})
+        hi = {"QQQ": 660.00, "IWM": 266.00}
+        self.bars = {s_: [{"t": datetime.datetime.combine(self.T, datetime.time(9, 30)), "o": h - 1, "h": h, "l": h - 2,
+                           "c": h - 1}] for s_, h in hi.items()}
+
+    def test_parts_and_stops(self):
+        done = dict(orb.adjust(self.acct, utc(self.T, "10:50"), self.bars, {"IWM": 30, "QQQ": 15}, 0.10,
+                               sleep=lambda s: None))
+        posts = self.fake.posts()
+        closes = {b["symbol"]: b for b in posts if b["client_order_id"].startswith("orb-") and "-man-" in b["client_order_id"]}
+        self.assertEqual((closes["QQQ"]["qty"], closes["QQQ"]["side"]), ("4", "buy"))     # 15% of 30, from the rest
+        self.assertEqual((closes["IWM"]["qty"], closes["IWM"]["side"]), ("9", "buy"))     # 30% of 30: the whole rest
+        patches = {path.split("/")[-1]: body for m, path, body in self.fake.calls if m == "PATCH"}
+        self.assertEqual((patches["qr"]["qty"], patches["qr"]["stop_price"]), ("5", "660.66"))   # 660 + 0.10%, closer
+        self.assertEqual(patches["itsl"]["stop_price"], "266.27")                               # the 70%'s stop leg
+        self.assertEqual(self.fake.orders["ir"]["status"], "canceled")                         # the rest closed instead
+        self.assertIn("667.56 -> 660.66", done["QQQ"])
+
+    def test_a_stop_is_never_pulled_further(self):
+        self.bars["QQQ"][0]["h"] = 670.0                     # today's high above the breakeven stop: leave it
+        done = dict(orb.adjust(self.acct, utc(self.T, "10:50"), self.bars, {}, 0.10, sleep=lambda s: None))
+        self.assertIn("no acerca el stop", done["QQQ"])
+        self.assertFalse([1 for m, path, b in self.fake.calls if m == "PATCH" and path.endswith("/qr")])
+
+    def test_the_bot_keeps_a_hand_stop_and_a_hand_close_is_not_the_partial(self):
+        self.fake.orders["qr"].update(stop_price="660.66", qty="5", client_order_id="orb-QQQ-20261119-run-m1050")
+        self.fake.positions["QQQ"]["qty"] = "-5"
+        self.fake.positions["IWM"]["qty"] = "-21"            # 9 closed by hand; the OCO still open
+        self.fake.orders["ir"]["status"] = "canceled"
+        events = self.run_at("11:00", {}, day=self.T)
+        self.assertFalse([1 for m, p_, b in self.fake.calls if m == "PATCH"])                 # nothing pulled back
+        self.assertFalse([b for b in self.fake.posts() if "run-be2" in b["client_order_id"]])  # no new runner stop

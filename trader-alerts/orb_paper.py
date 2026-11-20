@@ -304,11 +304,14 @@ def manage(acct, sym, pos, now_et, events, dry_run, state, bars):
         bought = abs(float(entry.get("filled_qty") or 0))
     except (TypeError, ValueError):
         bought = 0.0
-    partial_done = (tp is not None and _filled(tp)) or (bought > 0 and held < bought)
+    tp_open = tp is not None and tp.get("status") in ("new", "accepted", "held", "pending_new", "partially_filled",
+                                                      "pending_replace", "replaced")
+    partial_done = (tp is not None and _filled(tp)) or (bought > 0 and held < bought and not tp_open)
     runner = [o for o in open_orders if (o.get("client_order_id") or "").startswith(cid(sym, day, "run"))]
     if partial_done:
         for o in runner:
-            if abs(float(o.get("stop_price") or 0) - fill) > 0.005:
+            cur = float(o.get("stop_price") or 0)
+            if (fill - cur) * direction > 0.005:          # only closer to the price, never back
                 events.append((sym, "parcial cobrado: stop del resto a la entrada %.2f" % fill))
                 if not dry_run:
                     acct.replace(o["id"], {"stop_price": "%.2f" % fill, "client_order_id": cid(sym, day, "run-be")})
@@ -544,7 +547,7 @@ def closed_event(acct, sym, now_et, events, state):
         r = (x["price"] - t["entry"]) * t["dir"] / risk * part if risk and x.get("price") is not None else None
         if r is not None and abs(r) < 0.005:
             r = 0.0                                            # breakeven: no "-0.00R"
-        parts.append("%s %s" % (EXIT_ES.get(x.get("kind"), "salida"), ("%+.2fR" % r) if r is not None else ""))
+        parts.append("%s %s" % (exit_name(x.get("kind")), ("%+.2fR" % r) if r is not None else ""))
     text = "operacion %s del %s cerrada: %s \u00b7 total %s (%s)" % (
         t["side"], t["day"], ", ".join(parts) or "salida",
         ("%+.2fR" % t["realized_R"]) if t.get("realized_R") is not None else "-", _usd(t.get("realized_pnl") or 0))
@@ -734,6 +737,15 @@ EXIT_ES = {"tp": "\u2705 70% a 1,7R", "tp-leg": "\u274c stop (70%)", "run": "\u2
            "run-be": "\u2796 breakeven (30%)", "run-be2": "\u2796 breakeven (30%)"}
 
 
+def exit_name(kind):
+    kind = kind or ""
+    if kind.startswith("man"):
+        return "\u270b cierre manual"
+    if kind.startswith("run-m"):
+        return "\U0001F6D1 stop movido a mano"
+    return EXIT_ES.get(kind, "salida")
+
+
 def _usd(v):
     return ("+" if v >= 0 else "-") + "$" + "{:,.0f}".format(abs(v))
 
@@ -773,7 +785,7 @@ def report_text(acct, now_utc):
             banked_R += r or 0
             banked_usd += usd
             outs.append("\u2022 %s \u00b7 %s \u00b7 %s \u00b7 %s" % (
-                t["symbol"], EXIT_ES.get(x.get("kind"), "salida"), ("%+.2fR" % r) if r is not None else "-", _usd(usd)))
+                t["symbol"], exit_name(x.get("kind")), ("%+.2fR" % r) if r is not None else "-", _usd(usd)))
     if outs:
         lines += ["", "<b>Salidas de hoy (%d)</b>" % len(outs)] + outs
     live = [t for t in trades if t["open"] and t["symbol"] in positions]
@@ -824,6 +836,92 @@ def close_report_once(acct, now_utc, send):
     said.append("close-report")
     paper.write_json(STATE, state)
     return True
+
+def adjust(acct, now_utc, bars_by_sym, plan, above_pct, dry_run=False, sleep=time.sleep):
+    """A hand adjustment of the open box trades: close part of each at the market (plan: {symbol: % of the shares
+    it entered with}, taken from the rest, never from the 70% order's shares) and move every stop to a little past
+    today's extreme (the high for a short, the low for a long, plus above_pct %), only where that is closer than
+    the stop it has. -> [(symbol, what was done)]."""
+    now_et = scan.to_eastern(now_utc)
+    today, tag = now_et.date(), now_et.strftime("%H%M")
+    positions = acct.positions()
+    out = []
+    for sym in symbols():
+        pos = positions.get(sym)
+        if not pos:
+            continue
+        entry = entry_of(acct, sym)
+        if entry is None:
+            out.append((sym, "posicion que no es de la caja: no se toca"))
+            continue
+        tday = datetime.datetime.strptime(entry["client_order_id"].split("-")[2], "%Y%m%d").date()
+        d = 1 if entry.get("side") == "buy" else -1
+        held = int(abs(float(pos.get("qty") or 0)))
+        bought = int(_got(entry)) or held
+        mine = [o for o in acct.orders("open", sym, 100) if (o.get("client_order_id") or "").startswith(cid(sym, tday, ""))]
+        runner = next((o for o in mine if (o.get("client_order_id") or "").startswith(cid(sym, tday, "run"))), None)
+        oco = next((o for o in mine if (o.get("client_order_id") or "") == cid(sym, tday, "tp")), None)
+        todays = [b for b in bars_by_sym.get(sym) or [] if b["t"].date() == today and b["t"].time() >= datetime.time(9, 30)]
+        new_stop = None
+        if todays:
+            if d < 0:
+                new_stop = math.ceil(max(b["h"] for b in todays) * (1 + above_pct / 100.0) * 100) / 100.0
+            else:
+                new_stop = math.floor(min(b["l"] for b in todays) * (1 - above_pct / 100.0) * 100) / 100.0
+
+        def closer(cur):
+            return new_stop is not None and cur and (new_stop - cur) * d > 0.004
+        want = int(round(bought * plan.get(sym, 0) / 100.0))
+        free = int(float(runner.get("qty") or 0)) if runner else 0
+        n_close = min(want, free) if oco is not None else min(want, max(0, held - 1))
+        msgs = []
+        try:
+            if runner is not None:
+                cur = float(runner.get("stop_price") or 0)
+                keep = free - n_close
+                stop_px = new_stop if closer(cur) else cur
+                if keep <= 0:
+                    if not dry_run:
+                        acct.cancel(runner["id"])
+                elif keep != free or stop_px != cur:
+                    if not dry_run:
+                        acct.replace(runner["id"], {"qty": str(keep), "stop_price": "%.2f" % stop_px,
+                                                    "client_order_id": cid(sym, tday, "run-m" + tag)})
+                if keep > 0 and stop_px != cur:
+                    msgs.append("stop del resto %.2f -> %.2f" % (cur, stop_px))
+                if not dry_run and n_close:
+                    sleep(1.0)                            # let Alpaca free the shares the stop held
+            if n_close > 0:
+                if not dry_run:
+                    acct.submit({"symbol": sym, "qty": str(n_close), "side": "buy" if d < 0 else "sell", "type": "market",
+                                 "time_in_force": "day", "client_order_id": cid(sym, tday, "man-" + tag)})
+                msgs.append("cerradas %d acciones (%.0f%% de la entrada) a mercado" % (n_close, 100.0 * n_close / bought))
+            elif plan.get(sym):
+                msgs.append("no hay acciones libres para cerrar el %s%%" % plan[sym])
+            if oco is not None:
+                leg = next((x for x in oco.get("legs") or [] if x.get("type") == "stop"), None)
+                if leg is not None and closer(float(leg.get("stop_price") or 0)):
+                    if not dry_run:
+                        acct.replace(leg["id"], {"stop_price": "%.2f" % new_stop})
+                    msgs.append("stop del 70%% %.2f -> %.2f" % (float(leg["stop_price"]), new_stop))
+        except paper.PaperError as e:
+            msgs.append("Alpaca rechazo un paso: %s" % e)
+        if new_stop is not None and not any("stop del" in m for m in msgs):
+            msgs.append("el %s de hoy %s %.2f%% (%.2f) no acerca el stop: se deja" % (
+                "maximo" if d < 0 else "minimo", "+" if d < 0 else "-", above_pct, new_stop))
+        out.append((sym, "; ".join(msgs) or "sin cambios"))
+    return out
+
+
+def parse_plan(text):
+    """'IWM=30,QQQ=15' -> {'IWM': 30.0, 'QQQ': 15.0}."""
+    plan = {}
+    for part in (text or "").split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            plan[k.strip().upper()] = float(v)
+    return plan
+
 
 def _bar_ready(bars_by_sym, now_et):
     """Alpaca already has the 5 minute bar that just closed, for every symbol with bars today."""
@@ -917,7 +1015,10 @@ def telegram(text):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="The 09:00 box breakout on Alpaca PAPER.")
-    ap.add_argument("cmd", choices=("status", "run", "report", "audit"))
+    ap.add_argument("cmd", choices=("status", "run", "report", "audit", "adjust"))
+    ap.add_argument("--plan", default="", help="adjust: the part to close of each trade, e.g. IWM=30,QQQ=15")
+    ap.add_argument("--stop-above", type=float, default=0.10,
+                    help="adjust: stops to today's high (shorts) or low (longs) plus this %% (only where closer)")
     ap.add_argument("--dry-run", action="store_true", help="say what it would do, place nothing")
     ap.add_argument("--telegram", action="store_true", help="send the events (run) or the report to Telegram")
     ap.add_argument("--now", help="New York time for tests, e.g. '2026-11-18 10:06'")
@@ -942,6 +1043,17 @@ def main(argv=None):
         bars = fetch_bars(now_utc)
         if a.cmd == "audit":
             print(audit_text(audit_rows(acct, now_utc, bars)))
+            return 0
+        if a.cmd == "adjust":
+            dry = a.dry_run or not paper.paper_on()
+            done = adjust(acct, now_utc, bars, parse_plan(a.plan), a.stop_above, dry_run=dry)
+            text = events_text(now_utc, [(s_, ("(prueba, sin ordenes) " if dry else "") + t_) for s_, t_ in done]) if done \
+                else "Sin operaciones de la caja abiertas."
+            if a.telegram and done:
+                telegram("\u270b <b>Ajuste a mano</b>\n" + text)
+                print(log_line(done))
+            else:
+                print(text)
             return 0
         if a.cmd == "status":
             print(status_text(acct, now_utc, bars))

@@ -137,7 +137,7 @@ function renderPrivate(p) {
   p.trades.forEach((t) => (t.exits || []).forEach((x) => {
     const risk = t.stop && t.entry ? Math.abs(t.entry - t.stop) : null, part = t.qty ? x.qty / t.qty : null;
     const pnl = x.price != null ? (x.price - t.entry) * t.dir * x.qty : null;
-    exits.push({ time: x.time || "", sym: t.symbol, side: t.side, kind: KIND[x.kind] || (x.kind === "close" ? "cierre" : x.kind || "salida"),
+    exits.push({ time: x.time || "", sym: t.symbol, side: t.side, kind: KIND[x.kind] || (/^man/.test(x.kind || "") ? "cierre manual" : /^run-m/.test(x.kind || "") ? "stop movido a mano" : x.kind === "close" ? "cierre" : x.kind || "salida"),
       part, price: x.price, pnl, r: risk && part != null && x.price != null ? (x.price - t.entry) * t.dir / risk * part : null });
   }));
   exits.sort((a, b) => (a.time < b.time ? 1 : -1));
