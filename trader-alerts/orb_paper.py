@@ -1025,7 +1025,14 @@ def book(acct, prices=None):
                 stops.append((int(float(o.get("qty") or 0)), float(o["stop_price"])))
         last = prices.get(sym, (None, None))[0] or _f(pos.get("current_price"))
         r = (lambda x: (x - px) * d / risk) if risk else (lambda x: None)
-        out.append({"symbol": sym, "dir": d, "day": tday, "entry": px, "stop0": stop0, "held": held,
+        kinds = []
+        for o in acct.orders("open", sym, 100):
+            k = (o.get("client_order_id") or "?")
+            k = k.split("-", 3)[-1] if k.startswith("orb-") else "otra"
+            kinds.append("%s %s%s %s%s" % (k, o.get("type"), "/" + o["order_class"] if o.get("order_class") else "", o.get("status"),
+                                           " [" + ",".join("%s %s" % (x.get("type"), x.get("status")) for x in o.get("legs") or []) + "]"
+                                           if o.get("legs") else ""))
+        out.append({"symbol": sym, "dir": d, "day": tday, "entry": px, "stop0": stop0, "held": held, "orders": kinds,
                     "partial_done": _filled(tp), "stops": stops, "covered": sum(q for q, _ in stops),
                     "locked_R": [r(sp) for _, sp in stops], "price": last, "price_R": r(last) if last else None,
                     "price_at": prices.get(sym, (None, None))[1]})
@@ -1056,6 +1063,7 @@ def book_text(rows, private=False):
         if r["price_R"] is not None:
             txt += "; precio en %+.2fR%s" % (r["price_R"], (" (%s NY)" % r["price_at"].strftime("%a %H:%M")) if r["price_at"] else "")
         txt += "; %s" % ("el stop asegura ganancia" if locks_profit(r) else "NO asegura ganancia")
+        txt += "; ordenes abiertas: %s" % (" | ".join(r.get("orders") or []) or "ninguna")
         if private:
             txt += "\n    entrada %.2f, stop inicial %s, stops %s, precio %s, %d acciones" % (
                 r["entry"], "%.2f" % r["stop0"] if r["stop0"] else "-", ", ".join("%.2f" % sp for _, sp in r["stops"]) or "-",
