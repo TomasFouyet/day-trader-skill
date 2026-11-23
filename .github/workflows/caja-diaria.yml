@@ -37,7 +37,7 @@ on:
         required: false
         default: ""
       posiciones:
-        description: "revisar = cuantos R asegura cada stop (no opera); si-no-asegura = cerrar a mercado las que no aseguran ganancia; todas; o QQQ,SPY. Antes de las 09:30 se ejecuta en la apertura"
+        description: "revisar = cuantos R asegura cada stop (no opera); reparar = poner las salidas que falten segun la regla; si-no-asegura = cerrar a mercado las que no aseguran ganancia; todas; o QQQ,SPY. Antes de las 09:30 se ejecuta en la apertura"
         required: false
         default: ""
 

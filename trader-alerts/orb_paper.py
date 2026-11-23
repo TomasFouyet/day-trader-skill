@@ -37,6 +37,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import sys
 import time
 
@@ -497,13 +498,21 @@ def run_pass(acct, now_utc, bars_by_sym, dry_run=False, state=None, sleep=time.s
         closed_event(acct, sym, now_et, events, state)
     for sym, pos in positions.items():
         if sym in symbols():
-            manage(acct, sym, pos, now_et, events, dry_run, state, bars_by_sym.get(sym) or [])
+            try:                                          # one index failing does not stop the others
+                manage(acct, sym, pos, now_et, events, dry_run, state, bars_by_sym.get(sym) or [])
+            except paper.PaperError as e:
+                once(state, now_et.date(), "err-manage-%s-%s" % (sym, str(e)[:40]), events,
+                     (sym, "\u26a0\ufe0f Alpaca rechazo una orden de salida: %s" % e))
     if now_et.time() >= ENTRY_CANCEL:
         cancel_resting_entries(acct, now_et, events, state, dry_run)
     if _hm(STRATEGY["box_end"]) <= now_et.time() < ENTRY_CANCEL:
         equity = acct.equity()
         for sym in symbols():
-            enter(acct, sym, now_et, bars_by_sym.get(sym) or [], positions, equity, events, state, dry_run, sleep)
+            try:
+                enter(acct, sym, now_et, bars_by_sym.get(sym) or [], positions, equity, events, state, dry_run, sleep)
+            except paper.PaperError as e:
+                once(state, now_et.date(), "err-enter-%s-%s" % (sym, str(e)[:40]), events,
+                     (sym, "\u26a0\ufe0f Alpaca rechazo una orden de la entrada: %s" % e))
     prune(state, now_et)
     if not dry_run:
         paper.write_json(STATE, state)
@@ -1244,17 +1253,34 @@ def main(argv=None):
             except (paper.PaperError, OSError, ValueError) as e:
                 print("Sin precios recientes (%s): se usa el de la posicion." % e, file=sys.stderr)
                 prices = {}
+            done = []
+            if a.cmd == "close" and a.which == "reparar":
+                state = paper.read_json(STATE, {}) or {}
+                bars = fetch_bars(now_utc)
+                events = []
+                for sym, pos in acct.positions().items():
+                    if sym not in symbols():
+                        continue
+                    try:
+                        manage(acct, sym, pos, now_et, events, a.dry_run or not paper.paper_on(), state, bars.get(sym) or [])
+                    except paper.PaperError as e:
+                        events.append((sym, "Alpaca rechazo la orden: %s" % e))
+                        print("%s: Alpaca rechazo la orden: %s" % (sym, re.sub(r"\d", "#", str(e))))
+                paper.write_json(STATE, state)
+                done = events
+                print(log_line(events) if events else "Nada que reparar.")
+                a.which = ""
+                time.sleep(2)
             rows = book(acct, prices)
             print(book_text(rows))
-            done = []
-            if a.cmd == "close":
+            if a.cmd == "close" and a.which:
                 dry = a.dry_run or not paper.paper_on()
                 done = close_trades(acct, now_utc, a.which, prices, dry_run=dry)
                 print("\n".join("%s: %s" % x for x in done) or "Nada que cerrar.")
             if a.telegram and rows:
                 text = "\U0001F6E1 <b>Stops de la caja</b>\n" + book_text(rows, private=True)
                 if done:
-                    text += "\n\n\u270b <b>Cierre</b>\n" + "\n".join("%s: %s" % x for x in done)
+                    text += "\n\n\u270b <b>Ordenes</b>\n" + "\n".join("%s: %s" % x for x in done)
                 telegram(text)
             return 0
         if not (datetime.time(9, 55) <= now_et.time() <= datetime.time(16, 10)) and a.cmd == "run" and not a.now:
