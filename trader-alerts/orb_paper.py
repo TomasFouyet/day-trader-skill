@@ -653,6 +653,46 @@ def audit_text(rows):
     return "\n".join(lines)
 
 
+def day_lines(acct, now_utc, bars_by_sym, state=None):
+    """Why each index did or did not enter today, without prices or sizes (the CI log is public)."""
+    state = state if state is not None else (paper.read_json(STATE, {}) or {})
+    now_et = scan.to_eastern(now_utc)
+    day = now_et.date()
+    positions = acct.positions()
+    lines = ["Hoy por indice (%s NY):" % now_et.strftime("%H:%M")]
+    for sym in symbols():
+        bars = bars_by_sym.get(sym) or []
+        parts = []
+        pos = positions.get(sym)
+        if pos:
+            e = entry_of(acct, sym)
+            parts.append("posicion abierta %s del %s" % ("larga" if float(pos.get("qty") or 0) > 0 else "corta",
+                                                         (e or {}).get("client_order_id", "orb-?-?").split("-")[2] if e else "?"))
+        closed = closed_today_at(acct, sym, day)
+        if closed:
+            parts.append("una operacion anterior se cerro hoy a las %s" % closed.strftime("%H:%M"))
+        box = box_of(bars, day)
+        if box is None:
+            parts.append("caja sin completar")
+        else:
+            since = _since(state, sym, day, acct)
+            sig = first_signal(bars, day, box, now_et, since)
+            if sig:
+                parts.append("primera senal %s a las %s%s" % ("larga" if sig[1] > 0 else "corta",
+                             (sig[0]["t"] + datetime.timedelta(minutes=5)).strftime("%H:%M"),
+                             " (despues del cierre de las %s)" % since.strftime("%H:%M") if since else ""))
+            else:
+                parts.append("sin cierre fuera de la caja%s" % (" despues de las %s" % since.strftime("%H:%M") if since else ""))
+        o = acct.get(cid(sym, day, "in"))
+        if o is not None:
+            got = _got(o)
+            parts.append("orden de entrada: %s%s" % (o.get("status"), " (llena en parte)" if 0 < got < float(o.get("qty") or 0) else ""))
+        else:
+            parts.append("sin orden de entrada hoy")
+        lines.append("  %s: %s" % (sym, "; ".join(parts)))
+    return "\n".join(lines)
+
+
 def status_text(acct, now_utc, bars_by_sym):
     now_et = scan.to_eastern(now_utc)
     day = now_et.date()
@@ -1222,6 +1262,7 @@ def main(argv=None):
         bars = fetch_bars(now_utc)
         if a.cmd == "audit":
             print(audit_text(audit_rows(acct, now_utc, bars)))
+            print(day_lines(acct, now_utc, bars))
             return 0
         if a.cmd == "adjust":
             dry = a.dry_run or not paper.paper_on()

@@ -607,3 +607,13 @@ class StopsAndClose(HandAdjust):
         done = dict(orb.close_trades(self.acct, utc(self.T, "09:20"), "si-no-asegura", {}, sleep=lambda s: None))
         self.assertIn("pendiente", done["IWM"])
         self.assertEqual(len([b for b in self.fake.posts() if "man-close" in b["client_order_id"] and b["symbol"] == "IWM"]), 1)
+
+
+class DayLines(Base):
+    def test_says_why_without_prices(self):
+        self.run_at("10:16", {"10:10": (100, 102.5, 100, 102)})
+        b = bars(DAY, dict(BOX, **{"10:10": (100, 102.5, 100, 102)}), until="10:30")
+        text = orb.day_lines(self.acct, utc(DAY, "10:31"), {"QQQ": b})
+        self.assertIn("primera senal larga a las 10:15", text)
+        self.assertIn("orden de entrada: filled", text)
+        self.assertNotIn("102", text.replace("10:", ""))
