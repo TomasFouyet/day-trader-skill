@@ -588,7 +588,7 @@ def audit_rows(acct, now_utc, bars_by_sym, day=None):
     out = []
     for sym in symbols():
         o = acct.get(cid(sym, day, "in"))
-        if not _filled(o):
+        if not (_filled(o) or _got(o) > 0):             # a limit entry that filled in part counts too
             continue
         bars = bars_by_sym.get(sym) or []
         box = box_of(bars, day)
@@ -596,7 +596,7 @@ def audit_rows(acct, now_utc, bars_by_sym, day=None):
         sig = first_signal(bars, day, box, end + datetime.timedelta(minutes=1)) if box else None
         fill = float(o.get("filled_avg_price") or 0)
         d = 1 if o.get("side") == "buy" else -1
-        row = {"symbol": sym, "dir": d}
+        row = {"symbol": sym, "dir": d, "part": _got(o) < float(o.get("qty") or 0)}
         if sig and box:
             close = sig[0]["c"]
             edge = box[1] if d > 0 else box[0]
@@ -646,7 +646,8 @@ def audit_text(rows):
                      "(%s R desde el cierre de la vela); stop en el borde de la caja: %s" % (
                          r["symbol"], "largo" if r["dir"] > 0 else "corto", r.get("bar", "-"), f("delay_s", "%d"),
                          f("slip_R", "%+.2f"), f("risk_ratio", "%.2f"), f("tp_R_from_fill", "%.2f"),
-                         f("tp_R_from_close", "%.2f"), {True: "si", False: "NO"}.get(r.get("stop_is_box_edge"), "-")))
+                         f("tp_R_from_close", "%.2f"), {True: "si", False: "NO"}.get(r.get("stop_is_box_edge"), "-"))
+                     + ("; la orden se lleno solo en parte (el resto se cancelo)" if r.get("part") else ""))
         if r.get("best_R_from_fill") is not None:
             lines.append("    desde la entrada llego hasta %+.2f R (velas IEX); toco el precio del 70%%: %s; orden del 70%%: %s" % (
                 r["best_R_from_fill"], {True: "si", False: "no"}.get(r.get("touched_tp"), "-"), r.get("tp_status", "-")))
