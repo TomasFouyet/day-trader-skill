@@ -150,8 +150,13 @@ class Safety(unittest.TestCase):
         for must in ("wss://stream.data.alpaca.markets/v2/iex", "wss://paper-api.alpaca.markets/stream",
                      "https://paper-api.alpaca.markets", "/^PK/", "alpaca-paper-keys"):
             self.assertIn(must, js)
-        for bad in ('method: "POST"', 'method: "DELETE"', 'method: "PATCH"', "https://api.alpaca.markets"):
-            self.assertNotIn(bad, js)                     # the page only reads, and never the live (real) account
+        for bad in ('method: "POST"', 'method: "PATCH"', "https://api.alpaca.markets"):
+            self.assertNotIn(bad, js)                     # never places orders, and never the live (real) account
+        # its one write: close a position (cancel its orders, DELETE the position), on PAPER only, after a confirm
+        self.assertEqual(js.count('method: "DELETE"'), 1)
+        self.assertIn('fetch(ALPACA.paper + path, { method: "DELETE"', js)
+        self.assertIn("window.confirm(", js)
+        self.assertIn('paperDelete("/v2/positions/"', js)
         hosts = set(re.findall(r"(?:https|wss)://([a-z0-9.-]+)", js))
         self.assertEqual(hosts, {"data.alpaca.markets", "stream.data.alpaca.markets", "paper-api.alpaca.markets"})
         html = self.read("site/index.html")

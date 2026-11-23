@@ -121,6 +121,9 @@ input, select { font: 0.95rem var(--sans); padding: 8px 10px; border: 1px solid 
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .btn.ghost { background: transparent; }
 .btn.small { padding: 4px 10px; font-size: 0.8rem; }
+.btn.danger { color: var(--short); border-color: var(--short); background: transparent; }
+.btn:disabled { opacity: 0.6; cursor: wait; }
+.acts { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 .msg { font-size: 0.86rem; min-height: 1.2em; }
 .lock { display: grid; gap: 10px; max-width: 760px; }
 .read { margin-top: 8px; font-size: 0.9rem; max-width: 75ch; }

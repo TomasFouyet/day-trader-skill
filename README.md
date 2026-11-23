@@ -802,6 +802,16 @@ Se rehace después de cada pasada del bot (cada 5 minutos). Para activarlo:
 `python3 trader-alerts/dashboard_data.py --out site/data` arma los datos (solo
 lectura: nunca coloca ni cambia órdenes). Nada de `site/data/` se commitea.
 
+**Cerrar a mano.** Con el enlace en vivo conectado (claves paper `PK...`),
+cada posición de la tarjeta de la cuenta tiene un botón **Cerrar**: pide
+confirmación, cancela sus órdenes abiertas (stop y objetivo) y cierra la
+posición entera a mercado en la cuenta paper (fuera de horario, la orden
+espera a la apertura). Es lo único que la página puede cambiar, y solo en
+`paper-api.alpaca.markets`. Lo mismo sin el navegador: Actions > "Caja diaria
+(paper)" > Run workflow, campo `posiciones`: `revisar` (cuántos R asegura el
+stop de cada operación; no opera), `si-no-asegura` (cierra solo las que no
+aseguran ganancia), `todas`, o `QQQ,SPY`.
+
 #### Cómo se llegó
 
 La primera versión: caja de 09:00 a 10:30, entrada al cierre fuera de la

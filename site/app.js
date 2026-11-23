@@ -342,7 +342,7 @@ function renderBacktest(bt) {
 const ALPACA = { data: "https://data.alpaca.markets", stream: "wss://stream.data.alpaca.markets/v2/iex",
   paper: "https://paper-api.alpaca.markets", trades: "wss://paper-api.alpaca.markets/stream" };
 const live = { on: false, keys: null, bars: {}, last: {}, ws: null, tws: null, timer: null, poll: null, dirty: false,
-  session: null, fills: [], stops: {}, retry: 0 };
+  session: null, fills: [], stops: {}, retry: 0, closing: new Set() };
 const wallDay = (w) => new Date(w * 1000).toISOString().slice(0, 10);
 const wallMin = (w) => Math.floor((w % 86400) / 60);
 function foldBar(sym, w, o, h, l, c) {
@@ -405,6 +405,47 @@ async function alpaca(base, path) {
   const r = await fetch(base + path, { headers: { "APCA-API-KEY-ID": live.keys.id, "APCA-API-SECRET-KEY": live.keys.secret } });
   if (!r.ok) throw new Error("HTTP " + r.status);
   return r.json();
+}
+// The one thing the page can change: close a position on the PAPER account (cancel its open orders, then
+// DELETE /v2/positions/SYMBOL, which Alpaca turns into a market order; out of hours it waits for the open).
+// Only ALPACA.paper, only after a confirm. Never the live account.
+async function paperDelete(path) {
+  const r = await fetch(ALPACA.paper + path, { method: "DELETE", headers: { "APCA-API-KEY-ID": live.keys.id, "APCA-API-SECRET-KEY": live.keys.secret } });
+  if (!r.ok && r.status !== 404) {
+    let why = "";
+    try { why = (await r.json()).message || ""; } catch (e) { /* no body */ }
+    throw new Error("HTTP " + r.status + (why ? ": " + why : ""));
+  }
+  return r.status;
+}
+const sleepMs = (ms) => new Promise((res) => setTimeout(res, ms));
+async function closePosition(sym, qty) {
+  if (!live.keys || !/^PK/.test(live.keys.id)) return;
+  const ok = window.confirm("¿Cerrar toda la posición en " + sym + " (" + qty + " acciones) a mercado en la cuenta PAPER?\n\n" +
+    "Primero se cancelan sus órdenes abiertas (stop y objetivo). Fuera de horario la orden espera a la apertura de las 09:30 NY.");
+  if (!ok) return;
+  live.closing.add(sym); renderPositions();
+  const msg = $("#live-msg");
+  let cancelled = 0;
+  try {
+    const open = await alpaca(ALPACA.paper, "/v2/orders?status=open&limit=500&symbols=" + encodeURIComponent(sym));
+    for (const o of open) { await paperDelete("/v2/orders/" + o.id); cancelled++; }
+    let err = null;
+    for (let i = 0; i < 8; i++) {                 // Alpaca frees the shares the stops held a moment after the cancels
+      await sleepMs(1000);
+      try { await paperDelete("/v2/positions/" + encodeURIComponent(sym)); err = null; break; } catch (e) { err = e; }
+    }
+    if (err) throw err;
+    msg.textContent = "Orden de cierre de " + sym + " enviada a la cuenta paper" + (cancelled ? " (" + cancelled + " órdenes canceladas antes)" : "") + ".";
+    live.fills.unshift(new Date(nyWall(new Date()) * 1000).toISOString().slice(11, 19) + " NY: cierre a mano de " + sym + " enviado");
+  } catch (e) {
+    msg.textContent = "No se pudo cerrar " + sym + " (" + e.message + ")." +
+      (cancelled ? " Sus stops YA se cancelaron: vuelve a intentarlo o ciérrala en Alpaca. El bot le repone las salidas en su próxima pasada." : "");
+  } finally {
+    live.closing.delete(sym);
+    renderPositions();
+    pollAccount();
+  }
 }
 async function backfill() {
   // today's 5 minute bars from 08:30 New York, so the chart has no gap before the stream started
@@ -512,8 +553,13 @@ function renderPositions() {
       fillSim({ sym: p.symbol, dir, entry, stop, now, days: t ? businessDaysBetween(t.day, state.today.session) : 0, partial: t ? t.partial_done : false });
       showTab("sim"); runSim();
     });
+    const busy = live.closing.has(p.symbol);
+    const shut = el("button", { class: "btn small danger", type: "button", text: busy ? "Cerrando…" : "Cerrar" });
+    if (busy) shut.disabled = true;
+    shut.addEventListener("click", () => closePosition(p.symbol, Math.abs(q)));
+    const acts = el("span", { class: "acts" }, ...(btn ? [btn] : []), shut);
     return row([p.symbol, dir > 0 ? "largo" : "corto", String(Math.abs(q)), fmt.px(entry), fmt.px(now), [fmt.money(pnl), cls(pnl)],
-      r == null ? "-" : [fmt.r(r, 2), cls(r)], btn]);
+      r == null ? "-" : [fmt.r(r, 2), cls(r)], acts]);
   });
   $("#acct-live-kpis").replaceChildren(kpi("Capital (paper)", fmt.money(eq), "efectivo " + fmt.money(+a.cash)),
     kpi("Hoy", fmt.money(day), "", cls(day)), kpi("Abiertas", String(pos.length), "todas las de la cuenta"),
