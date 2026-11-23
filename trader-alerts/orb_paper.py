@@ -1019,6 +1019,10 @@ def close_trades(acct, now_utc, which, prices=None, dry_run=False, sleep=time.sl
         sym, tday = r["symbol"], r["day"]
         if want is not None and sym not in want:
             continue
+        pending = [o for o in acct.orders("open", sym, 100) if "-man-close" in (o.get("client_order_id") or "")]
+        if pending:
+            out.append((sym, "ya tiene una orden de cierre pendiente: no se manda otra"))
+            continue
         if which == "si-no-asegura" and locks_profit(r):
             out.append((sym, "se deja: el stop asegura ganancia (%s)" % ", ".join("%+.2fR" % x for x in r["locked_R"])))
             continue

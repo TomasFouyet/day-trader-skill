@@ -590,3 +590,20 @@ class StopsAndClose(HandAdjust):
         self.assertFalse(self.fake.posts())
         done = dict(orb.close_trades(self.acct, utc(self.T, "08:00"), "todas", {}, sleep=lambda s: None))
         self.assertEqual(sorted(done), ["IWM", "QQQ"])
+
+    def test_never_a_second_close(self):
+        self.fake.fill = None
+        orig = self.fake.add
+
+        def add(o):                                          # before the open a market order waits
+            if o.get("type") == "market":
+                self.fake.n += 1
+                o["id"], o["n"], o["status"] = "id%d" % self.fake.n, self.fake.n, "accepted"
+                self.fake.orders[o["id"]] = o
+                return o
+            return orig(o)
+        self.fake.add = add
+        orb.close_trades(self.acct, utc(self.T, "09:16"), "IWM", {}, sleep=lambda s: None)
+        done = dict(orb.close_trades(self.acct, utc(self.T, "09:20"), "si-no-asegura", {}, sleep=lambda s: None))
+        self.assertIn("pendiente", done["IWM"])
+        self.assertEqual(len([b for b in self.fake.posts() if "man-close" in b["client_order_id"] and b["symbol"] == "IWM"]), 1)
