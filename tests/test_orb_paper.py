@@ -544,3 +544,49 @@ class HandAdjust(Base):
         events = self.run_at("11:00", {}, day=self.T)
         self.assertFalse([1 for m, p_, b in self.fake.calls if m == "PATCH"])                 # nothing pulled back
         self.assertFalse([b for b in self.fake.posts() if "run-be2" in b["client_order_id"]])  # no new runner stop
+
+
+class StopsAndClose(HandAdjust):
+    """What the stops lock in, in R, and closing at the open the trades whose stops do not lock profit."""
+
+    def setUp(self):
+        HandAdjust.setUp(self)
+        self.fake.orders["q0"] = {"id": "q0", "n": 0, "symbol": "QQQ", "client_order_id": "orb-QQQ-20261119-run",
+                                  "status": "replaced", "side": "buy", "type": "stop", "stop_price": "670.00", "qty": "9"}
+
+    def test_book_in_r(self):
+        rows = {r["symbol"]: r for r in orb.book(self.acct, {"QQQ": (662.0, None), "IWM": (267.0, None)})}
+        q, i = rows["QQQ"], rows["IWM"]
+        self.assertTrue(q["partial_done"])
+        self.assertAlmostEqual(q["locked_R"][0], 0.0)                  # breakeven: nothing lost, nothing locked
+        self.assertFalse(orb.locks_profit(q))
+        self.assertLess(min(i["locked_R"]), 0)                           # the box edge: a loss
+        self.assertFalse(orb.locks_profit(i))
+        text = orb.book_text(list(rows.values()))
+        self.assertNotIn("667.56", text)                                # the public log shows R, not prices
+        self.assertIn("NO asegura ganancia", text)
+
+    def test_a_stop_past_the_entry_locks_profit(self):
+        self.fake.orders["qr"]["stop_price"] = "660.66"
+        rows = {r["symbol"]: r for r in orb.book(self.acct, {"QQQ": (655.0, None)})}
+        self.assertTrue(orb.locks_profit(rows["QQQ"]))
+        rows = {r["symbol"]: r for r in orb.book(self.acct, {"QQQ": (661.0, None)})}
+        self.assertFalse(orb.locks_profit(rows["QQQ"]))                 # the price already went past it
+
+    def test_close_only_what_does_not_lock_profit(self):
+        self.fake.orders["qr"]["stop_price"] = "660.66"
+        done = dict(orb.close_trades(self.acct, utc(self.T, "08:00"), "si-no-asegura",
+                                     {"QQQ": (655.0, None), "IWM": (267.0, None)}, sleep=lambda s: None))
+        self.assertIn("se deja", done["QQQ"])
+        closes = [b for b in self.fake.posts() if "man-close" in b["client_order_id"]]
+        self.assertEqual([(b["symbol"], b["qty"], b["side"], b["type"]) for b in closes], [("IWM", "30", "buy", "market")])
+        self.assertEqual(self.fake.orders["ir"]["status"], "canceled")
+        self.assertEqual(self.fake.orders["it"]["status"], "canceled")
+        self.assertEqual(self.fake.orders["qr"]["status"], "new")
+
+    def test_close_named_and_dry_run(self):
+        done = dict(orb.close_trades(self.acct, utc(self.T, "08:00"), "QQQ", {}, dry_run=True))
+        self.assertEqual(list(done), ["QQQ"])
+        self.assertFalse(self.fake.posts())
+        done = dict(orb.close_trades(self.acct, utc(self.T, "08:00"), "todas", {}, sleep=lambda s: None))
+        self.assertEqual(sorted(done), ["IWM", "QQQ"])

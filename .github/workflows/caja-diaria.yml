@@ -36,13 +36,17 @@ on:
         description: "Ajuste a mano, ej.: --plan IWM=30,QQQ=15,SPY=15,DIA=15 --stop-above 0.10 (cierra esa parte y acerca los stops)"
         required: false
         default: ""
+      posiciones:
+        description: "revisar = cuantos R asegura cada stop (no opera); si-no-asegura = cerrar a mercado las que no aseguran ganancia; todas; o QQQ,SPY. Antes de las 09:30 se ejecuta en la apertura"
+        required: false
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
   # the audit only reads: it does not wait behind the 10:00-13:05 watcher
-  group: ${{ (github.event_name == 'workflow_dispatch' && (inputs.audit || inputs.ajuste != '')) && 'orb-audit' || 'orb-paper' }}
+  group: ${{ (github.event_name == 'workflow_dispatch' && (inputs.audit || inputs.ajuste != '' || inputs.posiciones != '')) && 'orb-audit' || 'orb-paper' }}
   cancel-in-progress: false
 
 jobs:
@@ -75,8 +79,17 @@ jobs:
           REPORT: ${{ github.event_name == 'workflow_dispatch' && inputs.report }}
           AUDIT: ${{ github.event_name == 'workflow_dispatch' && inputs.audit }}
           AJUSTE: ${{ github.event_name == 'workflow_dispatch' && inputs.ajuste || '' }}
+          POSICIONES: ${{ github.event_name == 'workflow_dispatch' && inputs.posiciones || '' }}
         run: |
           mkdir -p trader/state
+          if [ -n "$POSICIONES" ] && [ "$POSICIONES" != "false" ]; then
+            if [ "$POSICIONES" = "revisar" ]; then
+              python3 trader-alerts/orb_paper.py stops --telegram
+            else
+              python3 trader-alerts/orb_paper.py close --which "$POSICIONES" --telegram
+            fi
+            exit $?
+          fi
           if [ -n "$AJUSTE" ] && [ "$AJUSTE" != "false" ]; then
             python3 trader-alerts/orb_paper.py adjust $AJUSTE --telegram
             exit $?

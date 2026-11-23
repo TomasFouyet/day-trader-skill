@@ -734,7 +734,7 @@ def trades_from_orders(orders):
     return trades
 
 
-EXIT_ES = {"tp": "\u2705 70% a 1,7R", "tp-leg": "\u274c stop (70%)", "run": "\u274c stop (30%)",
+EXIT_ES = {"run-r": "\u274c stop repuesto", "tp": "\u2705 70% a 1,7R", "tp-leg": "\u274c stop (70%)", "run": "\u274c stop (30%)",
            "run-be": "\u2796 breakeven (30%)", "run-be2": "\u2796 breakeven (30%)"}
 
 
@@ -914,6 +914,143 @@ def adjust(acct, now_utc, bars_by_sym, plan, above_pct, dry_run=False, sleep=tim
     return out
 
 
+def last_prices(now_utc, http=None):
+    """The newest IEX price of each symbol, pre-market included (5 minute bars of the last 4 days).
+    -> {symbol: (price, New York time)}."""
+    md = scan._marketdata()
+    if md is None or not md.enabled():
+        return {}
+    start = now_utc - datetime.timedelta(days=4)
+    raw = md.multi_bars(symbols(), "5Min", md._iso(start), md._iso(now_utc), STRATEGY["feed"], http=http)
+    out = {}
+    for s_ in symbols():
+        b = ny_bars(raw.get(s_))
+        if b:
+            out[s_] = (b[-1]["c"], b[-1]["t"] + datetime.timedelta(minutes=5))
+    return out
+
+
+def book(acct, prices=None):
+    """Each open box trade: its stops now and what they lock in, in R of the trade's own risk (entry to the
+    box edge). A stop past the entry (below it on a short, above it on a long) locks profit; at the entry,
+    nothing lost; before it, a loss. -> [dict]."""
+    prices = prices or {}
+    out = []
+    positions = acct.positions()
+    for sym in symbols():
+        pos = positions.get(sym)
+        if not pos:
+            continue
+        entry = entry_of(acct, sym)
+        if entry is None:
+            continue
+        tday = datetime.datetime.strptime(entry["client_order_id"].split("-")[2], "%Y%m%d").date()
+        d = 1 if entry.get("side") == "buy" else -1
+        px = float(entry.get("filled_avg_price") or 0)
+        held = int(abs(float(pos.get("qty") or 0)))
+        rec = (paper.read_json(STATE, {}) or {}).get("trades", {}).get(entry.get("client_order_id"), {})
+        stop0 = rec.get("stop")
+        tp = acct.get(cid(sym, tday, "tp"))
+        if stop0 is None:
+            first = acct.get(cid(sym, tday, "run"))           # the runner's first stop: the box edge
+            stop0 = _f((first or {}).get("stop_price"))
+        if stop0 is None and tp is not None and tp.get("status") == "filled":
+            stop0 = next((_f(x.get("stop_price")) for x in tp.get("legs") or [] if x.get("type") == "stop"), None)
+        risk = abs(px - stop0) if stop0 else None
+        mine = [o for o in acct.orders("open", sym, 100) if (o.get("client_order_id") or "").startswith(cid(sym, tday, ""))]
+        stops = []
+        for o in mine:
+            if o.get("order_class") == "oco":
+                for leg in o.get("legs") or []:
+                    if leg.get("type") == "stop" and _f(leg.get("stop_price")):
+                        stops.append((int(float(leg.get("qty") or o.get("qty") or 0)), float(leg["stop_price"])))
+            elif o.get("type") == "stop" and _f(o.get("stop_price")):
+                stops.append((int(float(o.get("qty") or 0)), float(o["stop_price"])))
+        last = prices.get(sym, (None, None))[0] or _f(pos.get("current_price"))
+        r = (lambda x: (x - px) * d / risk) if risk else (lambda x: None)
+        out.append({"symbol": sym, "dir": d, "day": tday, "entry": px, "stop0": stop0, "held": held,
+                    "partial_done": _filled(tp), "stops": stops, "covered": sum(q for q, _ in stops),
+                    "locked_R": [r(sp) for _, sp in stops], "price": last, "price_R": r(last) if last else None,
+                    "price_at": prices.get(sym, (None, None))[1]})
+    return out
+
+
+def locks_profit(row):
+    """Every share of the trade has a stop past its entry, and the price is still on the right side of it."""
+    if not row["stops"] or row["covered"] < row["held"] or any(x is None or x <= 0.005 for x in row["locked_R"]):
+        return False
+    if row["price"] is not None and any((row["price"] - sp) * row["dir"] <= 0 for _, sp in row["stops"]):
+        return False
+    return True
+
+
+def book_text(rows, private=False):
+    """R only for the public log; prices too with private=True (Telegram)."""
+    if not rows:
+        return "Sin operaciones de la caja abiertas."
+    lines = []
+    for r in rows:
+        side = "largo" if r["dir"] > 0 else "corto"
+        locked = ", ".join("%+.2fR" % x for x in r["locked_R"] if x is not None) or "sin stop"
+        txt = "%s %s del %s: %s; stop(s) aseguran %s" % (
+            r["symbol"], side, r["day"].isoformat(), "70% cobrado" if r["partial_done"] else "70% sin cobrar", locked)
+        if r["covered"] < r["held"]:
+            txt += " (PARTE SIN STOP)"
+        if r["price_R"] is not None:
+            txt += "; precio en %+.2fR%s" % (r["price_R"], (" (%s NY)" % r["price_at"].strftime("%a %H:%M")) if r["price_at"] else "")
+        txt += "; %s" % ("el stop asegura ganancia" if locks_profit(r) else "NO asegura ganancia")
+        if private:
+            txt += "\n    entrada %.2f, stop inicial %s, stops %s, precio %s, %d acciones" % (
+                r["entry"], "%.2f" % r["stop0"] if r["stop0"] else "-", ", ".join("%.2f" % sp for _, sp in r["stops"]) or "-",
+                "%.2f" % r["price"] if r["price"] else "-", r["held"])
+        lines.append(txt)
+    return "\n".join(lines)
+
+
+def close_trades(acct, now_utc, which, prices=None, dry_run=False, sleep=time.sleep):
+    """Close open box trades with a market order (sent before the open, it fills at the opening price).
+    which: 'todas', 'si-no-asegura' (only those whose stops do not lock profit) or 'QQQ,SPY'.
+    Their stop and target orders are cancelled first (Alpaca holds the shares for them); if the close is
+    refused the old stop is put back. -> [(symbol, what was done)]."""
+    tag = scan.to_eastern(now_utc).strftime("%H%M")
+    want = None if which in ("todas", "si-no-asegura") else {s_.strip().upper() for s_ in which.split(",") if s_.strip()}
+    out = []
+    for r in book(acct, prices):
+        sym, tday = r["symbol"], r["day"]
+        if want is not None and sym not in want:
+            continue
+        if which == "si-no-asegura" and locks_profit(r):
+            out.append((sym, "se deja: el stop asegura ganancia (%s)" % ", ".join("%+.2fR" % x for x in r["locked_R"])))
+            continue
+        if dry_run:
+            out.append((sym, "(prueba, sin ordenes) se cerraria a mercado"))
+            continue
+        mine = [o for o in acct.orders("open", sym, 100) if (o.get("client_order_id") or "").startswith("orb-%s-" % sym)]
+        try:
+            for o in mine:
+                acct.cancel(o["id"])
+            for _ in range(10):                               # wait for Alpaca to free the shares the stops held
+                if not [o for o in acct.orders("open", sym, 100) if (o.get("client_order_id") or "").startswith("orb-%s-" % sym)]:
+                    break
+                sleep(1.0)
+            acct.submit({"symbol": sym, "qty": str(r["held"]), "side": "buy" if r["dir"] < 0 else "sell",
+                         "type": "market", "time_in_force": "day", "client_order_id": cid(sym, tday, "man-close" + tag)})
+            out.append((sym, "orden a mercado para cerrar todo enviada (antes de la apertura se ejecuta a las 09:30)"))
+        except paper.PaperError as e:
+            msg = "Alpaca rechazo el cierre: %s" % e
+            if r["stops"]:
+                best = max((sp for _, sp in r["stops"]), key=lambda sp: (sp - r["entry"]) * r["dir"])
+                try:
+                    acct.submit({"symbol": sym, "qty": str(r["held"]), "side": "buy" if r["dir"] < 0 else "sell",
+                                 "type": "stop", "time_in_force": "gtc", "stop_price": "%.2f" % best,
+                                 "client_order_id": cid(sym, tday, "run-r" + tag)})
+                    msg += "; se repuso el stop"
+                except paper.PaperError as e2:
+                    msg += "; NO se pudo reponer el stop: %s" % e2
+            out.append((sym, msg))
+    return out
+
+
 def parse_plan(text):
     """'IWM=30,QQQ=15' -> {'IWM': 30.0, 'QQQ': 15.0}."""
     plan = {}
@@ -1016,7 +1153,9 @@ def telegram(text):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="The 09:00 box breakout on Alpaca PAPER.")
-    ap.add_argument("cmd", choices=("status", "run", "report", "audit", "adjust"))
+    ap.add_argument("cmd", choices=("status", "run", "report", "audit", "adjust", "stops", "close"))
+    ap.add_argument("--which", default="si-no-asegura",
+                    help="close: 'todas', 'si-no-asegura' (only trades whose stops do not lock profit) or 'QQQ,SPY'")
     ap.add_argument("--plan", default="", help="adjust: the part to close of each trade, e.g. IWM=30,QQQ=15")
     ap.add_argument("--stop-above", type=float, default=0.10,
                     help="adjust: stops to today's high (shorts) or low (longs) plus this %% (only where closer)")
@@ -1037,6 +1176,25 @@ def main(argv=None):
                 print("Resumen de la caja enviado a Telegram.")
             else:
                 print(text)
+            return 0
+        if a.cmd in ("stops", "close"):
+            try:
+                prices = last_prices(now_utc)
+            except (paper.PaperError, OSError, ValueError) as e:
+                print("Sin precios recientes (%s): se usa el de la posicion." % e, file=sys.stderr)
+                prices = {}
+            rows = book(acct, prices)
+            print(book_text(rows))
+            done = []
+            if a.cmd == "close":
+                dry = a.dry_run or not paper.paper_on()
+                done = close_trades(acct, now_utc, a.which, prices, dry_run=dry)
+                print("\n".join("%s: %s" % x for x in done) or "Nada que cerrar.")
+            if a.telegram and rows:
+                text = "\U0001F6E1 <b>Stops de la caja</b>\n" + book_text(rows, private=True)
+                if done:
+                    text += "\n\n\u270b <b>Cierre</b>\n" + "\n".join("%s: %s" % x for x in done)
+                telegram(text)
             return 0
         if not (datetime.time(9, 55) <= now_et.time() <= datetime.time(16, 10)) and a.cmd == "run" and not a.now:
             print("Fuera del horario de la estrategia (%s NY): nada que hacer." % now_et.strftime("%H:%M"))
