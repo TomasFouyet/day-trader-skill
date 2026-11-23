@@ -1112,6 +1112,56 @@ def close_trades(acct, now_utc, which, prices=None, dry_run=False, sleep=time.sl
     return out
 
 
+def enter_now(acct, sym, now_utc, bars, state, dry_run=False, sleep=time.sleep):
+    """A hand entry at the market in the direction of today's box breakout (the last completed bar closed
+    outside the box), with the same exits as the bot: stop at the other box edge, 70% at 1.7R from the fill,
+    the rest with the stop. Uses today's entry id, so the bot then manages it and never enters twice.
+    -> (symbol, text)."""
+    now_et = scan.to_eastern(now_utc)
+    day = now_et.date()
+    if sym in acct.positions():
+        return sym, "ya hay una posicion abierta: no se entra"
+    if acct.get(cid(sym, day, "in")) is not None:
+        return sym, "el bot ya tiene una orden de entrada hoy: no se entra otra vez"
+    box = box_of(bars, day)
+    if box is None:
+        return sym, "la caja de hoy no esta completa: no se entra"
+    done = [b for b in bars if b["t"].date() == day and b["t"] + datetime.timedelta(minutes=5) <= now_et]
+    if not done:
+        return sym, "sin velas de hoy: no se entra"
+    last = done[-1]
+    direction = 1 if last["c"] > box[0] else -1 if last["c"] < box[1] else 0
+    if not direction:
+        return sym, "la ultima vela cerro dentro de la caja: no hay ruptura, no se entra"
+    p = plan(direction, last["c"], box, acct.equity())
+    if p is None:
+        return sym, "tamano menor a 2 acciones: no se entra"
+    side = "buy" if direction > 0 else "sell"
+    if dry_run:
+        return sym, "(prueba) entraria %s %d a mercado; stop %.2f" % ("largo" if direction > 0 else "corto", p["qty"], p["stop"])
+    in_id = cid(sym, day, "in")
+    state.setdefault("trades", {})[in_id] = {"stop": p["stop"], "box": [box[0], box[1]], "dir": direction,
+                                             "qty": p["qty"], "at": now_et.isoformat(), "hand": True}
+    paper.write_json(STATE, state)
+    acct.submit({"symbol": sym, "qty": str(p["qty"]), "side": side, "type": "market", "time_in_force": "day",
+                 "client_order_id": in_id})
+    o = wait_fill(acct, in_id, tries=15, sleep=sleep)
+    got = int(_got(o))
+    if got < 1:
+        return sym, "orden a mercado enviada pero sin llenar todavia: el bot pone las salidas cuando se llene"
+    fill = float(o.get("filled_avg_price") or last["c"])
+    part = max(1, min(got - 1, int(round(got * STRATEGY["partial_frac"])))) if got > 1 else 1
+    q = {"dir": direction, "partial_qty": part, "runner_qty": got - part, "stop": p["stop"]}
+    oco, run_body, target = exit_bodies(sym, day, q, fill)    # no bar close: the 1.7R is measured from the fill
+    acct.submit(oco)
+    if q["runner_qty"] > 0:
+        acct.submit(run_body)
+    state["trades"][in_id].update(fill=fill, qty=got)
+    paper.write_json(STATE, state)
+    return sym, "entrada a mano %s %d a %.2f; stop %.2f (borde de la caja), 70%% a %.2f (1,7R desde la entrada)" % (
+        "largo" if direction > 0 else "corto", got, fill, p["stop"], target)
+
+
 def parse_plan(text):
     """'IWM=30,QQQ=15' -> {'IWM': 30.0, 'QQQ': 15.0}."""
     plan = {}
@@ -1254,6 +1304,23 @@ def main(argv=None):
                 print("Sin precios recientes (%s): se usa el de la posicion." % e, file=sys.stderr)
                 prices = {}
             done = []
+            if a.cmd == "close" and a.which.startswith("entrar:"):
+                state = paper.read_json(STATE, {}) or {}
+                bars = fetch_bars(now_utc)
+                for sym in [x.strip().upper() for x in a.which.split(":", 1)[1].split(",") if x.strip()]:
+                    if sym not in symbols():
+                        done.append((sym, "no es un indice de la caja"))
+                        continue
+                    try:
+                        done.append(enter_now(acct, sym, now_utc, bars.get(sym) or [], state,
+                                              dry_run=a.dry_run or not paper.paper_on()))
+                    except paper.PaperError as e:
+                        done.append((sym, "Alpaca rechazo la orden: %s" % e))
+                print(log_line(done))
+                for sym_, txt in done:
+                    print("%s: %s" % (sym_, re.sub(r"\d", "#", txt)))
+                a.which = ""
+                time.sleep(2)
             if a.cmd == "close" and a.which == "reparar":
                 state = paper.read_json(STATE, {}) or {}
                 bars = fetch_bars(now_utc)

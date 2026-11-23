@@ -617,3 +617,24 @@ class DayLines(Base):
         self.assertIn("primera senal larga a las 10:15", text)
         self.assertIn("orden de entrada: filled", text)
         self.assertNotIn("102", text.replace("10:", ""))
+
+
+class HandEntry(Base):
+    def test_enters_once_with_exits(self):
+        up = {t: (101.5, 102.5, 101.5, 102) for t in ("10:10", "10:15", "10:20", "10:25", "10:30")}
+        b = bars(DAY, dict(BOX, **up), until="10:30")
+        state = {}
+        sym, txt = orb.enter_now(self.acct, "QQQ", utc(DAY, "10:31"), b, state, sleep=lambda s: None)
+        self.assertIn("entrada a mano largo", txt)
+        posts = self.fake.posts()
+        self.assertEqual(posts[0]["type"], "market")
+        self.assertEqual(posts[0]["client_order_id"], "orb-QQQ-20261118-in")
+        self.assertTrue(any(p_.get("order_class") == "oco" for p_ in posts))
+        sym, txt = orb.enter_now(self.acct, "QQQ", utc(DAY, "10:32"), b, state, sleep=lambda s: None)
+        self.assertIn("no se entra", txt)
+
+    def test_no_breakout_no_entry(self):
+        b = bars(DAY, BOX, until="10:30")
+        sym, txt = orb.enter_now(self.acct, "QQQ", utc(DAY, "10:31"), b, {}, sleep=lambda s: None)
+        self.assertIn("dentro de la caja", txt)
+        self.assertFalse(self.fake.posts())
