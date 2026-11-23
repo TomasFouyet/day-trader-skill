@@ -87,6 +87,16 @@
         <div class="table-wrap"><table id="open-table"><thead><tr><th>Índice</th><th>Lado</th><th>Entrada</th><th>Stop</th><th>Ahora</th><th>R ahora</th><th>Parcial</th><th>Cobrado</th><th>Días</th><th></th></tr></thead><tbody></tbody></table></div>
         <p id="open-empty" class="muted" hidden>Sin operaciones abiertas.</p>
       </div>
+      <div class="card" id="trade-view">
+        <div class="card-head"><h3>Ver la operación</h3><label for="tv-pick" class="sr">Operación</label><select id="tv-pick" class="tv-pick"></select></div>
+        <p id="tv-head" class="tv-head"></p>
+        <div id="tv-legend" class="legend"></div>
+        <div id="tv-chart" class="candles tv-chart" role="img" aria-label="Velas de 5 minutos de la operación con su entrada, stop, objetivo y salidas"></div>
+        <p id="tv-msg" class="muted small"></p>
+        <div class="kpis tv-kpis" id="tv-kpis"></div>
+        <h4 class="mt">Órdenes y salidas de esta operación</h4>
+        <div class="table-wrap"><table id="tv-steps"><thead><tr><th>Hora NY</th><th>Qué</th><th>Acciones</th><th>Precio</th><th>R</th></tr></thead><tbody></tbody></table></div>
+      </div>
       <div class="grid-2">
         <div class="card"><h3>Capital de la cuenta paper</h3><div id="equity-chart" class="chart-svg"></div></div>
         <div class="card"><h3>R acumulado de la estrategia</h3><div id="r-chart" class="chart-svg"></div></div>

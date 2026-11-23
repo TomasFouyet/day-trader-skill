@@ -146,3 +146,12 @@ input, select { font: 0.95rem var(--sans); padding: 8px 10px; border: 1px solid 
   .top { position: static; }
   .sub { display: none; }
 }
+
+/* trade view */
+.tv-pick { width: auto; max-width: 60%; }
+.tv-head { margin: 0 0 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.tv-chart { height: 380px; }
+.tv-kpis { margin-top: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.tv-kpis .v { font-size: 1.1rem; }
+h4.mt { margin: 16px 0 6px; font-size: 0.9rem; }
+@media (max-width: 600px) { .tv-chart { height: 300px; } .tv-pick { max-width: 100%; } #trade-view .card-head { flex-wrap: wrap; } }

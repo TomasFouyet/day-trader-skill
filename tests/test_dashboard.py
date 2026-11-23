@@ -68,6 +68,13 @@ class Public(unittest.TestCase):
         self.assertEqual(p["bars"][i - 1], [1000, -1000, 500])      # vs the previous close of 100
 
 
+    def test_history_keeps_the_session_hours(self):
+        b = bars({"09:00": (100, 101, 99, 100.5)})
+        h = dash.history_doc({"QQQ": b}, datetime.datetime(2026, 11, 17, 21, 0))["symbols"]["QQQ"]
+        times = [dash.datetime.datetime.utcfromtimestamp(x[0]).time() for x in h]
+        self.assertTrue(h and min(times) >= datetime.time(9, 0) and max(times) < datetime.time(16, 0))
+
+
 class Trades(unittest.TestCase):
     def test_rebuilt_from_orders(self):
         orders = [
@@ -88,6 +95,20 @@ class Trades(unittest.TestCase):
         # 42 x 4.93 + 18 x 0 over 60 x 2.90
         self.assertAlmostEqual(t["realized_R"], round(42 * 4.93 / (60 * 2.9), 3), places=3)
         self.assertEqual(sorted(x["kind"] for x in t["exits"]), ["run-be", "tp"])   # what the site names each exit
+        self.assertEqual((t["tp_price"], t["tp_status"], t["stops_now"]), (None, "filled", []))
+
+    def test_target_and_stops_in_force(self):
+        orders = [
+            {"client_order_id": "orb-QQQ-20261119-in", "status": "filled", "side": "sell", "filled_avg_price": "667.45",
+             "filled_qty": "30", "qty": "30", "filled_at": "2026-11-19T15:40:05Z"},
+            {"client_order_id": "orb-QQQ-20261119-tp", "status": "new", "side": "buy", "type": "limit", "limit_price": "663.25",
+             "order_class": "oco", "qty": "21",
+             "legs": [{"status": "held", "type": "stop", "stop_price": "670.00", "side": "buy", "qty": "21"}]},
+            {"client_order_id": "orb-QQQ-20261119-run", "status": "new", "side": "buy", "type": "stop", "stop_price": "670.00", "qty": "9"},
+        ]
+        t, = dash.trades_from_orders(orders)
+        self.assertEqual(t["tp_price"], 663.25)
+        self.assertEqual(sorted((x["price"], x["qty"]) for x in t["stops_now"]), [(670.0, 9.0), (670.0, 21.0)])
 
 
 class Swing(unittest.TestCase):

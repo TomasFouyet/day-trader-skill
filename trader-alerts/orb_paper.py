@@ -724,11 +724,18 @@ def trades_from_orders(orders):
         pnl = sum(((_f(o.get("filled_avg_price")) or 0) - px) * side * (_f(o.get("filled_qty")) or 0) for o in exits)
         risk = abs(px - stop) * qty if (stop and px and qty) else None
         partial = any((o.get("client_order_id") or "").endswith("-tp") and o.get("status") == "filled" for o in os_)
+        tp = next((o for o in os_ if (o.get("client_order_id") or "").endswith("-tp")), None)
+        live_stops = [{"price": _f(o.get("stop_price")), "qty": _f(o.get("qty")),
+                       "kind": (o.get("client_order_id") or "").split("-", 3)[-1]}
+                      for o in os_ if o.get("type") == "stop" and o.get("status") in ("new", "accepted", "held", "pending_new")
+                      and _f(o.get("stop_price"))]
         trades.append({
             "id": key, "symbol": sym, "day": "%s-%s-%s" % (day[:4], day[4:6], day[6:]), "side": "largo" if side > 0 else "corto",
             "dir": side, "qty": qty, "entry": px, "stop": stop, "entry_time": entry.get("filled_at"),
             "partial_done": partial, "closed_qty": out_qty, "open": out_qty < (qty or 0) - 1e-9,
             "realized_pnl": round(pnl, 2), "realized_R": round(pnl / risk, 3) if risk else None,
+            "tp_price": _f((tp or {}).get("limit_price")), "tp_status": (tp or {}).get("status"),
+            "stops_now": sorted(live_stops, key=lambda x: x["price"] * side),
             "exits": [{"time": o.get("filled_at"), "qty": _f(o.get("filled_qty")), "price": _f(o.get("filled_avg_price")),
                        "kind": (o.get("client_order_id") or "").split("-", 3)[-1]} for o in exits]})
     return trades
@@ -1150,7 +1157,16 @@ def telegram(text):
     if not (token and chat):
         print("(sin TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID: no se envia)")
         return
-    paper._notify().send(token, chat, text)
+    n = paper._notify()
+    for i in range(3):                                   # a dropped connection to Telegram is retried, then let go
+        try:
+            n.send(token, chat, text)
+            return
+        except Exception as e:                           # noqa: BLE001 (NotifyError lives in the loaded module)
+            if i == 2:
+                print("Telegram no respondio (%s): el aviso no se envio." % e, file=sys.stderr)
+                return
+            time.sleep(3 * (i + 1))
 
 
 # ---------------------------------------------------------------- main

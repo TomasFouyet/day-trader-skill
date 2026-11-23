@@ -126,18 +126,19 @@ function renderPrivate(p) {
       fillSim({ sym: t.symbol, dir: t.dir, entry: t.entry, stop: t.stop, now: t.last, days, partial: t.partial_done });
       showTab("sim"); runSim();
     });
+    const see = el("button", { class: "btn small", type: "button", text: "Ver" });
+    see.addEventListener("click", () => { showTrade(t.id); $("#trade-view").scrollIntoView({ behavior: "smooth", block: "start" }); });
     const got = (t.exits || []).length ? [fmt.r(t.realized_R, 2), cls(t.realized_R)] : "-";
     ob.append(row([t.symbol, t.side, fmt.px(t.entry), fmt.px(t.stop), fmt.px(t.last),
-      [fmt.r(t.unrealized_R), cls(t.unrealized_R)], t.partial_done ? "cobrado" : "pendiente", got, String(days), btn]));
+      [fmt.r(t.unrealized_R), cls(t.unrealized_R)], t.partial_done ? "cobrado" : "pendiente", got, String(days),
+      el("span", { class: "acts" }, see, btn)]));
   });
   // every exit that filled, open trades included
-  const KIND = { tp: "70 % a 1,7R", "tp-leg": "stop (70 %)", run: "stop (30 %)", "run-be": "breakeven (30 %)",
-    "run-be2": "breakeven (30 %)" };
   const exits = [];
   p.trades.forEach((t) => (t.exits || []).forEach((x) => {
     const risk = t.stop && t.entry ? Math.abs(t.entry - t.stop) : null, part = t.qty ? x.qty / t.qty : null;
     const pnl = x.price != null ? (x.price - t.entry) * t.dir * x.qty : null;
-    exits.push({ time: x.time || "", sym: t.symbol, side: t.side, kind: KIND[x.kind] || (/^man/.test(x.kind || "") ? "cierre manual" : /^run-m/.test(x.kind || "") ? "stop movido a mano" : x.kind === "close" ? "cierre" : x.kind || "salida"),
+    exits.push({ time: x.time || "", sym: t.symbol, side: t.side, kind: exitKind(x.kind),
       part, price: x.price, pnl, r: risk && part != null && x.price != null ? (x.price - t.entry) * t.dir / risk * part : null });
   }));
   exits.sort((a, b) => (a.time < b.time ? 1 : -1));
@@ -162,6 +163,152 @@ function renderPrivate(p) {
   const days = Object.keys(p.notes || {}).sort().reverse().slice(0, 5);
   if (!days.length) notes.append(el("li", { class: "muted", text: "Sin avisos." }));
   days.forEach((d) => p.notes[d].forEach((n) => notes.append(el("li", { text: d + " · " + n }))));
+  renderTradePicker(p);
+}
+
+/* ---------------------------------------------------------------- one trade, drawn */
+// The candles from the entry day on (data/history.json, public market data) with what the account says about
+// the trade (private.json): the box, the close of the breakout bar, the real fill, the first stop, the 70%
+// target, the stops in force now and every exit.
+const EXIT_KIND = { tp: "70 % a 1,7R", "tp-leg": "stop (70 %)", run: "stop (30 %)", "run-be": "breakeven (30 %)",
+  "run-be2": "breakeven (30 %)", "run-r": "stop repuesto" };
+function exitKind(k) {
+  k = k || "";
+  if (EXIT_KIND[k]) return EXIT_KIND[k];
+  if (/^man/.test(k)) return "cierre manual";
+  if (/^run-m/.test(k)) return "stop movido a mano";
+  return k === "close" ? "cierre" : k || "salida";
+}
+const tv = { chart: null, series: null, lines: [], pick: null, shown: null, history: null, loading: null };
+const hhmm = (w) => new Date(w * 1000).toISOString().slice(11, 16);
+const dayHm = (w) => new Date(w * 1000).toISOString().slice(5, 16).replace("T", " ");
+function loadHistory() {
+  if (!tv.loading) tv.loading = getJSON("data/history.json").then((d) => (tv.history = d)).catch(() => null);
+  return tv.loading;
+}
+function renderTradePicker(p) {
+  const list = p.trades.slice().sort((a, b) => (b.open - a.open) || (a.day < b.day ? 1 : a.day > b.day ? -1 : 0));
+  $("#trade-view").hidden = !list.length;
+  if (!list.length) return;
+  const cur = list.some((t) => t.id === tv.pick) ? tv.pick : list[0].id;
+  const sel = $("#tv-pick");
+  sel.replaceChildren(...list.map((t) => {
+    const o = el("option", { value: t.id, text: t.symbol + " " + t.side + " del " + t.day + (t.open ? " · abierta" : " · cerrada") });
+    o.selected = t.id === cur;
+    return o;
+  }));
+  sel.onchange = () => showTrade(sel.value);
+  showTrade(cur);
+}
+function tradeBars(sym, fromDay) {
+  const bars = ((tv.history && tv.history.symbols[sym]) || []).filter((b) => wallDay(b[0]) >= fromDay);
+  const last = bars.length ? bars[bars.length - 1][0] : 0;
+  const more = (live.bars[sym] ? [...live.bars[sym].values()] : []).filter((b) => b[0] > last && wallMin(b[0]) >= 540 && wallMin(b[0]) < 960);
+  return bars.concat(more.sort((a, b) => a[0] - b[0]));
+}
+function tradeModel(t) {
+  const bars = tradeBars(t.symbol, t.day);
+  const entryW = t.entry_time ? nyWall(new Date(t.entry_time)) : null;
+  const day = bars.filter((b) => wallDay(b[0]) === t.day);
+  const inBox = day.filter((b) => wallMin(b[0]) >= 540 && wallMin(b[0]) < 600);
+  const box = inBox.length >= 3 ? { high: Math.max(...inBox.map((b) => b[2])), low: Math.min(...inBox.map((b) => b[3])) } : null;
+  let sig = null;                                   // the breakout bar: the last close outside the box before the fill
+  if (box && entryW) day.forEach((b) => {
+    const m = wallMin(b[0]);
+    if (m >= 600 && m <= 775 && b[0] + 300 <= entryW + 60 && (t.dir > 0 ? b[4] > box.high : b[4] < box.low)) sig = { time: b[0], close: b[4] };
+  });
+  const stop0 = t.stop != null ? t.stop : box ? (t.dir > 0 ? box.low : box.high) : null;
+  const risk = stop0 != null && t.entry ? Math.abs(t.entry - stop0) : null;
+  const R = (x) => (risk && x != null ? (x - t.entry) * t.dir / risk : null);
+  const ruleRisk = sig && stop0 != null ? Math.abs(sig.close - stop0) : null;
+  const tp = t.tp_price != null ? t.tp_price : sig && ruleRisk ? Math.round((sig.close + t.dir * PARTIAL_R * ruleRisk) * 100) / 100 : null;
+  const stopsNow = t.open ? (t.stops_now || []) : [];
+  const now = t.open ? (live.on && live.last[t.symbol] != null ? live.last[t.symbol] : t.last != null ? t.last : bars.length ? bars[bars.length - 1][4] : null) : null;
+  return { bars, entryW, box, sig, stop0, risk, R, tp, stopsNow, now };
+}
+function showTrade(id) {
+  tv.pick = id;
+  const sel = $("#tv-pick");
+  if (sel.value !== id) sel.value = id;
+  const t = state.priv && state.priv.trades.find((x) => x.id === id);
+  if (!t) return;
+  if (!tv.history) { $("#tv-msg").textContent = "Cargando las velas..."; loadHistory().then(() => tv.pick === id && showTrade(id)); return; }
+  const m = tradeModel(t), c = chartColors();
+  const side = el("span", { class: "chip " + (t.dir > 0 ? "long" : "short"), text: t.side });
+  const status = el("span", { class: "chip", text: t.open ? (t.partial_done ? "abierta · 70 % cobrado" : "abierta") : "cerrada" });
+  $("#tv-head").replaceChildren(el("strong", { text: t.symbol }), side, status,
+    el("span", { class: "muted", text: "entró el " + t.day + (m.entryW ? " a las " + hhmm(m.entryW) + " NY" : "") }));
+  // the chart
+  if (!tv.chart && window.LightweightCharts) {
+    tv.chart = LightweightCharts.createChart($("#tv-chart"), {
+      autoSize: true, layout: { background: { color: c.bg }, textColor: c.ink, fontFamily: "IBM Plex Mono, monospace" },
+      grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } }, rightPriceScale: { borderColor: c.grid },
+      timeScale: { borderColor: c.grid, timeVisible: true, secondsVisible: false }, crosshair: { mode: 0 } });
+    tv.series = tv.chart.addCandlestickSeries({ upColor: c.up, downColor: c.down, wickUpColor: c.up, wickDownColor: c.down, borderVisible: false });
+  }
+  const legend = [];
+  if (tv.series) {
+    tv.series.setData(m.bars.map((b) => ({ time: b[0], open: b[1], high: b[2], low: b[3], close: b[4] })));
+    tv.lines.forEach((l) => tv.series.removePriceLine(l));
+    tv.lines = [];
+    const add = (price, color, title, style) => {
+      if (price == null) return;
+      tv.lines.push(tv.series.createPriceLine({ price, color, lineWidth: style === 0 ? 2 : 1, lineStyle: style, axisLabelVisible: true, title }));
+      legend.push([color, title + " " + fmt.px(price), style]);
+    };
+    if (m.box) { add(m.box.high, c.accent, "caja", 2); add(m.box.low, c.accent, "caja", 2); }
+    if (m.sig) add(m.sig.close, c.ink, "cierre vela", 1);
+    add(t.entry, c.accent, "entrada", 0);
+    const moved = m.stopsNow.length && m.stopsNow.every((x) => Math.abs(x.price - m.stop0) > 0.004);
+    add(m.stop0, c.down, "stop inicial", moved || !t.open ? 2 : 0);
+    m.stopsNow.forEach((x) => { if (Math.abs(x.price - m.stop0) > 0.004) add(x.price, c.down, "stop ahora", 0); });
+    add(m.tp, c.up, "70 % (1,7R)", t.partial_done ? 2 : 0);
+    // markers on the bar each thing happened in
+    const at = (w) => { let k = null; for (const b of m.bars) { if (b[0] <= w) k = b[0]; else break; } return k; };
+    const marks = [];
+    if (m.sig) marks.push({ time: m.sig.time, position: t.dir > 0 ? "aboveBar" : "belowBar", color: c.ink, shape: "circle", text: "señal" });
+    if (m.entryW && at(m.entryW) != null) marks.push({ time: at(m.entryW), position: t.dir > 0 ? "belowBar" : "aboveBar", color: c.accent,
+      shape: t.dir > 0 ? "arrowUp" : "arrowDown", text: "entrada " + fmt.px(t.entry) });
+    (t.exits || []).forEach((x) => {
+      const w = x.time ? at(nyWall(new Date(x.time))) : null;
+      const r = m.R(x.price);
+      if (w != null) marks.push({ time: w, position: t.dir > 0 ? "aboveBar" : "belowBar", color: r > 0 ? c.up : r < 0 ? c.down : c.ink,
+        shape: t.dir > 0 ? "arrowDown" : "arrowUp", text: exitKind(x.kind) + " " + fmt.px(x.price) });
+    });
+    tv.series.setMarkers(marks.sort((a, b) => a.time - b.time));
+    if (tv.shown !== id) { tv.chart.timeScale().fitContent(); tv.shown = id; }
+  }
+  $("#tv-legend").replaceChildren(...legend.map(([color, text, style]) => el("span", {}, (() => {
+    const i = el("i"); i.style.background = style === 0 ? color : "repeating-linear-gradient(90deg," + color + " 0 4px,transparent 4px 7px)"; return i; })(), text)));
+  $("#tv-msg").textContent = m.bars.length ? "Velas de 5 minutos de 09:00 a 16:00 NY desde el día de la entrada" + (live.on ? ", con las de este momento." : " (se actualizan con el panel; conéctate en Ahora para verlas al instante).")
+    : "No hay velas de ese día en los datos publicados (se guardan las últimas 20 sesiones).";
+  // the numbers
+  const slip = m.sig ? m.R(m.sig.close) : null;           // < 0: the fill was worse than the close
+  const lockR = m.stopsNow.length ? Math.min(...m.stopsNow.map((x) => m.R(x.price))) : null;
+  const nowR = m.R(m.now);
+  const tpFromFill = m.R(m.tp);
+  $("#tv-kpis").replaceChildren(
+    kpi("Entrada real", fmt.px(t.entry), m.sig ? "cierre de la vela " + fmt.px(m.sig.close) + " (" + (slip < 0 ? "peor por " : "mejor por ") + fmt.num(Math.abs(slip), 2) + "R)" : ""),
+    kpi("Stop inicial", fmt.px(m.stop0), m.risk ? "riesgo " + fmt.px(m.risk) + " por acción (1R)" : "borde de la caja"),
+    kpi("TP parcial 70 %", fmt.px(m.tp), (tpFromFill != null ? fmt.r(tpFromFill, 2) + " desde la entrada · " : "") + (t.partial_done ? "cobrado" : t.open ? "pendiente" : "no se llenó"),
+      t.partial_done ? "pos" : ""),
+    kpi("Stop ahora", m.stopsNow.length ? m.stopsNow.map((x) => fmt.px(x.price)).join(" / ") : "-",
+      t.open ? (lockR == null ? "sin stop" : lockR > 0.005 ? "asegura " + fmt.r(lockR, 2) : lockR >= -0.005 ? "en breakeven" : "arriesga " + fmt.r(lockR, 2)) : "operación cerrada",
+      lockR > 0.005 ? "pos" : lockR < -0.005 ? "neg" : ""),
+    kpi(t.open ? "Precio ahora" : "Resultado", t.open ? fmt.px(m.now) : fmt.r(t.realized_R, 2), t.open ? fmt.r(nowR, 2) + " el resto abierto" : fmt.money(t.realized_pnl),
+      t.open ? cls(nowR) : cls(t.realized_R)),
+    kpi("Cobrado", (t.exits || []).length ? fmt.r(t.realized_R, 2) : "-", (t.exits || []).length ? fmt.money(t.realized_pnl) : "nada todavía", cls(t.realized_R)),
+    kpi("Acciones", t.open && t.open_qty != null ? t.open_qty + " de " + t.qty : String(t.qty), t.open ? "abiertas de las que entraron" : "entraron"));
+  // the steps
+  const steps = [];
+  if (m.sig) steps.push([m.sig.time + 300, "cierre de la vela de ruptura (señal)", "-", m.sig.close, m.R(m.sig.close)]);
+  if (m.entryW) steps.push([m.entryW, "entrada ejecutada", t.qty, t.entry, 0]);
+  if (m.tp != null && !t.partial_done && t.open) steps.push([null, "orden del 70 % esperando", "-", m.tp, m.R(m.tp)]);
+  m.stopsNow.forEach((x) => steps.push([null, "stop vigente (" + exitKind(x.kind) + ")", x.qty, x.price, m.R(x.price)]));
+  (t.exits || []).forEach((x) => steps.push([x.time ? nyWall(new Date(x.time)) : null, exitKind(x.kind), x.qty, x.price, m.R(x.price)]));
+  steps.sort((a, b) => (a[0] == null) - (b[0] == null) || (a[0] || 0) - (b[0] || 0));
+  $("#tv-steps tbody").replaceChildren(...steps.map((x) => row([x[0] == null ? "ahora" : dayHm(x[0]), x[1], x[2] == null ? "-" : String(x[2]),
+    fmt.px(x[3]), [fmt.r(x[4], 2), cls(x[4])]])));
 }
 async function unlock(pass, quiet) {
   const msg = $("#lock-msg");

@@ -7,6 +7,7 @@
 It writes:
   today.json      the 5 minute bars of the last session for QQQ, SPY, DIA and IWM, the 09:00-10:00 box and
                   the first close outside it (public market data: no account data).
+  history.json    the 5 minute bars (09:00-16:00) of the last 20 sessions, to draw a whole trade (public).
   paths.json      the bars of the last ~25 sessions, as moves relative to the previous close, for the trade
                   simulator (also public market data).
   private.json    the paper account: equity, positions, the box strategy's trades and today's events,
@@ -114,6 +115,17 @@ def today_doc(bars_by_sym, now_utc):
                        "partial": round(sig[0]["c"] + sig[1] * 1.7 * abs(sig[0]["c"] - (box[1] if sig[1] > 0 else box[0])), 2)}
             if sig else None,
             "last": mine[-1]["c"] if mine else None}
+    return out
+
+
+def history_doc(bars_by_sym, now_utc, sessions=20):
+    """The 5 minute bars from 09:00 to 16:00 New York of the last sessions, to draw a whole trade (public)."""
+    out = {"updated": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), "symbols": {}}
+    for sym, bars in bars_by_sym.items():
+        rth = [b for b in bars if datetime.time(9, 0) <= b["t"].time() < datetime.time(16, 0)]
+        keep = set(sorted({b["t"].date() for b in rth})[-sessions:])
+        out["symbols"][sym] = [[_wall(b["t"]), round(b["o"], 2), round(b["h"], 2), round(b["l"], 2), round(b["c"], 2)]
+                               for b in rth if b["t"].date() in keep]
     return out
 
 
@@ -259,6 +271,7 @@ def main(argv=None):
     bars = fetch(now_utc, offline=a.offline)
     write(os.path.join(a.out, "today.json"), today_doc(bars, now_utc))
     write(os.path.join(a.out, "paths.json"), paths_doc(bars))
+    write(os.path.join(a.out, "history.json"), history_doc(bars, now_utc))
     key = os.environ.get("DASHBOARD_KEY") or ""
     priv = os.path.join(a.out, "private.json")
     if a.offline:
