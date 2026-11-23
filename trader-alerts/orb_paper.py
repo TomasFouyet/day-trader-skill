@@ -324,6 +324,20 @@ def manage(acct, sym, pos, now_et, events, dry_run, state, bars):
                              "type": "stop", "time_in_force": "gtc", "stop_price": "%.2f" % fill,
                              "client_order_id": cid(sym, day, "run-be2")})
         return
+    if open_orders and not runner:
+        # the 70% order is there but the rest has no stop (Alpaca refused it, e.g. while the entry was still
+        # being cancelled): put it at the 70% order's stop
+        oco = next((o for o in open_orders if (o.get("client_order_id") or "") == cid(sym, day, "tp")), None)
+        leg = next((x for x in (oco or {}).get("legs") or [] if x.get("type") == "stop"), None)
+        covered = sum(abs(float(o.get("qty") or 0)) for o in open_orders if o.get("type") in ("stop", "limit"))
+        missing = int(held - covered)
+        if leg is not None and missing > 0:
+            events.append((sym, "el resto (%d) no tenia stop: se pone en %.2f" % (missing, float(leg["stop_price"]))))
+            if not dry_run:
+                acct.submit({"symbol": sym, "qty": str(missing), "side": "sell" if direction > 0 else "buy",
+                             "type": "stop", "time_in_force": "gtc", "stop_price": "%.2f" % float(leg["stop_price"]),
+                             "client_order_id": cid(sym, day, "run")})
+        return
     if not open_orders:
         # the exits never got placed (or were lost): put them back from the entry and the box
         stop = stop_of(state, entry, bars, day)
@@ -436,7 +450,14 @@ def enter(acct, sym, now_et, bars, positions, equity, events, state, dry_run, sl
     oco, run_body, target = exit_bodies(sym, day, p, fill)
     acct.submit(oco)
     if p["runner_qty"] > 0:
-        acct.submit(run_body)
+        for i in range(4):                                # a just-cancelled entry can make Alpaca refuse it a moment
+            try:
+                acct.submit(run_body)
+                break
+            except paper.PaperError:
+                if i == 3:
+                    raise
+                sleep(2.0)
     state["trades"][in_id]["fill"] = fill
     events.append((sym, "entro a %.2f; salidas puestas (parcial %.2f, stop %.2f)" % (fill, target, p["stop"])))
 
@@ -1011,7 +1032,7 @@ def book(acct, prices=None):
         if stop0 is None:
             first = acct.get(cid(sym, tday, "run"))           # the runner's first stop: the box edge
             stop0 = _f((first or {}).get("stop_price"))
-        if stop0 is None and tp is not None and tp.get("status") == "filled":
+        if stop0 is None and tp is not None:
             stop0 = next((_f(x.get("stop_price")) for x in tp.get("legs") or [] if x.get("type") == "stop"), None)
         risk = abs(px - stop0) if stop0 else None
         mine = [o for o in acct.orders("open", sym, 100) if (o.get("client_order_id") or "").startswith(cid(sym, tday, ""))]

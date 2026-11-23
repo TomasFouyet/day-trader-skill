@@ -638,3 +638,20 @@ class HandEntry(Base):
         sym, txt = orb.enter_now(self.acct, "QQQ", utc(DAY, "10:31"), b, {}, sleep=lambda s: None)
         self.assertIn("dentro de la caja", txt)
         self.assertFalse(self.fake.posts())
+
+
+class MissingRunner(Base):
+    def test_puts_the_rest_stop_next_to_the_oco(self):
+        day = "20261118"
+        self.fake.orders.update({
+            "e": {"id": "e", "n": 1, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-in" % day, "status": "canceled",
+                  "side": "buy", "type": "limit", "filled_avg_price": "102.00", "filled_qty": "10", "qty": "20"},
+            "t": {"id": "t", "n": 2, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-tp" % day, "status": "new",
+                  "side": "sell", "type": "limit", "limit_price": "107.10", "qty": "7", "order_class": "oco",
+                  "legs": [{"id": "tl", "type": "stop", "stop_price": "99.00", "status": "held", "qty": "7"}]}})
+        self.fake.positions["QQQ"] = {"symbol": "QQQ", "qty": "10", "side": "long"}
+        events = []
+        orb.manage(self.acct, "QQQ", self.fake.positions["QQQ"], ny(DAY, "10:40"), events, False, {}, [])
+        run = [b for b in self.fake.posts() if b["client_order_id"] == "orb-QQQ-%s-run" % day]
+        self.assertEqual((run[0]["qty"], run[0]["stop_price"], run[0]["side"]), ("3", "99.00", "sell"))
+        self.assertIn("no tenia stop", events[0][1])
