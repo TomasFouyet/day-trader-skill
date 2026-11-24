@@ -97,6 +97,23 @@ class Trades(unittest.TestCase):
         self.assertEqual(sorted(x["kind"] for x in t["exits"]), ["run-be", "tp"])   # what the site names each exit
         self.assertEqual((t["tp_price"], t["tp_status"], t["stops_now"]), (None, "filled", []))
 
+    def test_r_uses_the_first_stop_not_a_moved_one(self):
+        orders = [   # newest first, as Alpaca lists them
+            {"client_order_id": "orb-QQQ-20261119-run-m1050", "status": "filled", "side": "buy", "type": "stop",
+             "stop_price": "660.66", "filled_avg_price": "660.66", "filled_qty": "9", "filled_at": "2026-11-23T14:30:00Z",
+             "created_at": "2026-11-20T15:50:00Z"},
+            {"client_order_id": "orb-QQQ-20261119-run", "status": "replaced", "side": "buy", "type": "stop",
+             "stop_price": "670.00", "qty": "9", "created_at": "2026-11-19T15:40:10Z"},
+            {"client_order_id": "orb-QQQ-20261119-tp", "status": "filled", "side": "buy", "type": "limit",
+             "filled_avg_price": "663.20", "filled_qty": "21", "filled_at": "2026-11-19T17:00:00Z",
+             "legs": [{"status": "canceled", "type": "stop", "stop_price": "670.00", "side": "buy"}]},
+            {"client_order_id": "orb-QQQ-20261119-in", "status": "filled", "side": "sell", "filled_avg_price": "667.45",
+             "filled_qty": "30", "qty": "30", "filled_at": "2026-11-19T15:40:05Z"},
+        ]
+        t, = dash.trades_from_orders(orders)
+        self.assertEqual(t["stop"], 670.0)
+        self.assertAlmostEqual(t["realized_R"], round((21 * 4.25 + 9 * 6.79) / (30 * 2.55), 3), places=3)
+
     def test_target_and_stops_in_force(self):
         orders = [
             {"client_order_id": "orb-QQQ-20261119-in", "status": "filled", "side": "sell", "filled_avg_price": "667.45",

@@ -788,12 +788,14 @@ def trades_from_orders(orders):
             continue
         side = 1 if entry.get("side") == "buy" else -1
         px, qty = _f(entry.get("filled_avg_price")), _f(entry.get("filled_qty")) or _f(entry.get("qty"))
-        stops = [_f(o.get("stop_price")) for o in os_ if o.get("type") in ("stop",) and _f(o.get("stop_price"))]
-        stop = None
-        for s_ in stops:
-            if px and abs(s_ - px) > 0.005:
-                stop = s_
-                break
+        # the trade's 1R is measured to its FIRST stop (the box edge): the runner's first order ("-run", kept by
+        # Alpaca as "replaced" when it is moved), else the oldest stop; a stop moved later must not change it
+        first_run = next((o for o in os_ if (o.get("client_order_id") or "") == key + "-run"
+                          and _f(o.get("stop_price"))), None)
+        olds = sorted([o for o in os_ if o.get("type") == "stop" and _f(o.get("stop_price"))
+                       and px and abs(_f(o.get("stop_price")) - px) > 0.005],
+                      key=lambda o: o.get("submitted_at") or o.get("created_at") or "")
+        stop = _f(first_run.get("stop_price")) if first_run else (_f(olds[0].get("stop_price")) if olds else None)
         exits = [o for o in os_ if o is not entry and o.get("status") == "filled"]
         out_qty = sum(_f(o.get("filled_qty")) or 0 for o in exits)
         pnl = sum(((_f(o.get("filled_avg_price")) or 0) - px) * side * (_f(o.get("filled_qty")) or 0) for o in exits)
