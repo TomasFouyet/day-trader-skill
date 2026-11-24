@@ -655,3 +655,16 @@ class MissingRunner(Base):
         run = [b for b in self.fake.posts() if b["client_order_id"] == "orb-QQQ-%s-run" % day]
         self.assertEqual((run[0]["qty"], run[0]["stop_price"], run[0]["side"]), ("3", "99.00", "sell"))
         self.assertIn("no tenia stop", events[0][1])
+
+
+class RecentClosed(Base):
+    def test_lists_finished_trades_in_r(self):
+        self.fake.orders.update({
+            "e": {"id": "e", "n": 1, "symbol": "QQQ", "client_order_id": "orb-QQQ-20261118-in", "status": "filled",
+                  "side": "buy", "filled_avg_price": "102.00", "filled_qty": "10", "qty": "10", "filled_at": "2026-11-18T15:20:00Z"},
+            "r": {"id": "r", "n": 2, "symbol": "QQQ", "client_order_id": "orb-QQQ-20261118-run", "status": "filled",
+                  "side": "sell", "type": "stop", "stop_price": "99.00", "filled_avg_price": "99.00", "filled_qty": "10",
+                  "filled_at": "2026-11-18T17:00:00Z"}})
+        text = orb.recent_closed_text(self.acct, utc(DAY, "16:30"))
+        self.assertIn("QQQ largo del 2026-11-18: cerrada el 2026-11-18, -1.00R", text)
+        self.assertNotIn("99.00", text)

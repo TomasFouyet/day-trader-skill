@@ -1060,6 +1060,21 @@ def book(acct, prices=None):
     return out
 
 
+def recent_closed_text(acct, now_utc, days=3):
+    """The box trades that finished in the last few days, in R and by exit (no prices or dollars)."""
+    cut = (scan.to_eastern(now_utc).date() - datetime.timedelta(days=days)).isoformat()
+    lines = []
+    for t in trades_from_orders(acct.orders("all", None, 500)):
+        last = max((x.get("time") or "" for x in t["exits"]), default="")
+        if t["open"] or not last or (_ny_day(last) or datetime.date.min).isoformat() < cut:
+            continue
+        lines.append("%s %s del %s: cerrada el %s, %s (%s)" % (
+            t["symbol"], t["side"], t["day"], _ny_day(last).isoformat(),
+            "%+.2fR" % t["realized_R"] if t["realized_R"] is not None else "R sin calcular",
+            ", ".join(exit_name(x["kind"]) for x in sorted(t["exits"], key=lambda x: x.get("time") or ""))))
+    return "Cerradas en los ultimos %d dias:\n%s" % (days, "\n".join("  " + x for x in lines) if lines else "  ninguna")
+
+
 def locks_profit(row):
     """Every share of the trade has a stop past its entry, and the price is still on the right side of it."""
     if not row["stops"] or row["covered"] < row["held"] or any(x is None or x <= 0.005 for x in row["locked_R"]):
@@ -1369,6 +1384,7 @@ def main(argv=None):
                 time.sleep(2)
             rows = book(acct, prices)
             print(book_text(rows))
+            print(recent_closed_text(acct, now_utc))
             if a.cmd == "close" and a.which:
                 dry = a.dry_run or not paper.paper_on()
                 done = close_trades(acct, now_utc, a.which, prices, dry_run=dry)
