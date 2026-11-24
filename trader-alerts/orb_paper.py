@@ -308,7 +308,9 @@ def manage(acct, sym, pos, now_et, events, dry_run, state, bars):
     # (a "replaced" 70% order was edited by hand: its new copy, not this one, carries on, so the shares decide)
     tp_open = tp is not None and tp.get("status") in ("new", "accepted", "held", "pending_new", "partially_filled",
                                                       "pending_replace")
-    partial_done = (tp is not None and _filled(tp)) or (bought > 0 and held < bought and not tp_open)
+    # ... but not when the 70% left through its own stop leg: then nothing was banked and the rest keeps its stop
+    leg_out = tp is not None and any(_filled(x) for x in tp.get("legs") or [] if x.get("type") == "stop")
+    partial_done = (tp is not None and _filled(tp)) or (bought > 0 and held < bought and not tp_open and not leg_out)
     runner = [o for o in open_orders if (o.get("client_order_id") or "").startswith(cid(sym, day, "run"))]
     if partial_done:
         for o in runner:
@@ -482,8 +484,10 @@ def closed_today_at(acct, sym, day):
     today = cid(sym, day, "")
     last = None
     for o in acct.orders("closed", sym, 100):
+        if (o.get("client_order_id") or "").startswith(today):
+            continue                                    # today's trade and its legs (they carry their own ids)
         for x in [o] + list(o.get("legs") or []):
-            if not _filled(x) or (x.get("client_order_id") or "").startswith(today) or not x.get("filled_at"):
+            if not _filled(x) or not x.get("filled_at"):
                 continue
             try:
                 at = scan.to_eastern(datetime.datetime.strptime(x["filled_at"][:19], "%Y-%m-%dT%H:%M:%S"))

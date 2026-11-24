@@ -668,3 +668,29 @@ class RecentClosed(Base):
         text = orb.recent_closed_text(self.acct, utc(DAY, "16:30"))
         self.assertIn("QQQ largo del 2026-11-18: cerrada el 2026-11-18, -1.00R", text)
         self.assertNotIn("99.00", text)
+
+
+class StopLegIsNotThePartial(Base):
+    def test_rest_keeps_its_stop_when_the_70_left_by_its_stop(self):
+        day = "20261118"
+        self.fake.orders.update({
+            "e": {"id": "e", "n": 1, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-in" % day, "status": "filled",
+                  "side": "sell", "type": "limit", "filled_avg_price": "100.00", "filled_qty": "10", "qty": "10"},
+            "t": {"id": "t", "n": 2, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-tp" % day, "status": "canceled",
+                  "side": "buy", "type": "limit", "limit_price": "96.60", "qty": "7", "order_class": "oco",
+                  "legs": [{"id": "tl", "type": "stop", "stop_price": "102.00", "status": "filled", "qty": "7",
+                            "filled_qty": "7", "filled_avg_price": "102.05", "client_order_id": "x-uuid"}]},
+            "r": {"id": "r", "n": 3, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-run" % day, "status": "new",
+                  "side": "buy", "type": "stop", "stop_price": "102.00", "qty": "3"}})
+        self.fake.positions["QQQ"] = {"symbol": "QQQ", "qty": "-3", "side": "short"}
+        events = []
+        orb.manage(self.acct, "QQQ", self.fake.positions["QQQ"], ny(DAY, "12:05"), events, False, {}, [])
+        self.assertFalse([1 for m, p_, b in self.fake.calls if m == "PATCH"])       # no breakeven move
+        self.assertEqual(self.fake.orders["r"]["stop_price"], "102.00")
+
+    def test_todays_legs_are_not_an_earlier_trade(self):
+        self.fake.orders["t"] = {"id": "t", "n": 2, "symbol": "QQQ", "client_order_id": "orb-QQQ-20261118-tp",
+                                 "status": "canceled", "side": "buy", "type": "limit",
+                                 "legs": [{"id": "tl", "type": "stop", "status": "filled", "filled_at": "2026-11-18T17:01:18Z",
+                                           "client_order_id": "x-uuid"}]}
+        self.assertIsNone(orb.closed_today_at(self.acct, "QQQ", DAY))
