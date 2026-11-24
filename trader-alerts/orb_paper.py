@@ -1075,6 +1075,41 @@ def recent_closed_text(acct, now_utc, days=3):
     return "Cerradas en los ultimos %d dias:\n%s" % (days, "\n".join("  " + x for x in lines) if lines else "  ninguna")
 
 
+def trade_steps_text(acct, sym, day):
+    """Every order of one box trade, in time order: kind, type, status, its stop or limit and its fill in R of
+    the trade's risk, and the New York time (no prices or sizes)."""
+    os_ = [o for o in acct.orders("all", sym, 200) if (o.get("client_order_id") or "").startswith(cid(sym, day, ""))]
+    rows = []
+    for o in os_:
+        rows.append(o)
+        for leg in o.get("legs") or []:
+            rows.append(dict(leg, client_order_id=(o.get("client_order_id") or "") + "-leg"))
+    entry = next((o for o in rows if (o.get("client_order_id") or "").endswith("-in")), None)
+    if entry is None or not _f(entry.get("filled_avg_price")):
+        return "  %s %s: sin entrada" % (sym, day.isoformat())
+    px = float(entry["filled_avg_price"])
+    d = 1 if entry.get("side") == "buy" else -1
+    rec = (paper.read_json(STATE, {}) or {}).get("trades", {}).get(entry.get("client_order_id"), {})
+    stop0 = rec.get("stop") or _f((acct.get(cid(sym, day, "run")) or {}).get("stop_price"))
+    if stop0 is None:
+        stop0 = next((_f(x.get("stop_price")) for x in rows if x.get("type") == "stop" and _f(x.get("stop_price"))
+                      and abs(_f(x["stop_price"]) - px) > 0.005), None)
+    risk = abs(px - stop0) if stop0 else None
+    r = lambda x: ("%+.2fR" % ((x - px) * d / risk)) if (risk and x is not None) else "-"
+    out = ["  %s %s %s (orden a orden, en R desde la entrada):" % (sym, "largo" if d > 0 else "corto", day.isoformat())]
+    def when(o):
+        return o.get("filled_at") or o.get("canceled_at") or o.get("updated_at") or o.get("submitted_at") or o.get("created_at") or ""
+    for o in sorted(rows, key=when):
+        t = _utc_of(when(o))
+        k = (o.get("client_order_id") or "").split("-", 3)[-1]
+        lvl = _f(o.get("stop_price")) if o.get("type") == "stop" else _f(o.get("limit_price"))
+        out.append("    %s %-10s %-6s %-9s nivel %s; ejecutada %s%s" % (
+            scan.to_eastern(t).strftime("%H:%M:%S") if t else "--:--:--", k, o.get("type"), o.get("status"),
+            r(lvl), r(_f(o.get("filled_avg_price"))) if _f(o.get("filled_avg_price")) else "no",
+            " (parte)" if _f(o.get("filled_qty")) and _f(o.get("qty")) and _f(o.get("filled_qty")) < _f(o.get("qty")) else ""))
+    return "\n".join(out)
+
+
 def locks_profit(row):
     """Every share of the trade has a stop past its entry, and the price is still on the right side of it."""
     if not row["stops"] or row["covered"] < row["held"] or any(x is None or x <= 0.005 for x in row["locked_R"]):
@@ -1385,6 +1420,10 @@ def main(argv=None):
             rows = book(acct, prices)
             print(book_text(rows))
             print(recent_closed_text(acct, now_utc))
+            print("Ordenes de las operaciones de hoy:")
+            for sym_ in symbols():
+                if acct.get(cid(sym_, now_et.date(), "in")) is not None:
+                    print(trade_steps_text(acct, sym_, now_et.date()))
             if a.cmd == "close" and a.which:
                 dry = a.dry_run or not paper.paper_on()
                 done = close_trades(acct, now_utc, a.which, prices, dry_run=dry)
