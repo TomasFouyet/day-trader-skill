@@ -1426,10 +1426,28 @@ def main(argv=None):
             rows = book(acct, prices)
             print(book_text(rows))
             print(recent_closed_text(acct, now_utc))
-            print("Ordenes de las operaciones de hoy:")
+            print("Ordenes de las operaciones de hoy y de las que se cerraron hoy:")
+            shown = set()
             for sym_ in symbols():
                 if acct.get(cid(sym_, now_et.date(), "in")) is not None:
-                    print(trade_steps_text(acct, sym_, now_et.date()))
+                    shown.add((sym_, now_et.date()))
+            for t in trades_from_orders(acct.orders("all", None, 500)):
+                if any(_ny_day(x.get("time")) == now_et.date() for x in t["exits"]):
+                    shown.add((t["symbol"], datetime.date.fromisoformat(t["day"])))
+            for sym_, d_ in sorted(shown, key=lambda x: (x[1], x[0])):
+                print(trade_steps_text(acct, sym_, d_))
+            pos = acct.positions()
+            for o in acct.orders("open", None, 200):
+                c = o.get("client_order_id") or ""
+                if o.get("symbol") in symbols() and not c.startswith("orb-"):
+                    print("Orden abierta en %s que no es del bot de la caja: %s %s %s (origen: %s)" % (
+                        o.get("symbol"), o.get("side"), o.get("type"), o.get("status"),
+                        "swing/proteccion" if c.startswith("swing-") or c.startswith("protect") else "manual u otra"))
+            for r in rows:
+                extra = r["held"] - r["covered"]
+                if extra > 0:
+                    print("%s: la posicion tiene acciones de mas sin stop del bot (%s)" % (
+                        r["symbol"], "una parte" if extra < r["held"] else "todas"))
             if a.cmd == "close" and a.which:
                 dry = a.dry_run or not paper.paper_on()
                 done = close_trades(acct, now_utc, a.which, prices, dry_run=dry)
