@@ -1446,8 +1446,18 @@ def main(argv=None):
             for r in rows:
                 extra = r["held"] - r["covered"]
                 if extra > 0:
-                    print("%s: la posicion tiene acciones de mas sin stop del bot (%s)" % (
-                        r["symbol"], "una parte" if extra < r["held"] else "todas"))
+                    e_ = entry_of(acct, r["symbol"])
+                    got_ = _got(e_) or 0
+                    print("%s: la posicion tiene acciones de mas sin stop del bot: posicion %.2f veces la entrada de "
+                          "%s; los stops del bot cubren %.0f%% de la posicion" % (
+                              r["symbol"], r["held"] / got_ if got_ else 0, r["day"].isoformat(),
+                              100.0 * r["covered"] / r["held"] if r["held"] else 0))
+                    for o in acct.orders("closed", r["symbol"], 100):
+                        if _filled(o) and not (o.get("client_order_id") or "").startswith("orb-") and \
+                                _ny_day(o.get("filled_at")) and _ny_day(o.get("filled_at")) >= r["day"] - datetime.timedelta(days=3):
+                            print("    orden ejecutada que no es del bot: %s %s el %s (%s)" % (
+                                o.get("side"), o.get("type"), _ny_day(o.get("filled_at")).isoformat(),
+                                "swing" if (o.get("client_order_id") or "").startswith("swing-") else "manual u otra"))
             if a.cmd == "close" and a.which:
                 dry = a.dry_run or not paper.paper_on()
                 done = close_trades(acct, now_utc, a.which, prices, dry_run=dry)
