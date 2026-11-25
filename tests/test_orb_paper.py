@@ -694,3 +694,38 @@ class StopLegIsNotThePartial(Base):
                                  "legs": [{"id": "tl", "type": "stop", "status": "filled", "filled_at": "2026-11-18T17:01:18Z",
                                            "client_order_id": "x-uuid"}]}
         self.assertIsNone(orb.closed_today_at(self.acct, "QQQ", DAY))
+
+
+class ExtraShares(Base):
+    def test_a_share_without_stop_gets_one(self):
+        day = "20261118"
+        self.fake.orders.update({
+            "e": {"id": "e", "n": 1, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-in" % day, "status": "filled",
+                  "side": "buy", "type": "limit", "filled_avg_price": "102.00", "filled_qty": "25", "qty": "25"},
+            "t": {"id": "t", "n": 2, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-tp" % day, "status": "new",
+                  "side": "sell", "type": "limit", "limit_price": "107.10", "qty": "17", "order_class": "oco",
+                  "legs": [{"id": "tl", "type": "stop", "stop_price": "99.00", "status": "held", "qty": "17"}]},
+            "r": {"id": "r", "n": 3, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-run" % day, "status": "new",
+                  "side": "sell", "type": "stop", "stop_price": "99.00", "qty": "7"}})
+        self.fake.positions["QQQ"] = {"symbol": "QQQ", "qty": "25", "side": "long"}
+        events = []
+        orb.manage(self.acct, "QQQ", self.fake.positions["QQQ"], ny(DAY, "10:40"), events, False, {}, [])
+        extra = [b for b in self.fake.posts() if "-run-x" in b["client_order_id"]]
+        self.assertEqual((extra[0]["qty"], extra[0]["stop_price"]), ("1", "99.00"))
+
+    def test_a_protecting_stop_counts(self):
+        self.test_a_share_without_stop_gets_one.__func__  # noqa (same setup below)
+        day = "20261118"
+        self.fake.orders.update({
+            "e": {"id": "e", "n": 1, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-in" % day, "status": "filled",
+                  "side": "buy", "type": "limit", "filled_avg_price": "102.00", "filled_qty": "25", "qty": "25"},
+            "t": {"id": "t", "n": 2, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-tp" % day, "status": "new",
+                  "side": "sell", "type": "limit", "limit_price": "107.10", "qty": "17", "order_class": "oco"},
+            "r": {"id": "r", "n": 3, "symbol": "QQQ", "client_order_id": "orb-QQQ-%s-run" % day, "status": "new",
+                  "side": "sell", "type": "stop", "stop_price": "99.00", "qty": "7"},
+            "p": {"id": "p", "n": 4, "symbol": "QQQ", "client_order_id": "protect-QQQ-20261118", "status": "accepted",
+                  "side": "sell", "type": "stop", "stop_price": "99.00", "qty": "1"}})
+        self.fake.positions["QQQ"] = {"symbol": "QQQ", "qty": "25", "side": "long"}
+        self.fake.orders["p"]["status"] = "new"
+        orb.manage(self.acct, "QQQ", self.fake.positions["QQQ"], ny(DAY, "10:40"), [], False, {}, [])
+        self.assertFalse([b for b in self.fake.posts() if "-run-x" in b["client_order_id"]])

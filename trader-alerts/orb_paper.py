@@ -326,6 +326,22 @@ def manage(acct, sym, pos, now_et, events, dry_run, state, bars):
                              "type": "stop", "time_in_force": "gtc", "stop_price": "%.2f" % fill,
                              "client_order_id": cid(sym, day, "run-be2")})
         return
+    if open_orders and runner:
+        # every share needs a stop: shares that filled after the exits were sized get one at the runner's stop
+        sells = [o for o in acct.orders("open", sym, 100) if o.get("side", "sell" if direction > 0 else "buy")
+                 == ("sell" if direction > 0 else "buy") and o.get("type") in ("stop", "limit")]
+        if any(_f(o.get("qty")) is None for o in sells):
+            return                                        # cannot count them: leave it
+        covered = sum(abs(float(o["qty"])) for o in sells)
+        missing = int(held - covered)
+        if missing > 0:
+            px_ = float(runner[0].get("stop_price") or 0)
+            events.append((sym, "%d accion(es) sin stop: se pone en %.2f" % (missing, px_)))
+            if not dry_run and px_:
+                acct.submit({"symbol": sym, "qty": str(missing), "side": "sell" if direction > 0 else "buy",
+                             "type": "stop", "time_in_force": "gtc", "stop_price": "%.2f" % px_,
+                             "client_order_id": cid(sym, day, "run-x%s" % now_et.strftime("%H%M"))})
+        return
     if open_orders and not runner:
         # the 70% order is there but the rest has no stop (Alpaca refused it, e.g. while the entry was still
         # being cancelled): put it at the 70% order's stop
@@ -442,7 +458,11 @@ def enter(acct, sym, now_et, bars, positions, equity, events, state, dry_run, sl
             acct.cancel(o["id"])
         except paper.PaperError:
             pass
-        o = acct.get(in_id) or o
+        for _ in range(6):                                # more shares can fill while the cancel goes through
+            o = acct.get(in_id) or o
+            if o.get("status") in ("canceled", "filled", "expired", "rejected"):
+                break
+            sleep(0.5)
         got = int(_got(o))
     if got < p["qty"]:                                    # the exits follow the shares it got
         part = max(1, min(got - 1, int(round(got * STRATEGY["partial_frac"])))) if got > 1 else 1
