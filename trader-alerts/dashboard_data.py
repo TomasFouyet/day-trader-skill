@@ -219,6 +219,31 @@ SWING_FIELDS = ("symbol", "side", "qty", "setup", "signal_date", "time_stop_date
                 "stop", "target", "risk_per_share", "status", "outcome", "exit_fill", "exit_at", "R", "why", "predicted")
 
 
+def live_swing(api, t):
+    """What Alpaca says now about a swing trade the saved state may not know yet (the bot syncs it twice a
+    day): an entry that filled, or an exit leg that filled. Read only. -> a copy of the trade."""
+    t = dict(t)
+    if t.get("status") not in ("submitted", "open", "closing") or not t.get("order_id"):
+        return t
+    try:
+        o = api.order(t["order_id"])
+    except (paper.PaperError, OSError, ValueError, AttributeError):
+        return t
+    if t["status"] == "submitted":
+        if o.get("status") == "filled":
+            t.update(status="open", entry_fill=_f(o.get("filled_avg_price")), entry_at=o.get("filled_at"), live=True)
+        elif o.get("status") in ("canceled", "expired", "rejected"):
+            t.update(status="not_filled", why=o.get("status"), live=True)
+        else:
+            return t
+    leg = next((x for x in o.get("legs") or [] if x.get("status") == "filled"), None)
+    if t.get("status") in ("open", "closing") and leg is not None:
+        px = _f(leg.get("filled_avg_price"))
+        t.update(status="closed", outcome="target" if leg.get("type") == "limit" else "stop", exit_fill=px,
+                 exit_at=leg.get("filled_at"), R=paper.realized_R(t, px) if px else None, live=True)
+    return t
+
+
 def swing_doc(api, now_utc, state):
     """The swing setups' paper trades (trader-alerts/paper_trader.py state) with the live prices of the open
     ones, the study's expectations and the record. Never in clear: main() encrypts it."""
@@ -226,7 +251,8 @@ def swing_doc(api, now_utc, state):
     positions = {str(p.get("symbol") or "").upper(): p for p in (api.positions() or [])}
     trades = []
     for t in ((state or {}).get("trades") or {}).values():
-        row = {k: t.get(k) for k in SWING_FIELDS if t.get(k) is not None}
+        t = live_swing(api, t)
+        row = {k: t.get(k) for k in SWING_FIELDS + ("live",) if t.get(k) is not None}
         if t.get("status") in ("open", "closing"):
             p = positions.get(str(t.get("symbol") or "").upper())
             entry, risk = _f(t.get("entry_fill")), _f(t.get("risk_per_share"))

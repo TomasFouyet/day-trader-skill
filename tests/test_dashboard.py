@@ -148,6 +148,30 @@ class Swing(unittest.TestCase):
         self.assertEqual(d["record"], {"closed": 2, "R": -0.2, "wins": 1})
         self.assertIn("breakout20", d["study"])
 
+    def test_swing_shows_what_alpaca_filled_since_the_last_sync(self):
+        class Api(object):
+            def account(self):
+                return {"equity": "100000"}
+
+            def positions(self):
+                return [{"symbol": "ZS", "current_price": "210"}]
+
+            def order(self, oid):
+                return {"z": {"status": "filled", "filled_avg_price": "200", "filled_at": "2026-11-25T15:00:00Z",
+                              "legs": [{"type": "limit", "status": "new"}, {"type": "stop", "status": "held"}]},
+                        "h": {"status": "filled", "filled_avg_price": "300",
+                              "legs": [{"type": "limit", "status": "filled", "filled_avg_price": "330",
+                                        "filled_at": "2026-11-25T18:00:00Z"}, {"type": "stop", "status": "canceled"}]}}[oid]
+        state = {"trades": {
+            "z": {"symbol": "ZS", "side": "buy", "setup": "rsi2", "status": "submitted", "order_id": "z", "risk_per_share": 10},
+            "h": {"symbol": "HD", "side": "buy", "setup": "rsi2", "status": "open", "order_id": "h", "entry_fill": 300,
+                  "risk_per_share": 10}}}
+        d = dash.swing_doc(Api(), datetime.datetime(2026, 11, 25, 19, 0), state)
+        by = {t["symbol"]: t for t in d["trades"]}
+        self.assertEqual((by["ZS"]["status"], by["ZS"]["entry_fill"], by["ZS"]["unrealized_R"]), ("open", 200.0, 1.0))
+        self.assertEqual((by["HD"]["status"], by["HD"]["outcome"], by["HD"]["R"]), ("closed", "target", 3.0))
+        self.assertEqual(state["trades"]["z"]["status"], "submitted")       # the saved state is not touched
+
     def test_two_pages_one_switch(self):
         read = lambda rel: open(os.path.join(ROOT, rel), encoding="utf-8").read()
         for page in ("site/index.html", "site/swing.html"):

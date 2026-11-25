@@ -1,0 +1,47 @@
+# Auditoria del panel: compara lo que muestra GitHub Pages con la cuenta PAPER de Alpaca.
+#
+# Tres vistas de la misma cuenta: Alpaca ahora (la verdad), los datos que arma el panel ahora, y lo que la
+# pagina publicada tiene (descifrado con DASHBOARD_KEY) con su antiguedad. Solo lee: no coloca ni cambia
+# ordenes. El registro es publico: muestra simbolos, estados, horas y R, nunca precios, cantidades ni dolares.
+
+name: Auditar panel (paper)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Leer el estado del swing (cache privado, solo lectura)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            trader/state
+            trader/alerts.json
+          key: swing-state-audit-${{ github.run_id }}
+          restore-keys: swing-state-
+
+      - name: Leer el estado del bot (cache privado, solo lectura)
+        uses: actions/cache/restore@v4
+        with:
+          path: trader/state
+          key: orb-state-audit-${{ github.run_id }}
+          restore-keys: orb-state-
+
+      - name: Auditoria (solo lectura)
+        env:
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+          DASHBOARD_KEY: ${{ secrets.DASHBOARD_KEY }}
+        run: python3 trader-alerts/panel_audit.py
