@@ -187,7 +187,8 @@ function loadHistory() {
   return tv.loading;
 }
 function renderTradePicker(p) {
-  const list = p.trades.slice().sort((a, b) => (b.open - a.open) || (a.day < b.day ? 1 : a.day > b.day ? -1 : 0));
+  // only the trades still open: the closed ones are in the exits and closed tables below
+  const list = p.trades.filter((t) => t.open).sort((a, b) => (a.day < b.day ? 1 : a.day > b.day ? -1 : 0));
   $("#trade-view").hidden = !list.length;
   if (!list.length) return;
   const cur = list.some((t) => t.id === tv.pick) ? tv.pick : list[0].id;
