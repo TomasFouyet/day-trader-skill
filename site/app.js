@@ -89,7 +89,8 @@ function ageText(iso) {
 }
 function privateFreshness() {
   if (!state.priv) return;
-  $("#priv-updated").textContent = ageText(state.priv.updated) + (live.on && live.last ? " · precios y R en vivo" : " · se revisa cada minuto");
+  $("#priv-updated").textContent = ageText(state.priv.updated) + (live.on && live.last ? " · precios y R en vivo" : " · se revisa cada minuto") +
+    (state.privErr ? " · NO SE PUDO ACTUALIZAR (" + state.privErr + "): toca Actualizar" : "");
 }
 function renderPrivate(p) {
   $("#trades-body").hidden = false;
@@ -320,8 +321,11 @@ async function unlock(pass, quiet) {
     msg.textContent = "";
     if ($("#remember").checked) try { sessionStorage.setItem("dash-pass", pass); } catch (e) { /* storage blocked */ }
     state.pass = pass;
+    state.privErr = null;
     renderPrivate(state.priv);
   } catch (e) {
+    state.privErr = e.message;                    // shown next to the age, so an old reading never looks current
+    if (state.priv) privateFreshness();
     if (!quiet) msg.textContent = /404/.test(e.message) ? "Todavía no hay datos de la cuenta publicados (falta el secreto DASHBOARD_KEY o la primera pasada)." : e.message === "Frase incorrecta" ? "Frase incorrecta." : "No se pudo leer: " + e.message;
   }
 }
@@ -786,7 +790,7 @@ async function boot() {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible") return;
     refreshLive();
-    if (state.pass) unlock(state.pass, true);
+    if (state.pass) { $("#priv-updated").textContent = "Actualizando la cuenta..."; unlock(state.pass, true); }
   });
 }
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => location.reload());
