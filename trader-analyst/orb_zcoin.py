@@ -14,7 +14,11 @@ Its rules, as the video states them (5 minute bars, S&P 500 and Nasdaq):
 The divergence rule used here: a pivot high (higher than the 2 bars on each side) above the previous pivot high
 of the last 60 bars while RSI(14) at it is lower (a long's exit; the mirror for a short), taken at the close of
 the bar that confirms the pivot, only for pivots after the entry. The 1 hour bars are the 5 minute bars grouped
-by clock hour (extended hours included, like a chart with ETH).
+by clock hour (extended hours included, like a chart with ETH). Each divergence takes half of what was left
+after the first target.
+
+Also: his tentative box-size filter (no trade on a box wider than a % of the price, or than a share of the daily
+ATR(14) of the previous days) and our first target (70% at 1.7R) on his box and entry.
 
 Same conventions as trader-scanner/orb.py: one position at a time per index, one try a day, the stop is checked
 before a target in the same bar, a gap past the stop fills at the open, each trade sized to 1R and net of a
@@ -64,6 +68,18 @@ VERSIONS = [
     ("Caja 08:30-10:00 con nuestra regla", dict(OURS, box_start="08:30")),
     ("Caja 09:00 con entrada y salidas de Zcoin (divergencias)",
      dict(ZC, box_start="09:00", rest="div", hold=20)),
+    # the box size (his tentative filter: be careful with an S&P box of more than 30-40 points)
+    ("Zcoin, sin cajas de mas de 0,65% del precio (~35 pts del S&P)", dict(ZC, max_pct=0.65)),
+    ("Zcoin, sin cajas de mas de 0,75 ATR", dict(ZC, max_atr=0.75)),
+    ("Zcoin, sin cajas de mas de 0,50 ATR", dict(ZC, max_atr=0.50)),
+    ("Zcoin con divergencias, sin cajas de mas de 0,65%", dict(ZC, rest="div", hold=20, max_pct=0.65)),
+    # our first target instead of his: 70% at 1.7R
+    ("Zcoin con 70% a 1,7R, resto al cierre 16:00", dict(ZC, p1_r=1.7, p1_frac=0.7)),
+    ("Zcoin con 70% a 1,7R, resto hasta 20 dias", dict(ZC, p1_r=1.7, p1_frac=0.7, rest="hold", hold=20)),
+    ("Zcoin con 70% a 1,7R y divergencias (maximo 20 dias)", dict(ZC, p1_r=1.7, p1_frac=0.7, rest="div", hold=20)),
+    ("Zcoin con 70% a 1,7R, resto 20 dias, sin cajas de mas de 0,65%",
+     dict(ZC, p1_r=1.7, p1_frac=0.7, rest="hold", hold=20, max_pct=0.65)),
+    ("Nuestra regla, sin cajas de mas de 0,65%", dict(OURS, max_pct=0.65)),
 ]
 
 
@@ -144,6 +160,16 @@ class Context(object):
         rs = rsi([b["c"] for b in bars])
         self.bear5, self.bull5 = divergences([b["h"] for b in bars], [b["l"] for b in bars], rs)
         self.bear60, self.bull60 = hourly_divergences(bars)
+        self.atr = {}
+        trs, prev = [], None
+        for d, idx in self.days:
+            rth = [bars[i] for i in idx if datetime.time(9, 30) <= bars[i]["t"].time() < datetime.time(16, 0)]
+            if not rth:
+                continue
+            self.atr[d] = sum(trs[-14:]) / 14.0 if len(trs) >= 14 else None
+            h, l, c = max(b["h"] for b in rth), min(b["l"] for b in rth), rth[-1]["c"]
+            trs.append(max(h - l, abs(h - prev), abs(l - prev)) if prev is not None else h - l)
+            prev = c
 
 
 def walk(ctx, j0, d, entry, stop, ref, cfg, end):
@@ -182,14 +208,15 @@ def walk(ctx, j0, d, entry, stop, ref, cfg, end):
             if px is not None:
                 return got + left * rr(px), "parcial+2R", j
         if cfg["rest"] == "div":
+            half = (1.0 - cfg["p1_frac"]) / 2.0
             if not d5 and j in div5 and div5[j] > j0:
                 d5 = True
-                take = min(left, 0.25)
+                take = min(left, half)
                 got += take * rr(b["c"])
                 left -= take
             if not d60 and j in div60 and div60[j] > j0:
                 d60 = True
-                take = min(left, 0.25)
+                take = min(left, half)
                 got += take * rr(b["c"])
                 left -= take
             if left <= 1e-9:
@@ -210,6 +237,12 @@ def run_symbol(ctx, cfg):
         if len(box) < need:
             continue
         hi, lo = max(bars[i]["h"] for i in box), min(bars[i]["l"] for i in box)
+        if cfg.get("max_pct") and (hi - lo) / lo * 100 > cfg["max_pct"]:
+            continue                                           # a box too wide: no trade that day
+        if cfg.get("max_atr"):
+            atr = ctx.atr.get(d)
+            if not atr or (hi - lo) > cfg["max_atr"] * atr:
+                continue
         sess = [i for i in idx if b1 <= bars[i]["t"].time() < flat]
         if not sess:
             continue

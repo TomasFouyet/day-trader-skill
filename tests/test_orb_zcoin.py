@@ -83,3 +83,12 @@ class Divergence(unittest.TestCase):
     def test_rsi_bounds(self):
         r = zc.rsi([100 + (k % 3) for k in range(40)])
         self.assertTrue(all(0 <= v <= 100 for v in r if v is not None))
+
+
+class BoxSize(unittest.TestCase):
+    def test_a_wide_box_is_skipped(self):
+        moves = dict(BOX, **{"10:10": (100.5, 101.8, 100.5, 101.6), "10:15": (101.7, 101.9, 101.5, 101.8),
+                             "10:20": (101.5, 101.6, 100.9, 101.2)})
+        bars = day_bars(above_after(moves))
+        self.assertEqual(zc.run_symbol(zc.Context(bars), dict(zc.ZC, max_pct=1.0)), [])     # box 2% of the price
+        self.assertEqual(len(zc.run_symbol(zc.Context(bars), dict(zc.ZC, max_pct=3.0))), 1)
