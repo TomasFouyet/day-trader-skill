@@ -92,3 +92,17 @@ class BoxSize(unittest.TestCase):
         bars = day_bars(above_after(moves))
         self.assertEqual(zc.run_symbol(zc.Context(bars), dict(zc.ZC, max_pct=1.0)), [])     # box 2% of the price
         self.assertEqual(len(zc.run_symbol(zc.Context(bars), dict(zc.ZC, max_pct=3.0))), 1)
+
+
+class SecondVideo(unittest.TestCase):
+    def test_tranches_1r_25r_5r(self):
+        moves = dict(BOX, **{"10:10": (100.5, 101.8, 100.5, 101.6),     # signal close 101.6, stop 99: 1R 2.6
+                             "10:15": (101.7, 101.9, 101.5, 101.6),     # back to 101.6: filled at the close
+                             "10:30": (102, 104.3, 102, 104.0),         # 1R = 104.2: half out
+                             "11:00": (104, 108.2, 104, 108.0),         # 2.5R = 108.1: a quarter out
+                             "11:30": (108, 115, 108, 114.8)})          # 5R = 114.6: the last quarter
+        bars = day_bars(above_after(moves, level=(103, 103.2, 102.8, 103)))
+        t, = zc.run_symbol(zc.Context(bars), dict(zc.Z2))
+        self.assertAlmostEqual(t[1], 0.5 * 1 + 0.25 * 2.5 + 0.25 * 5, places=6)
+        self.assertEqual(t[3], "objetivos")
+        self.assertEqual(t[4], 1.0)

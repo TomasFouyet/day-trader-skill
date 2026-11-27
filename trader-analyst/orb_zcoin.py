@@ -17,6 +17,10 @@ the bar that confirms the pivot, only for pivots after the entry. The 1 hour bar
 by clock hour (extended hours included, like a chart with ETH). Each divergence takes half of what was left
 after the first target.
 
+The second video: a limit for a small pullback to the signal close, 50% at 1R and the stop to the entry, 25%
+at 2.5R (or the 5 minute divergence) and 25% at 5R (or the 1 hour divergence); a divergence against the breakout
+in the 2 hours before it means no trade, or half the risk.
+
 Also: his tentative box-size filter (no trade on a box wider than a % of the price, or than a share of the daily
 ATR(14) of the previous days) and our first target (70% at 1.7R) on his box and entry.
 
@@ -30,6 +34,7 @@ Aggregates only. Research, never orders.
 """
 
 import argparse
+import bisect
 import datetime
 import importlib.util
 import json
@@ -57,6 +62,11 @@ OURS = {"box_start": "09:00", "last_sig": "12:55", "entry": "close", "deadline":
         "p1_r": 1.7, "p1_frac": 0.7, "rest": "hold", "hold": 20}
 ZC = {"box_start": "08:30", "last_sig": "11:55", "entry": "retest", "deadline": "12:00",
       "p1_r": 1.0, "p1_frac": 0.5, "rest": "eod", "hold": 0}
+TP_R = [{"frac": 0.5, "r": 1.0}, {"frac": 0.25, "r": 2.5}, {"frac": 0.25, "r": 5.0}]
+TP_DIV = [{"frac": 0.5, "r": 1.0}, {"frac": 0.25, "r": 2.5, "div": "5"}, {"frac": 0.25, "r": 5.0, "div": "60"}]
+Z2 = {"box_start": "08:30", "last_sig": "11:55", "entry": "pullback", "deadline": "12:00", "tps": TP_R, "hold": 20}
+DIV_WINDOW = 24             # bars (2 hours) before the signal in which a divergence against it counts
+
 VERSIONS = [
     ("Nuestra regla (09:00, cierre, 70% a 1,7R, resto 20 dias)", dict(OURS)),
     ("Zcoin: 08:30, retesteo hasta 12:00, 50% a 1R, resto al cierre 16:00", dict(ZC)),
@@ -80,6 +90,15 @@ VERSIONS = [
     ("Zcoin con 70% a 1,7R, resto 20 dias, sin cajas de mas de 0,65%",
      dict(ZC, p1_r=1.7, p1_frac=0.7, rest="hold", hold=20, max_pct=0.65)),
     ("Nuestra regla, sin cajas de mas de 0,65%", dict(OURS, max_pct=0.65)),
+    # the second video: a limit for a small pullback after the signal, 50% at 1R, 25% at 2.5R, 25% at 5R
+    ("Video 2: retroceso al cierre, 50% 1R, 25% 2,5R, 25% 5R (20 dias)", dict(Z2)),
+    ("Video 2, todo cerrado a las 16:00", dict(Z2, hold=0)),
+    ("Video 2 con divergencias (div 5m o 2,5R, div 1h o 5R)", dict(Z2, tps=TP_DIV)),
+    ("Video 2 con divergencias, sin entrar con divergencia en contra", dict(Z2, tps=TP_DIV, div_filter="skip")),
+    ("Video 2 con divergencias, medio riesgo con divergencia en contra", dict(Z2, tps=TP_DIV, div_filter="half")),
+    ("Video 2, entrada en el borde de la caja (retesteo)", dict(Z2, entry="retest")),
+    ("Video 2, entrada al cierre de la vela", dict(Z2, entry="close")),
+    ("Nuestra regla, sin entrar con divergencia en contra", dict(OURS, div_filter="skip")),
 ]
 
 
@@ -160,6 +179,7 @@ class Context(object):
         rs = rsi([b["c"] for b in bars])
         self.bear5, self.bull5 = divergences([b["h"] for b in bars], [b["l"] for b in bars], rs)
         self.bear60, self.bull60 = hourly_divergences(bars)
+        self.div_keys = {"bear": sorted(self.bear5), "bull": sorted(self.bull5)}
         self.atr = {}
         trs, prev = [], None
         for d, idx in self.days:
@@ -225,6 +245,58 @@ def walk(ctx, j0, d, entry, stop, ref, cfg, end):
     return got + left * rr(last["c"]), ("cierre" if eod else "tiempo"), end
 
 
+def walk_tps(ctx, j0, d, entry, stop, ref, cfg, end):
+    """Exits in tranches (cfg["tps"]: [{frac, r, div}]): the first at its R, then the stop to the entry; the
+    others at their R or at the first divergence of their timeframe, whichever comes first.
+    -> (R, outcome, last bar index)."""
+    bars = ctx.bars
+    risk = (entry - stop) * d
+    rk = abs(ref - stop)                                   # the targets are measured from the reference price
+
+    def rr(x):
+        return (x - entry) * d / risk
+
+    def past(x, level):
+        return (x - level) * d >= 0
+    tps = cfg["tps"]
+    done = [False] * len(tps)
+    left, got, st = 1.0, 0.0, stop
+    divs = {"5": ctx.bear5 if d > 0 else ctx.bull5, "60": ctx.bear60 if d > 0 else ctx.bull60}
+    for j in range(j0 + 1, end + 1):
+        b = bars[j]
+        o, fav, adv = b["o"], (b["h"] if d > 0 else b["l"]), (b["l"] if d > 0 else b["h"])
+        why = "stop" if not done[0] else "parcial+breakeven"
+        if not past(o, st) or o == st:
+            return got + left * rr(o), why, j
+        if not past(adv, st) or adv == st:
+            return got + left * rr(st), why, j
+        for k, tp in enumerate(tps):
+            if done[k]:
+                continue
+            if k > 0 and not done[0]:
+                break
+            px = None
+            if tp.get("r") is not None:
+                lvl = ref + d * tp["r"] * rk
+                px = o if past(o, lvl) else (lvl if past(fav, lvl) else None)
+            if px is None and tp.get("div") and done[0]:
+                dv = divs[tp["div"]]
+                if j in dv and dv[j] > j0:
+                    px = b["c"]
+            if px is None:
+                continue
+            done[k] = True
+            take = min(left, tp["frac"])
+            got += take * rr(px)
+            left -= take
+            if k == 0:
+                st = entry                                 # breakeven; the other tranches from the next bar
+                break
+        if left <= 1e-9:
+            return got, "objetivos", j
+    return got + left * rr(bars[end]["c"]), ("cierre" if not cfg["hold"] else "tiempo"), end
+
+
 def run_symbol(ctx, cfg):
     """Every trade of one version on one index. -> [(entry day, R before costs, risk % of the price, outcome)]."""
     bars, days = ctx.bars, ctx.days
@@ -256,9 +328,17 @@ def run_symbol(ctx, cfg):
             if not k:
                 continue
             stop = lo if k > 0 else hi
-            if cfg["entry"] == "retest":
+            weight = 1.0
+            if cfg.get("div_filter"):
+                keys = ctx.div_keys["bear" if k > 0 else "bull"]   # a divergence against the breakout just before it
+                n_ = bisect.bisect_right(keys, i) - bisect.bisect_right(keys, i - DIV_WINDOW)
+                if n_:
+                    if cfg["div_filter"] == "skip":
+                        break                                  # not taken: the day's try is spent
+                    weight = 0.5
+            if cfg["entry"] in ("retest", "pullback"):
                 fill = None
-                edge = hi if k > 0 else lo
+                edge = (hi if k > 0 else lo) if cfg["entry"] == "retest" else c
                 for j in sess:
                     if j <= i:
                         continue
@@ -280,8 +360,11 @@ def run_symbol(ctx, cfg):
             end = orb.end_index(bars, days, ctx.pos[d], sess[-1], cfg["hold"], flat)
             if end <= j0:
                 break
-            r, why, last = walk(ctx, j0, k, entry, stop, ref, cfg, end)
-            out.append((d.isoformat(), r, abs(entry - stop) / entry * 100, why))
+            if "tps" in cfg:
+                r, why, last = walk_tps(ctx, j0, k, entry, stop, ref, cfg, end)
+            else:
+                r, why, last = walk(ctx, j0, k, entry, stop, ref, cfg, end)
+            out.append((d.isoformat(), r, abs(entry - stop) / entry * 100, why, weight))
             busy = last
             break                                              # one try a day
     return out
@@ -319,7 +402,7 @@ def main(argv=None):
     for name, cfg in VERSIONS:
         ts = []
         for sym, ctx in ctxs.items():
-            ts += [(day, validate.net_r(r, rp, a.cost_pct), why, sym) for day, r, rp, why in run_symbol(ctx, cfg)]
+            ts += [(day, w * validate.net_r(r, rp, a.cost_pct), why, sym) for day, r, rp, why, w in run_symbol(ctx, cfg)]
         ts.sort()
         xs = [t[1] for t in ts]
         st = validate.tstats(xs) if xs else {"n": 0, "mean": 0.0, "se": 0.0}
